@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+# The archived baseline is fingerprinted; imports must not create __pycache__.
+sys.dont_write_bytecode = True
 from check_environment import isolated_environment
 
 

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -82,6 +83,30 @@ class CheckEnvironmentTest(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ["mix", "test"])
             self.assertTrue(run.call_args.kwargs["check"])
             self.assertFalse(run.call_args.kwargs["cwd"].exists())
+
+    @unittest.skipUnless(os.name == "posix", "check entrypoints require Linux/WSL")
+    def test_archived_entrypoints_do_not_write_to_frozen_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline, candidate = root / "baseline", root / "candidate"
+            scripts = baseline / "scripts"
+            scripts.mkdir(parents=True)
+            for name in ("check_candidate.py", "check_baseline.py", "check_environment.py"):
+                shutil.copy2(Path(__file__).resolve().parents[1] / name, scripts / name)
+            for path in (baseline / "elixir/lib", baseline / "elixir/priv", baseline / ".github",
+                         candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
+                path.mkdir(parents=True)
+            (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
+            mix = root / "mix"
+            mix.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+            mix.chmod(0o700)
+            environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            before = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
+            for name in ("check_candidate.py", "check_baseline.py"):
+                subprocess.run([sys.executable, str(scripts / name), str(candidate)], env=environment, check=True)
+                after = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
+                self.assertEqual(before, after, f"{name} mutated the frozen baseline")
 
 
 if __name__ == "__main__":
