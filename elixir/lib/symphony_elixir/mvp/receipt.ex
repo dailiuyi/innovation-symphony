@@ -43,6 +43,13 @@ defmodule SymphonyElixir.Mvp.Receipt do
     end
   end
 
+  @spec update_round(Path.t(), String.t(), map()) :: :ok
+  def update_round(file, status, fields) do
+    rounds = read(file)["rounds"]
+    updated = List.update_at(rounds, -1, &Map.merge(&1, fields))
+    update(file, status, %{"rounds" => updated})
+  end
+
   @spec read(Path.t()) :: map()
   def read(file), do: file |> File.read!() |> Jason.decode!()
 

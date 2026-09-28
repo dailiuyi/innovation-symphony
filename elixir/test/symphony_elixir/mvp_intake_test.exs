@@ -42,6 +42,24 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     assert settings.max_rework == 0
   end
 
+  test "A1 max_rework accepts only integers 0 through 2, including disabled configurations" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+
+    for limit <- [0, 1, 2, 3, -1, 1.0, "1", nil] do
+      config = Map.put(valid_mvp_config(Path.join(workflow_dir, "state")), "max_rework", limit)
+
+      for enabled <- [true, false] do
+        write_mvp_workflow!(Map.put(config, "enabled", enabled), Path.join(workflow_dir, "workspaces"))
+
+        if is_integer(limit) and limit in 0..2 do
+          assert {:ok, %{max_rework: ^limit}} = MvpConfig.settings()
+        else
+          assert {:error, :mvp_rework_not_supported} = MvpConfig.settings()
+        end
+      end
+    end
+  end
+
   test "enabled settings reject missing or unsafe required values" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     workspace_root = Path.join(workflow_dir, "workspace")

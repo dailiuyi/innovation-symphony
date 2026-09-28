@@ -270,7 +270,8 @@ defmodule SymphonyElixir.GitHub.Client do
         url: settings.api_url <> path,
         headers: github_headers(settings.token),
         params: params,
-        connect_options: [timeout: 30_000]
+        connect_options: [timeout: 30_000],
+        retry: if(request_method == :post, do: false, else: :safe_transient)
       ]
 
       request_opts = if is_nil(body), do: request_opts, else: Keyword.put(request_opts, :json, body)
