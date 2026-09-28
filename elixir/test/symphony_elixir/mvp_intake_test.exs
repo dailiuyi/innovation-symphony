@@ -450,7 +450,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       {"missing state path", Map.delete(config_for.(%{}), "state_dir"), {:missing_mvp_setting, :state_dir}},
       {"blank state path", config_for.(%{"state_dir" => "  "}), {:missing_mvp_setting, :state_dir}},
       {"invalid timeout", config_for.(%{"check_timeout_ms" => -1}), :invalid_mvp_check_timeout_ms},
-      {"unsupported rework", config_for.(%{"max_rework" => 1}), :mvp_rework_not_supported},
+      {"unsupported rework", config_for.(%{"max_rework" => 3}), :mvp_rework_not_supported},
       {"invalid ready label", config_for.(%{"ready_label" => 7}), :invalid_mvp_ready_label}
     ]
 
