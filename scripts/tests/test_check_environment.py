@@ -1,0 +1,88 @@
+"""Regression coverage for controller configuration leaking into checks."""
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import check_baseline
+import check_candidate
+from check_environment import isolated_environment
+
+
+class CheckEnvironmentTest(unittest.TestCase):
+    def setUp(self):
+        self.variables = {
+            "GITHUB_REPO": "fixture/repository",
+            "GITHUB_TOKEN": "fixture-controller-token",
+            "GH_TOKEN": "fixture-cli-token",
+            "MIX_HOME": "/fixture/mix-cache",
+        }
+        environment = patch.dict(os.environ, self.variables)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def assert_isolated(self, environment):
+        for name in ("GITHUB_REPO", "GITHUB_TOKEN", "GH_TOKEN"):
+            self.assertNotIn(name, environment)
+            self.assertEqual(os.environ[name], self.variables[name])
+        self.assertEqual(environment["MIX_HOME"], self.variables["MIX_HOME"])
+        self.assertEqual(environment.get("PATH"), os.environ.get("PATH"))
+
+    def test_real_child_cannot_observe_controller_configuration(self):
+        environment = isolated_environment()
+        self.assert_isolated(environment)
+        result = subprocess.run(
+            [sys.executable, "-c", "import os; print([k for k in ('GITHUB_REPO', 'GITHUB_TOKEN', 'GH_TOKEN') if k in os.environ])"],
+            env=environment, capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "[]")
+
+    def test_every_candidate_step_uses_isolation_and_preserves_check_order(self):
+        with patch.object(sys, "argv", ["check_candidate.py", "/fixture/candidate"]), patch.object(
+            check_candidate.subprocess, "run"
+        ) as run:
+            check_candidate.main()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["mix", "deps", "get"], ["mix", "format", "--check-formatted"],
+            ["mix", "lint"], ["mix", "test", "--cover"],
+            ["mix", "dialyzer", "--format", "short"], ["mix", "build"],
+        ])
+        for call in run.call_args_list:
+            self.assert_isolated(call.kwargs["env"])
+            self.assertTrue(call.kwargs["check"])
+            self.assertEqual(call.kwargs["cwd"], Path("/fixture/candidate").resolve() / "elixir")
+
+    def test_failure_stops_later_candidate_steps(self):
+        with patch.object(sys, "argv", ["check_candidate.py", "/fixture/candidate"]), patch.object(
+            check_candidate.subprocess, "run", side_effect=subprocess.CalledProcessError(3, ["mix", "deps", "get"])
+        ) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                check_candidate.main()
+        self.assertEqual(run.call_count, 1)
+
+    def test_frozen_baseline_check_uses_isolation_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline, candidate = root / "baseline", root / "candidate"
+            for path in (baseline / "elixir/lib", baseline / "elixir/priv", baseline / ".github",
+                         candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
+                path.mkdir(parents=True)
+            (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
+            with patch.object(sys, "argv", ["check_baseline.py", str(candidate)]), patch.object(
+                check_baseline, "__file__", str(baseline / "scripts/check_baseline.py")
+            ), patch.object(check_baseline.subprocess, "run", side_effect=subprocess.CalledProcessError(2, ["mix", "test"])) as run:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    check_baseline.main()
+            self.assert_isolated(run.call_args.kwargs["env"])
+            self.assertEqual(run.call_args.args[0], ["mix", "test"])
+            self.assertTrue(run.call_args.kwargs["check"])
+            self.assertFalse(run.call_args.kwargs["cwd"].exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

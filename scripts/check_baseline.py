@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from check_environment import isolated_environment
+
 
 def main() -> None:
     candidate = Path(sys.argv[1]).resolve() / "elixir"
@@ -27,7 +29,7 @@ def main() -> None:
         template = baseline.parent / ".github" / "pull_request_template.md"
         (harness.parent / ".github").mkdir()
         shutil.copy2(template, harness.parent / ".github" / template.name)
-        subprocess.run(["mix", "test"], cwd=harness, check=True)
+        subprocess.run(["mix", "test"], cwd=harness, env=isolated_environment(), check=True)
 
 
 if __name__ == "__main__":

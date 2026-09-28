@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。当前没有已接入的平台凭据、运行中的控制器、真实任务或云服务。验证范围见 [VALIDATION_V0.md](VALIDATION_V0.md)。
+已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。私有 GitHub 仓库和真实 Issue #1 已接入。首轮在检查阶段 blocked，控制器已停止；未合并候选、未部署云服务。验证范围见 [VALIDATION_V0.md](VALIDATION_V0.md)，显式重跑授权见 IS-017。
 
-本机目录为 `E:\code\innovation-symphony`。已初始化本地 Git 仓库，未创建远端或提交。后续以实际 Git 状态核实这些时间性信息。
+本机目录为 `E:\code\innovation-symphony`，远端为私有仓库 `dailiuyi/innovation-symphony`，已有 V0 基线提交。提交及运行状态以当前 Git 和回执核实。
 
 ## 预览
 
@@ -40,7 +40,7 @@ python -m http.server 43222 --bind 127.0.0.1 --directory E:\code\innovation-symp
 
 2026-09-28，抽离后验证通过：9 份 Markdown 的 17 个本地链接均可解析；HTTP 预览内容与新项目 HTML 一致；ready 自动领取文案、任务筛选、模型选择、1440px 桌面截图和 390px 手机布局检查通过，无浏览器脚本错误。独立只读审查发现原型曾以 ready 命名“待人工审查”，已改为独立内部状态 awaiting_review，ready 保留为启动门槛。
 
-保存文件、Git 提交、发布到远端、安装执行服务与云端部署分别报告。当前没有真实任务派发、业务项目验收、提供商调用、合并或部署。
+保存文件、Git 提交、发布到远端、安装执行服务与云端部署分别报告。真实任务派发及提供商调用已发生；完整自迭代验收、合并及候选升级尚未完成。
 
 
 ## 官方实现与 V0 本地检查
@@ -63,6 +63,14 @@ mix build
 
 `mvp.check` 不连接 GitHub、不验证模型可用性、不启动调度。上方 example/example 和 local-validation-only 是本地解析占位值，不是仓库或凭据。未设置 repo/token 时检查会报配置缺失。默认 disabled 可安全核对模板；运行目录中的工作流填写真实值后再检查。`mvp.enabled=false` 表示暂停新派发，需停止进程才能确保当前工作也已停止；不要删除整个 mvp 配置块来停机。
 
-仓库尚未创建，当前停在此处。未来经明确接入授权后，设置 GITHUB_REPO/GITHUB_TOKEN、模型白名单与允许的 ready 操作者，将 mvp.enabled 设为 true，并使用上游 CLI 的显式 guardrails acknowledgement 开关启动。首次启用会扫描获准的存量 ready Issue，不能作为只读连通性测试。
+本仓库已获得明确接入及 Issue #1 派发授权。新接入时设置 GITHUB_REPO/GITHUB_TOKEN、模型白名单与允许的 ready 操作者，将 mvp.enabled 设为 true，并使用上游 CLI 的显式 guardrails acknowledgement 开关启动。首次启用会扫描获准的存量 ready Issue，不能作为只读连通性测试。
 
 自迭代运行时，固定版本 A 安装在候选工作区之外。修改发生在 B 的工作区；PR 待人审核。完整领取状态及 evidence 必须在升级时保留，已进入编码/发布阶段的失败不自动重试。具体恢复命令见 IMPLEMENTATION_V0.md。
+
+### 检查环境与显式重跑
+
+`scripts/check_candidate.py` 和 `scripts/check_baseline.py` 调用 Mix 时移除 `GITHUB_REPO`、`GITHUB_TOKEN`、`GH_TOKEN`。保留 PATH、Mix/Hex/mise 缓存等构建配置；不修改父进程环境。控制器已有的动态凭据过滤继续适用。这是当前 GitHub MVP 的配置隔离，不是通用环境白名单或安全沙箱。
+
+回归命令：`python3 -m unittest discover -s scripts/tests -v`。检查步骤、错误传播及覆盖率门槛保持不变。
+
+首轮失败候选保留在 `/var/tmp/innovation-symphony-v0/workspaces/GH-1`，回执与证据在同级 `state` 目录。经本次显式重跑授权，使用独立的运行目录、状态目录、工作区；启动前核对队列只有获准的 Issue，记录原回执和新基线 SHA。禁止通过清空原状态目录实现重试。新轮仍停在 Draft PR 或 blocked，结果单独报告。
