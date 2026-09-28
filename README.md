@@ -1,0 +1,43 @@
+# innovation-symphony
+
+面向公司多仓库研发任务的 Symphony 框架。目标是部署到云端，统一接入 GitLab 与 GitHub；机器人自动发现带有 `ready` 标签的 Issue，领取并执行所属仓库的任务。
+
+当前阶段：基于 [官方 Symphony](https://github.com/openai/symphony) 的 Elixir 实现开发 GitHub MVP。复用其调度、工作区、GitHub Client、AppServer 和状态页面，补充评论选模型、独立 Review、检查门禁和 Draft PR 交付。人工合并与升级。
+
+GitHub 仓库尚未创建；当前仅本地开发与测试，没有真实派发或云部署。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
+
+## 已确认的使用方式
+
+1. 在已接入仓库创建 Issue，写明需求。
+2. 可选：在一条独立 Issue 评论中，通过约定格式指定编码模型和 Review 模型。
+3. 添加 `ready` 标签，机器人自动发现并领取执行，无需用户先指派机器人。
+4. 在代码平台及查看型后台了解进度、日志和结果。`ready`、`review`、`blocked` 等标签承担基本工作流状态；模型选择通过评论解析。
+
+每个仓库分别配置编码和 Review 默认模型；用户显式指定优先，未指定角色沿用仓库默认。各仓库独立处理任务，第一版不跨仓库修改。
+
+## 文档与原型
+
+- [文档入口](docs/README.md)
+- [已确认需求](docs/REQUIREMENTS.md)
+- [决策记录与被替代的决定](docs/DECISIONS.md)
+- [待讨论问题](docs/OPEN_QUESTIONS.md)
+- [架构与试点提案](docs/DESIGN_PROPOSAL.md)
+- [Issue 交互协议草案](docs/ISSUE_PROTOCOL.md)
+- [运行与交付说明](docs/OPERATIONS.md)
+- [后台 HTML 原型](prototypes/symphony-dashboard.html)
+- [第一版实际架构](prototypes/mvp-architecture.html)（官方复用与新增门禁）
+- [架构与决策审核图](prototypes/architecture-review.html)（官方 Symphony 对照、候选模块、待定边界）
+
+## 查看原型
+
+在项目根目录运行：
+
+```sh
+python -m http.server 43221 --bind 127.0.0.1 --directory prototypes
+```
+
+然后访问 [本机预览](http://127.0.0.1:43221/symphony-dashboard.html)。也可以直接用浏览器打开 HTML 文件。此命令仅预览原型，不启动机器人或云端服务。
+
+原型包含虚构的 Unity、Android、iOS、Web 仓库与任务，支持筛选、任务详情、日志和按仓库选择两种默认模型。模型设置仅保存在当前页面内存；没有真实计费、模型调用或 Issue 解析。
+
+后续继续逐步确认需求，架构建议不自动视为已批准实现。项目从博客讨论中独立出来；不会继承博客的 ready 队列、凭据、固定 Reviewer 或部署授权。
