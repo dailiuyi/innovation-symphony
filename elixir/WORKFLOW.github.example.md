@@ -36,6 +36,8 @@ mvp:
   ready_label: ready
   state_dir: /var/tmp/innovation-symphony/state
   check_timeout_ms: 900000
+  # Integer 0..2; 0 preserves V0. 1/2 enable rejection comments and bounded rework.
+  # See ../docs/REVIEW_REWORK.md; interrupted/uncertain attempts never auto-resume.
   max_rework: 0
   checks:
     - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}"]

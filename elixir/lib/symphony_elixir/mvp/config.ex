@@ -18,7 +18,7 @@ defmodule SymphonyElixir.Mvp.Config do
           checks: [[String.t()]],
           state_dir: Path.t() | nil,
           check_timeout_ms: pos_integer(),
-          max_rework: 0,
+          max_rework: 0..2,
           ready_label: String.t()
         }
 
@@ -59,7 +59,8 @@ defmodule SymphonyElixir.Mvp.Config do
 
   defp disabled_settings(config) do
     with {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
-         {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)) do
+         {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
+         :ok <- max_rework(Map.get(config, "max_rework", 0)) do
       {:ok,
        %{
          enabled: false,
@@ -70,7 +71,7 @@ defmodule SymphonyElixir.Mvp.Config do
          checks: [],
          state_dir: nil,
          check_timeout_ms: check_timeout_ms,
-         max_rework: 0,
+         max_rework: Map.get(config, "max_rework", 0),
          ready_label: ready_label
        }}
     end
@@ -99,7 +100,7 @@ defmodule SymphonyElixir.Mvp.Config do
          checks: checks,
          state_dir: state_dir,
          check_timeout_ms: check_timeout_ms,
-         max_rework: 0,
+         max_rework: Map.get(config, "max_rework", 0),
          ready_label: ready_label
        }}
     end
@@ -179,7 +180,7 @@ defmodule SymphonyElixir.Mvp.Config do
   defp positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
   defp positive_integer(_value), do: {:error, :invalid_mvp_check_timeout_ms}
 
-  defp max_rework(0), do: :ok
+  defp max_rework(value) when is_integer(value) and value in 0..2, do: :ok
   defp max_rework(_value), do: {:error, :mvp_rework_not_supported}
 
   defp label(value) when is_binary(value) do

@@ -327,3 +327,11 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - <only include when something was confusing during execution>
 ````
+
+## GitHub MVP compatibility
+
+This upstream Linear workflow is not the GitHub MVP configuration. For GitHub use
+`WORKFLOW.github.example.md`. Its `mvp.max_rework` defaults to 0 and accepts only
+integers 0..2. Explicit 1/2 enables bounded rejection rework and original-Issue
+feedback; uncertainty or interruption stops execution. See
+[the rework contract](../docs/REVIEW_REWORK.md) for review fields and evidence.

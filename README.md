@@ -4,7 +4,7 @@
 
 当前阶段：基于 [官方 Symphony](https://github.com/openai/symphony) 的 Elixir 实现开发 GitHub MVP。复用其调度、工作区、GitHub Client、AppServer 和状态页面，补充评论选模型、独立 Review、检查门禁和 Draft PR 交付。人工合并与升级。
 
-GitHub 仓库尚未创建；当前仅本地开发与测试，没有真实派发或云部署。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
+GitHub MVP 的历史接入与授权见决策记录；本次 GH-1 增加可选的有限 Review 返工和拒绝理由回帖，默认 `max_rework=0` 保持兼容，显式 1/2 启用。当前任务结果仅在本地工作区，未发布或升级。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
 
 ## 已确认的使用方式
 

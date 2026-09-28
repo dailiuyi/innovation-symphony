@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
   use SymphonyElixir.TestSupport
 
   alias Mix.Tasks.PrBody.Check, as: PrBodyCheck
-  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Receipt}
+  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Feedback, Intake, Receipt}
 
   @review_schema %{
     "type" => "object",
@@ -570,6 +570,391 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
     assert Receipt.read(context.receipt)["status"] == "publish_pending"
     refute Map.has_key?(Receipt.read(context.receipt), "pull_request")
   end
+
+  test "A2 A4 A5 A8 A9 A10 rejection is posted before rework and only the final checked SHA is published" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    rejected = test_review(false)
+    opts = rework_opts(context, [rejected, test_review(true)])
+
+    assert {:ok, _} = execute_rework(context, 2, opts)
+    data = Receipt.read(context.receipt)
+    assert data["rework_count"] == 1
+    assert [first, second] = data["rounds"]
+    assert first["review"] == rejected
+    assert second["review"]["approved"]
+    assert first["candidate_sha"] != second["candidate_sha"]
+    assert data["candidate_sha"] == second["candidate_sha"]
+    assert first["base_sha"] == second["base_sha"]
+    assert first["base_sha"] == data["base_sha"]
+    assert first["comment"]["id"] == 101
+    assert first["comment"]["candidate_sha"] == first["candidate_sha"]
+    assert first["comment"]["round"] == 1
+    assert first["comment"]["body"] =~ "＠alice"
+    refute first["comment"]["body"] =~ "@"
+    assert first["comment"]["body"] =~ "&lt;/pre&gt;"
+
+    for round <- data["rounds"] do
+      assert round["models"] == %{"coder" => "coder-model", "reviewer" => "reviewer-model"}
+      assert File.read!(Path.join(round["evidence"], "check-1.log")) =~ round["candidate_sha"]
+      assert Jason.decode!(File.read!(Path.join(round["evidence"], "review.json"))) == round["review"]
+      assert round["usage"]["coder"]["input_tokens"] == 10
+      assert round["usage"]["reviewer"]["input_tokens"] == 10
+      assert round["usage"]["coder"]["cost"] == nil
+    end
+
+    assert data["usage"]["input_tokens"] == %{"observed" => 40, "complete" => true}
+    assert data["usage"]["output_tokens"] == %{"observed" => nil, "complete" => false}
+    assert data["usage"]["cost"] == nil
+    assert_receive {:rework_call, 1, :coder, _, _}
+    assert_receive {:rework_call, 1, :reviewer, _, _}
+    assert_receive {:comment_post, 1}
+    assert_receive {:rework_call, 2, :coder, prompt, _}
+    assert prompt =~ rejected["summary"]
+    assert prompt =~ "not new authorization"
+    assert_receive {:rework_call, 2, :reviewer, _, _}
+    assert_receive {:mvp_publish_call, _, _, _, _, sha, _, _}
+    assert sha == second["candidate_sha"]
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    refute_receive {:comment_post, _}
+  end
+
+  test "A4 rework approval delivers exactly one draft PR from the final verified commit" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [test_review(false), test_review(true)])
+    comment_request = opts[:request_fun]
+
+    request = fn method, path, params, body, settings ->
+      if String.ends_with?(path, "/comments") do
+        comment_request.(method, path, params, body, settings)
+      else
+        sha = Receipt.read(context.receipt)["candidate_sha"]
+        publish_request(self(), sha: sha).(method, path, params, body, settings)
+      end
+    end
+
+    opts = Keyword.merge(opts, publish: &Delivery.publish/7, request_fun: request, ready_label: "ready")
+    assert {:ok, "https://github.com/owner/repo/pull/42"} = execute_rework(context, 1, opts)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_human"
+    assert remote_ref_sha(context, data["branch"]) == List.last(data["rounds"])["candidate_sha"]
+    assert_receive {:mvp_delivery_request, "POST", "/repos/owner/repo/pulls", _, body}
+    assert body["draft"] == true
+    assert body["head"] == data["branch"]
+    refute_receive {:mvp_delivery_request, "POST", "/repos/owner/repo/pulls", _, _}
+    assert {:error, :mvp_execution_already_started} = execute_rework(context, 1, opts)
+  end
+
+  test "A1 legacy malformed review remains a non-rework failure" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = executor_opts(context, agent: agent_stub(self(), review_result: %{}), publish: recording_publish(self()))
+    assert {:error, :mvp_review_not_approved} = execute_rework(context, 0, opts)
+    refute Map.has_key?(Receipt.read(context.receipt), "rounds")
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "A10 model comments arriving after claim cannot replace frozen models during rework" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+
+    settings = %{
+      coder_model: "coder-model",
+      reviewer_model: "reviewer-model",
+      allowed_models: ["coder-model", "reviewer-model", "new-model"],
+      allowed_actors: ["alice"],
+      ready_label: "ready"
+    }
+
+    assert {:ok, frozen} = Intake.resolve_comments([], settings)
+    opts = rework_opts(context, [test_review(false), test_review(true)])
+    request = opts[:request_fun]
+    agent = opts[:agent]
+    new_comment = %{"id" => 2, "user" => %{"login" => "alice", "type" => "User"}, "body" => "/symphony models coder=new-model reviewer=new-model"}
+
+    options =
+      Keyword.merge(opts,
+        request_fun: fn method, path, params, body, tracker ->
+          Process.put(:runtime_model_comments, [new_comment])
+          request.(method, path, params, body, tracker)
+        end,
+        agent: fn workspace, prompt, issue, agent_opts ->
+          if length(Receipt.read(context.receipt)["rounds"]) == 2 do
+            assert {:ok, %{coder: "new-model", reviewer: "new-model"}} =
+                     Intake.resolve_comments(Process.get(:runtime_model_comments), settings)
+
+            assert agent_opts[:model] in Map.values(frozen)
+          end
+
+          agent.(workspace, prompt, issue, agent_opts)
+        end
+      )
+
+    assert {:ok, _} = execute_rework(context, 1, options)
+    assert Receipt.read(context.receipt)["models"] == %{"coder" => frozen.coder, "reviewer" => frozen.reviewer}
+  end
+
+  test "A3 continuous rejection posts the final reason and exhausts exactly the configured budget" do
+    for limit <- [1, 2] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, List.duplicate(test_review(false), 3))
+      assert {:error, :mvp_rework_exhausted} = execute_rework(context, limit, opts)
+      data = Receipt.read(context.receipt)
+      assert data["status"] == "blocked"
+      assert data["rework_count"] == limit
+      assert length(data["rounds"]) == limit + 1
+      assert Enum.map(data["rounds"], & &1["comment"]["id"]) == Enum.to_list(101..(101 + limit))
+      assert Enum.all?(data["rounds"], &(&1["review"]["approved"] == false))
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    end
+  end
+
+  test "A6 comment failures retain intent and restart cannot resend or reset the budget" do
+    for response <- [{:error, :timeout}, {:ok, %{status: 403}}, {:ok, %{status: 201, body: %{}}}] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, [test_review(false)], comment_response: response)
+      assert {:error, :mvp_comment_uncertain} = execute_rework(context, 2, opts)
+      before = Receipt.read(context.receipt)
+      assert before["status"] == "comment_pending"
+      assert before["rework_count"] == 0
+      assert [round] = before["rounds"]
+      assert round["comment"]["id"] == nil
+      assert {:error, :mvp_execution_already_started} = execute_rework(context, 2, opts)
+      assert {:error, :mvp_receipt_exists} = Receipt.claim(%{state_dir: Path.dirname(context.receipt)}, context.issue)
+      assert {:error, :mvp_comment_already_attempted} = Feedback.post(context.receipt, test_review(false), opts)
+      assert Receipt.read(context.receipt) == before
+      assert_receive {:comment_post, 1}
+      refute_receive {:comment_post, _}
+      refute_receive {:rework_call, 2, _, _, _}
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    end
+  end
+
+  test "A6 interrupted rework persists its count before invoking coder and cannot automatically resume" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [test_review(false)], interrupt: true)
+    assert catch_throw(execute_rework(context, 2, opts)) == :interrupted
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "coding"
+    assert data["rework_count"] == 1
+    assert length(data["rounds"]) == 2
+    assert List.last(data["rounds"])["candidate_sha"] == nil
+    assert {:error, :mvp_execution_already_started} = execute_rework(context, 2, opts)
+    assert Receipt.read(context.receipt) == data
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "A9 interruption before any second coder message retains observed totals but marks usage incomplete" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [test_review(false)])
+    original_agent = opts[:agent]
+    original_request = opts[:request_fun]
+    observed = %{"input_tokens" => 20, "output_tokens" => 5, "total_tokens" => 25}
+
+    agent = fn workspace, prompt, issue, agent_opts ->
+      data = Receipt.read(context.receipt)
+
+      if length(data["rounds"]) == 2 do
+        refute agent_opts[:read_only]
+        assert hd(data["rounds"])["comment"]["id"] == 101
+        throw(:before_second_coder_message)
+      end
+
+      output = if agent_opts[:read_only], do: 3, else: 2
+      agent_opts[:on_message].(%{usage: %{input_tokens: 10, output_tokens: output, total_tokens: 10 + output}})
+      original_agent.(workspace, prompt, issue, agent_opts)
+    end
+
+    request = fn method, path, params, body, settings ->
+      data = Receipt.read(context.receipt)
+      assert data["usage"] == Map.new(observed, fn {key, value} -> {key, %{"observed" => value, "complete" => true}} end) |> Map.put("cost", nil)
+      original_request.(method, path, params, body, settings)
+    end
+
+    opts = Keyword.merge(opts, agent: agent, request_fun: request)
+    assert catch_throw(execute_rework(context, 2, opts)) == :before_second_coder_message
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "coding"
+    assert data["rework_count"] == 1
+    assert [first, second] = data["rounds"]
+    assert first["review"]["approved"] == false
+    assert first["comment"]["id"] == 101
+    assert first["usage"]["coder"] == %{"input_tokens" => 10, "output_tokens" => 2, "total_tokens" => 12, "cost" => nil}
+    assert first["usage"]["reviewer"] == %{"input_tokens" => 10, "output_tokens" => 3, "total_tokens" => 13, "cost" => nil}
+    unknown = %{"input_tokens" => nil, "output_tokens" => nil, "total_tokens" => nil, "cost" => nil}
+    assert second["usage"] == %{"coder" => unknown, "reviewer" => unknown}
+    assert second["candidate_sha"] == nil
+    refute Map.has_key?(second, "review")
+    assert data["usage"] == Map.new(observed, fn {key, value} -> {key, %{"observed" => value, "complete" => false}} end) |> Map.put("cost", nil)
+    assert {:error, :mvp_execution_already_started} = execute_rework(context, 2, opts)
+    assert Receipt.read(context.receipt) == data
+    assert_receive {:rework_call, 1, :coder, _, _}
+    assert_receive {:rework_call, 1, :reviewer, _, _}
+    assert_receive {:comment_post, 1}
+    refute_receive {:rework_call, _, _, _, _}
+    refute_receive {:comment_post, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "A9 initial interruption before telemetry persists unknown usage only in rework mode" do
+    for limit <- [0, 1, 2] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      agent = fn _, _, _, _ -> throw(:before_first_coder_message) end
+      opts = executor_opts(context, agent: agent, publish: recording_publish(self()))
+      assert catch_throw(execute_rework(context, limit, opts)) == :before_first_coder_message
+      data = Receipt.read(context.receipt)
+      assert data["status"] == "coding"
+      assert data["rework_count"] == 0
+
+      if limit == 0 do
+        refute Map.has_key?(data, "rounds")
+        refute Map.has_key?(data, "usage")
+      else
+        assert [round] = data["rounds"]
+        unknown = %{"input_tokens" => nil, "output_tokens" => nil, "total_tokens" => nil, "cost" => nil}
+        assert round["usage"] == %{"coder" => unknown, "reviewer" => unknown}
+
+        assert data["usage"] == %{
+                 "input_tokens" => %{"observed" => nil, "complete" => false},
+                 "output_tokens" => %{"observed" => nil, "complete" => false},
+                 "total_tokens" => %{"observed" => nil, "complete" => false},
+                 "cost" => nil
+               }
+      end
+
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    end
+  end
+
+  test "A7 failed checks, model failures and malformed reviews never post or rework" do
+    for failure <- [:check, :coder, :reviewer, :invalid] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, [test_review(false)], failure: failure)
+      checks = if failure == :check, do: [["false"]], else: [["true"]]
+      assert {:error, _} = execute_rework(context, 2, opts, checks)
+      data = Receipt.read(context.receipt)
+      assert data["status"] == "blocked"
+      assert data["rework_count"] == 0
+      assert length(data["rounds"]) == 1
+      refute_receive {:comment_post, _}
+      refute_receive {:rework_call, 2, _, _, _}
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    end
+  end
+
+  test "A7 rework mode still rejects changed metadata, HEAD, candidate and baseline" do
+    for tamper <- [:metadata, :head, :candidate, :baseline, :review_candidate, :review_baseline, :review_metadata] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, [test_review(false)], tamper: tamper)
+
+      checks =
+        case tamper do
+          :candidate -> [["touch", "{workspace}/changed.txt"]]
+          :baseline -> [["touch", "{baseline}/changed.txt"]]
+          _ -> [["true"]]
+        end
+
+      assert {:error, _} = execute_rework(context, 2, opts, checks)
+      assert Receipt.read(context.receipt)["status"] == "blocked"
+      refute_receive {:comment_post, _}
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    end
+  end
+
+  test "A1 executor rejects out of range settings before invoking any adapter" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+
+    for value <- [3, -1, 1.0, "1"] do
+      assert {:error, :mvp_rework_not_supported} = execute_rework(context, value, [])
+    end
+
+    assert Receipt.read(context.receipt)["status"] == "claimed"
+  end
+
+  defp execute_rework(context, limit, opts, checks \\ [["git", "rev-parse", "HEAD"]]) do
+    Executor.run(context.workspace, context.issue, Map.put(check_settings(checks), :max_rework, limit), models(), context.receipt, opts)
+  end
+
+  defp test_review(approved) do
+    %{
+      "approved" => approved,
+      "summary" => if(approved, do: "Ready", else: "@alice </pre> missing meaningful tests"),
+      "criteria" => [
+        %{
+          "acceptance" => "A1 candidate behavior",
+          "tests" => if(approved, do: ["test/candidate_test.exs: asserts output"], else: []),
+          "assertion_strength" => "Assert the exact candidate output",
+          "failure_sensitivity" => "Removing the output must fail this assertion",
+          "adequate" => approved
+        }
+      ]
+    }
+  end
+
+  defp rework_opts(context, reviews, options \\ []) do
+    agent = fn workspace, prompt, _issue, opts ->
+      data = Receipt.read(context.receipt)
+      number = length(data["rounds"])
+      role = if opts[:read_only], do: :reviewer, else: :coder
+      assert opts[:model] == Map.fetch!(models(), role)
+      assert opts[:tools] == false
+      assert data["rework_count"] == number - 1
+
+      if number > 1 do
+        assert Enum.at(data["rounds"], number - 2)["comment"]["id"] == 100 + number - 1
+      end
+
+      send(self(), {:rework_call, number, role, prompt, opts})
+      opts[:on_message].(%{payload: %{"params" => %{"tokenUsage" => %{"total" => %{"inputTokens" => 10}}}}})
+      if number == 2 and options[:interrupt], do: throw(:interrupted)
+
+      cond do
+        options[:failure] == role ->
+          {:error, :model_failed}
+
+        role == :coder ->
+          File.write!(Path.join(workspace, "candidate.txt"), "round #{number}\n")
+          tamper_git!(options[:tamper], workspace)
+          {:ok, %{usage: %{input_tokens: 10}}}
+
+        true ->
+          assert prompt =~ "EVERY acceptance requirement"
+          assert opts[:output_schema]["required"] == ["approved", "summary", "criteria"]
+          rework_review_tamper(context, options[:tamper])
+          review = rework_review(reviews, number, options[:failure])
+          {:ok, %{output_text: Jason.encode!(review)}}
+      end
+    end
+
+    request = fn "POST", "/repos/owner/repo/issues/42/comments", %{}, body, _settings ->
+      data = Receipt.read(context.receipt)
+      round = List.last(data["rounds"])
+      assert data["status"] == "comment_pending"
+      assert round["comment"]["body"] == body["body"]
+      assert File.exists?(Path.join(round["evidence"], "review.json"))
+      send(self(), {:comment_post, round["round"]})
+      Keyword.get(options, :comment_response, {:ok, %{status: 201, body: %{"id" => 100 + round["round"], "body" => body["body"]}}})
+    end
+
+    executor_opts(context, agent: agent, request_fun: request, publish: recording_publish(self()))
+  end
+
+  defp rework_review(_reviews, _number, :invalid), do: %{"approved" => false}
+  defp rework_review(reviews, number, _failure), do: Enum.at(reviews, number - 1)
+
+  defp rework_review_tamper(context, :review_candidate), do: File.write!(Path.join(context.workspace, "candidate.txt"), "tampered")
+  defp rework_review_tamper(context, :review_baseline), do: File.write!(context.receipt <> ".evidence/baseline/source.txt", "tampered")
+  defp rework_review_tamper(context, :review_metadata), do: tamper_git!(:metadata, context.workspace)
+  defp rework_review_tamper(_, _), do: :ok
 
   defp execution_context! do
     root = Path.join(System.tmp_dir!(), "symphony-mvp-executor-#{System.unique_integer([:positive])}")

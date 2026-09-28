@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.Delivery do
   @moduledoc "Controller-owned GitHub draft PR delivery and read-only reconciliation."
 
   alias SymphonyElixir.GitHub.Client
-  alias SymphonyElixir.Mvp.{Commands, Intake, Receipt}
+  alias SymphonyElixir.Mvp.{Commands, Feedback, Intake, Receipt}
 
   @spec repository(map(), keyword()) :: {:ok, map()} | {:error, term()}
   def repository(issue, opts) do
@@ -79,6 +79,14 @@ defmodule SymphonyElixir.Mvp.Delivery do
   def reconcile(receipt, opts \\ []) do
     data = Receipt.read(receipt)
 
+    if is_list(data["rounds"]) and data["status"] in ["comment_pending", "blocked"] do
+      Feedback.reconcile(receipt, opts)
+    else
+      reconcile_pull(receipt, data, opts)
+    end
+  end
+
+  defp reconcile_pull(receipt, data, opts) do
     with true <- data["status"] in ["publish_pending", "awaiting_human"],
          {:ok, [pull]} <- matching_pulls(data["repository"], data["branch"], opts),
          :ok <- verify_pull(pull, data["repository"], data["branch"], data["candidate_sha"], data["base"]) do

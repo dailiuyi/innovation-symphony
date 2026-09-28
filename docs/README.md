@@ -3,6 +3,7 @@
 | 内容 | 文档 |
 | --- | --- |
 | V0 实现范围与恢复边界 | [IMPLEMENTATION_V0.md](IMPLEMENTATION_V0.md) |
+| GH-1 有限返工合同与验收对应 | [REVIEW_REWORK.md](REVIEW_REWORK.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |
 | 官方来源及改动接缝 | [UPSTREAM.md](UPSTREAM.md) |
 | 当前产品需求与范围 | [REQUIREMENTS.md](REQUIREMENTS.md) |
