@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
   use SymphonyElixir.TestSupport
 
   alias Mix.Tasks.PrBody.Check, as: PrBodyCheck
-  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Feedback, Intake, Receipt}
+  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Feedback, Intake, OperatorRecheck, Receipt}
 
   @review_schema %{
     "type" => "object",
@@ -802,7 +802,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
   end
 
   test "A9 initial interruption before telemetry persists unknown usage only in rework mode" do
-    for limit <- [0, 1, 2] do
+    for limit <- 0..5 do
       context = execution_context!()
       on_exit(fn -> File.rm_rf(context.root) end)
       agent = fn _, _, _, _ -> throw(:before_first_coder_message) end
@@ -832,7 +832,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
     end
   end
 
-  test "A7 failed checks, model failures and malformed reviews never post or rework" do
+  test "A7 unclassified check failures, model failures and malformed reviews never post or rework" do
     for failure <- [:check, :coder, :reviewer, :invalid] do
       context = execution_context!()
       on_exit(fn -> File.rm_rf(context.root) end)
@@ -873,11 +873,870 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
     context = execution_context!()
     on_exit(fn -> File.rm_rf(context.root) end)
 
-    for value <- [3, -1, 1.0, "1"] do
+    for value <- [6, -1, 1.0, "1"] do
       assert {:error, :mvp_rework_not_supported} = execute_rework(context, value, [])
     end
 
     assert Receipt.read(context.receipt)["status"] == "claimed"
+  end
+
+  test "repairable checks and review rejection share one budget and preserve full logs" do
+    for check_round <- [1, 2] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+
+      reviews =
+        if check_round == 1 do
+          [nil, test_review(false), test_review(true)]
+        else
+          [test_review(false), nil, test_review(true)]
+        end
+
+      opts = rework_opts(context, reviews)
+
+      script =
+        "if test \"$(cat candidate.txt)\" = 'round #{check_round}'; then printf 'FIRST assertion failure\\n'; head -c 40000 /dev/zero | tr '\\000' x; printf '\\377\\nLAST coverage failure\\n'; exit 10; fi; git rev-parse HEAD"
+
+      assert {:ok, _} = execute_rework(context, 2, opts, [["sh", "-c", script]])
+      data = Receipt.read(context.receipt)
+      assert data["rework_count"] == 2
+      assert data["check_failure"] == nil
+      assert length(data["rounds"]) == 3
+      failed = Enum.at(data["rounds"], check_round - 1)
+      assert failed["check_failure"]["exit_status"] == 10
+      refute Map.has_key?(failed, "review")
+      refute Map.has_key?(failed, "comment")
+      log = File.read!(failed["check_failure"]["log_path"])
+      assert byte_size(log) > 40_000
+      assert String.starts_with?(log, "FIRST assertion failure\n")
+      assert String.ends_with?(log, "LAST coverage failure\n")
+      refute String.valid?(log)
+      assert Jason.decode!(File.read!(Path.join(failed["evidence"], "check-1.json")))["repairable"]
+      next_round = check_round + 1
+      assert_receive {:rework_call, ^next_round, :coder, prompt, _}
+      assert prompt =~ "FIRST assertion failure"
+      assert prompt =~ "LAST coverage failure"
+      assert prompt =~ "Middle omitted"
+      assert prompt =~ failed["check_failure"]["log_path"]
+      assert prompt =~ "not new authorization"
+      assert String.valid?(prompt)
+      assert Enum.uniq(Enum.map(data["rounds"], & &1["base_sha"])) == [data["base_sha"]]
+      assert_receive {:mvp_publish_call, _, _, _, _, sha, _, _}
+      assert sha == List.last(data["rounds"])["candidate_sha"]
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+
+      for number <- 1..3 do
+        if number != next_round, do: assert_receive({:rework_call, ^number, :coder, _, _})
+        if number != check_round, do: assert_receive({:rework_call, ^number, :reviewer, _, _})
+      end
+
+      review_round = if check_round == 1, do: 2, else: 1
+      assert_receive {:comment_post, ^review_round}
+      refute_receive {:rework_call, ^check_round, :reviewer, _, _}
+    end
+  end
+
+  test "repairable checks exhaust exactly the shared budget without invoking reviewer or posting" do
+    for limit <- [1, 2] do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, [])
+      assert {:error, :mvp_rework_exhausted} = execute_rework(context, limit, opts, [["sh", "-c", "echo assertion; exit 10"]])
+      data = Receipt.read(context.receipt)
+      assert data["status"] == "blocked"
+      assert data["rework_count"] == limit
+      assert length(data["rounds"]) == limit + 1
+      assert Enum.all?(data["rounds"], &(&1["check_failure"]["repairable"] == true))
+      assert_receive {:rework_call, 2, :coder, prompt, _}
+      assert prompt =~ "assertion"
+      refute prompt =~ "Middle omitted"
+      refute_receive {:rework_call, _, :reviewer, _, _}
+      refute_receive {:comment_post, _}
+      refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+      assert {:error, :mvp_execution_already_started} = execute_rework(context, limit, opts)
+      assert Receipt.read(context.receipt) == data
+    end
+  end
+
+  test "max_rework zero keeps classified check failures terminal" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = executor_opts(context, agent: agent_stub(self()), publish: recording_publish(self()))
+    assert {:error, {:mvp_check_failed, 1}} = execute_rework(context, 0, opts, [["sh", "-c", "exit 10"]])
+    assert Receipt.read(context.receipt)["check_failure"]["exit_status"] == 10
+    refute Map.has_key?(Receipt.read(context.receipt), "rounds")
+    refute_receive {:mvp_agent_call, _, :reviewer, _, _, _, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "mixed check and review failures cannot grant a fourth coding round" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [nil, test_review(false)])
+    check = ["sh", "-c", "test \"$(cat candidate.txt)\" = 'round 2' || exit 10"]
+    assert {:error, :mvp_rework_exhausted} = execute_rework(context, 2, opts, [check])
+    data = Receipt.read(context.receipt)
+    assert data["rework_count"] == 2
+    assert [first, second, third] = data["rounds"]
+    assert first["check_failure"]["repairable"]
+    assert second["review"]["approved"] == false
+    assert third["check_failure"]["repairable"]
+    assert third["candidate_sha"] != first["candidate_sha"]
+    assert_receive {:rework_call, 2, :coder, prompt, _}
+    assert prompt =~ "previous candidate failed a controller check"
+    refute_receive {:rework_call, 4, _, _, _}
+    refute_receive {:rework_call, 3, :reviewer, _, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "failed checks cannot rework a changed candidate baseline or Git metadata" do
+    commands = [
+      "echo changed >> candidate.txt",
+      "touch {baseline}/changed.txt",
+      "git config candidate.changed true",
+      "git -c user.name=CheckFixture -c user.email=fixture@example.invalid commit --allow-empty -m changed"
+    ]
+
+    for command <- commands do
+      context = execution_context!()
+      on_exit(fn -> File.rm_rf(context.root) end)
+      opts = rework_opts(context, [])
+      assert {:error, :mvp_candidate_or_baseline_changed} = execute_rework(context, 2, opts, [["sh", "-c", command <> " || exit 90; exit 10"]])
+      assert length(Receipt.read(context.receipt)["rounds"]) == 1
+      refute_receive {:rework_call, 2, _, _, _}
+      refute_receive {:comment_post, _}
+    end
+  end
+
+  test "logged commands preserve early stdout stderr and partial timeout output" do
+    root = Path.join(System.tmp_dir!(), "symphony-check-log-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf(root) end)
+    log = Path.join(root, "check.log")
+    assert {:ok, 10} = Commands.run_logged(["sh", "-c", "printf early; head -c 5000 /dev/zero; printf late >&2; exit 10"], root, 10_000, log)
+    assert File.read!(log) == "early" <> String.duplicate(<<0>>, 5000) <> "late"
+    assert {:ok, 124} = Commands.run_logged(["sh", "-c", "echo before-timeout; sleep 5"], root, 1, log)
+    assert File.read!(log) == "before-timeout\n"
+    previous = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous) end)
+    System.put_env("PATH", "")
+    assert {:error, :mvp_requires_gnu_timeout} = Commands.run_logged(["true"], root, 1, log)
+    assert {:error, :mvp_requires_gnu_timeout} = Commands.run(["true"], root, 1)
+    assert File.read!(log) == ""
+  end
+
+  test "missing check runner records a terminal diagnostic without retrying" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [])
+    assert {:error, {:mvp_check_failed, 1}} = execute_rework(context, 2, opts, [["/missing/check-runner"]])
+    failure = Receipt.read(context.receipt)["check_failure"]
+    assert failure["exit_status"] == 127
+    refute failure["repairable"]
+    assert File.read!(failure["log_path"]) =~ "/missing/check-runner"
+    refute_receive {:rework_call, 2, _, _, _}
+  end
+
+  test "unavailable timeout records its execution error before integrity checks stop the run" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    previous = System.get_env("PATH")
+    opts = rework_opts(context, [])
+
+    opts =
+      Keyword.put(opts, :on_message, fn
+        %{event: :mvp_check_started} -> System.put_env("PATH", "")
+        _ -> :ok
+      end)
+
+    try do
+      assert {:error, :mvp_candidate_or_baseline_changed} = execute_rework(context, 2, opts, [["true"]])
+    after
+      restore_env("PATH", previous)
+    end
+
+    result = Jason.decode!(File.read!(context.receipt <> ".evidence/round-1/check-1.json"))
+    assert result["exit_status"] == nil
+    assert result["error"] =~ "mvp_requires_gnu_timeout"
+    refute result["repairable"]
+    refute_receive {:rework_call, 2, _, _, _}
+  end
+
+  test "operator check resume preserves original evidence and consumes the existing shared budget" do
+    context = blocked_check_context!()
+    old = File.read!(context.receipt)
+    old_log = File.read!(Path.join(context.evidence, "round-1/check-1.log"))
+    checks = [["sh", "-c", "test \"$(cat candidate.txt)\" != 'round 1' || { printf 'repair this candidate'; exit 10; }"]]
+    context = put_in(context.settings.checks, checks)
+    context = %{context | opts: rework_opts(context, [nil, test_review(false), test_review(true)])}
+
+    assert {:ok, _} = Executor.resume_checks(context, receipt_digest(context))
+    data = Receipt.read(context.receipt)
+    assert data["base_sha"] == context.base
+    assert data["rework_count"] == 2
+    assert [first, second, third] = data["rounds"]
+    assert first["candidate_sha"] == Jason.decode!(old)["candidate_sha"]
+    assert first["checks"] == [["sh", "-c", "printf 'original blocked check'; exit 1"]]
+    assert first["operator_check_resume"]["checks"] == checks
+    resume = first["operator_check_resume"]["evidence"]
+    assert File.read!(Path.join(resume, "receipt-before.json")) == old
+    assert File.read!(Path.join(first["evidence"], "check-1.log")) == old_log
+    assert File.read!(Path.join(resume, "check-1.log")) == "repair this candidate"
+    assert first["check_failure"]["log_path"] == Path.join(resume, "check-1.log")
+    assert second["review"]["approved"] == false
+    assert third["review"]["approved"]
+    assert_receive {:rework_call, 2, :coder, prompt, _}
+    assert prompt =~ "repair this candidate"
+    assert_receive {:rework_call, 3, :coder, _, _}
+    assert_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    assert {:error, :mvp_execution_already_started} = execute_rework(context, 2, context.opts)
+  end
+
+  test "operator check resume can review the same SHA without replacing old logs or restarting coder" do
+    context = blocked_check_context!()
+    old = File.read!(context.receipt)
+    before = Receipt.read(context.receipt)
+    context = put_in(context.settings.checks, [["true"]])
+    assert {:ok, _} = Executor.resume_checks(context, receipt_digest(context))
+    data = Receipt.read(context.receipt)
+    assert data["candidate_sha"] == before["candidate_sha"]
+    assert data["rework_count"] == 0
+    assert [round] = data["rounds"]
+    assert File.read!(Path.join(round["evidence"], "check-1.log")) == "original blocked check"
+    refute File.exists?(Path.join(round["evidence"], "review.json"))
+    resume = round["operator_check_resume"]["evidence"]
+    assert File.read!(Path.join(resume, "receipt-before.json")) == old
+    assert Jason.decode!(File.read!(Path.join(resume, "review.json")))["approved"]
+    assert data["check_failure"] == nil
+    refute_receive {:rework_call, _, :coder, _, _}
+    assert_receive {:rework_call, 1, :reviewer, _, _}
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, receipt_digest(context))
+  end
+
+  test "operator check resume rejects changed authorization status bindings and candidate integrity before checks" do
+    for mutation <- [
+          :digest,
+          :status,
+          :reason,
+          :repository,
+          :issue,
+          :workspace,
+          :branch,
+          :models,
+          :base,
+          :budget,
+          :count,
+          :round_number,
+          :round_model,
+          :round_base,
+          :round_sha,
+          :round_evidence,
+          :review,
+          :comment,
+          :metadata,
+          :baseline,
+          :candidate,
+          :head,
+          :current_branch,
+          :settings_limit
+        ] do
+      context = blocked_check_context!()
+      context = put_in(context.settings.checks, [["touch", "{workspace}/must-not-run"]])
+      context = resume_tamper(context, mutation)
+      before = File.read!(context.receipt)
+      digest = if mutation == :digest, do: String.duplicate("0", 64), else: receipt_digest(context)
+      assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, digest), "mutation #{mutation}"
+      assert File.read!(context.receipt) == before
+      refute File.exists?(Path.join(context.workspace, "must-not-run"))
+      refute File.exists?(Path.join(context.evidence, "operator-check-resume.lock"))
+      refute_receive {:rework_call, _, _, _, _}
+    end
+  end
+
+  test "operator check resume guards an interrupted accepted attempt and cannot retry even after receipt rollback" do
+    context = blocked_check_context!()
+    old = File.read!(context.receipt)
+    digest = receipt_digest(context)
+
+    on_message = fn _ ->
+      assert Receipt.read(context.receipt)["status"] == "checking"
+      throw(:interrupted_check)
+    end
+
+    context = %{context | opts: Keyword.put(context.opts, :on_message, on_message)}
+    assert catch_throw(Executor.resume_checks(context, digest)) == :interrupted_check
+    assert File.exists?(Path.join(context.evidence, "operator-check-resume.lock"))
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, receipt_digest(context))
+    File.write!(context.receipt, old)
+    assert {:error, {:mvp_resume_guard, :eexist}} = Executor.resume_checks(context, digest)
+  end
+
+  test "operator check resume keeps unknown errors terminal" do
+    for limit <- [1, 2] do
+      context = blocked_check_context!(limit)
+      assert {:error, {:mvp_check_failed, 1}} = Executor.resume_checks(context, receipt_digest(context))
+      assert Receipt.read(context.receipt)["rework_count"] == 0
+      assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, receipt_digest(context))
+      refute_receive {:rework_call, _, _, _, _}
+    end
+  end
+
+  test "operator check resume cannot grant a coding round after the shared budget is exhausted" do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [test_review(false), test_review(false)])
+    checks = [["sh", "-c", "test \"$(cat candidate.txt)\" != 'round 3' || exit 1"]]
+    assert {:error, {:mvp_check_failed, 1}} = execute_rework(context, 2, opts, checks)
+    for number <- 1..3, do: assert_receive({:rework_call, ^number, :coder, _, _})
+    resume = resume_context(context, [["sh", "-c", "exit 10"]], opts, 2)
+    assert {:error, :mvp_rework_exhausted} = Executor.resume_checks(resume, receipt_digest(context))
+    assert Receipt.read(context.receipt)["rework_count"] == 2
+    assert length(Receipt.read(context.receipt)["rounds"]) == 3
+    refute_receive {:rework_call, _, :coder, _, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "operator budget extension preserves two spent repairs and allows exactly three more, retaining resume history" do
+    context = exhausted_check_context!()
+    old = File.read!(context.receipt)
+    old_data = Receipt.read(context.receipt)
+    old_resume = old_data["operator_check_resume"]
+    old_resume_receipt = File.read!(Path.join(old_resume["evidence"], "receipt-before.json"))
+    old_log = File.read!(Path.join(old_resume["evidence"], "check-1.log"))
+    context = %{context | issue: %{context.issue | title: "Authorized readonly preflight", description: "Inspect only"}}
+    digest = receipt_digest(context)
+
+    assert {:error, :mvp_rework_exhausted} = Executor.extend_rework(context, digest, 2)
+    data = Receipt.read(context.receipt)
+    assert data["max_rework"] == 5
+    assert data["rework_count"] == 5
+    assert length(data["rounds"]) == 6
+    assert data["usage"]["input_tokens"] == %{"observed" => 80, "complete" => false}
+    assert Enum.take(data["rounds"], 2) == Enum.take(old_data["rounds"], 2)
+    assert data["base_sha"] == old_data["base_sha"]
+    assert data["operator_check_resume"] == old_resume
+    assert File.read!(Path.join(old_resume["evidence"], "receipt-before.json")) == old_resume_receipt
+    assert File.read!(Path.join(old_resume["evidence"], "check-1.log")) == old_log
+    assert File.exists?(Path.join(context.evidence, "operator-check-resume.lock"))
+    audit = data["operator_rework_extension"]
+    assert audit["previous_limit"] == 2
+    assert audit["new_limit"] == 5
+    assert audit["rework_count"] == 2
+    assert audit["receipt_sha256"] == digest
+    assert audit["candidate_sha"] == old_data["candidate_sha"]
+    assert audit["issue_scope"]["title"] == "Authorized readonly preflight"
+    assert audit["issue_scope"]["description"] == "Inspect only"
+    assert File.read!(Path.join(audit["evidence"], "receipt-before.json")) == old
+    assert Jason.decode!(File.read!(Path.join(audit["evidence"], "authorization.json"))) == audit
+    for number <- 4..6, do: assert_receive({:rework_call, ^number, :coder, _, _})
+    refute_receive {:rework_call, _, :reviewer, _, _}
+    refute_receive {:rework_call, 7, _, _, _}
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+    assert {:error, :mvp_execution_already_started} = execute_rework(context, 5, context.opts)
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+  end
+
+  test "operator budget extension rechecks and reviews the pinned SHA without spending a repair when checks now pass" do
+    context = exhausted_check_context!()
+    old = Receipt.read(context.receipt)
+    context = put_in(context.settings.checks, [["true"]])
+    context = %{context | opts: rework_opts(context, [nil, nil, test_review(true)])}
+    assert {:ok, _} = Executor.extend_rework(context, receipt_digest(context), 2)
+    data = Receipt.read(context.receipt)
+    assert data["candidate_sha"] == old["candidate_sha"]
+    assert data["rework_count"] == 2
+    assert length(data["rounds"]) == 3
+    assert_receive {:rework_call, 3, :reviewer, prompt, _}
+    assert prompt =~ context.issue.title
+    refute_receive {:rework_call, _, :coder, _, _}
+    assert_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "operator budget extension requires a larger bounded integer total and the exact exhausted old limit" do
+    context = exhausted_check_context!()
+    old = File.read!(context.receipt)
+    digest = receipt_digest(context)
+
+    invalid_limits = [{0, 5}, {1, 5}, {3, 5}, {5, 5}, {2.0, 5}, {"2", 5}, {2, 2}, {2, 1}, {2, 6}, {2, 3.0}, {2, "5"}]
+
+    for {previous, next} <- invalid_limits do
+      invalid = %{context | limit: next, settings: %{context.settings | max_rework: next}}
+      assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(invalid, digest, previous)
+      assert File.read!(context.receipt) == old
+      refute File.exists?(Path.join(context.evidence, "operator-rework-extension.lock"))
+    end
+
+    refute_receive {:rework_call, _, _, _, _}
+  end
+
+  test "operator budget extension rejects stale digest, identity, evidence and candidate changes before accepting" do
+    for mutation <- [
+          :digest,
+          :status,
+          :repository,
+          :issue,
+          :workspace,
+          :branch,
+          :models,
+          :base,
+          :budget,
+          :round_number,
+          :round_model,
+          :round_base,
+          :round_sha,
+          :round_evidence,
+          :review,
+          :comment,
+          :metadata,
+          :baseline,
+          :candidate,
+          :head,
+          :current_branch,
+          :settings_limit
+        ] do
+      context = exhausted_check_context!()
+      context = resume_tamper(context, mutation)
+      old = File.read!(context.receipt)
+      digest = if mutation == :digest, do: String.duplicate("0", 64), else: receipt_digest(context)
+      assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, digest, 2), "mutation #{mutation}"
+      assert File.read!(context.receipt) == old
+      refute File.exists?(Path.join(context.evidence, "operator-rework-extension.lock"))
+      refute_receive {:rework_call, _, _, _, _}
+    end
+  end
+
+  test "operator budget extension accepts only matching repairable check evidence at exhaustion" do
+    context = exhausted_check_context!()
+    old = File.read!(context.receipt)
+    failure = Receipt.read(context.receipt)["check_failure"]
+
+    for fields <- [
+          %{"reason" => "{:mvp_check_failed, 1}"},
+          %{"rework_count" => 1},
+          %{"rounds" => []},
+          %{"operator_rework_extension" => %{}},
+          %{"check_failure" => nil},
+          %{"check_failure" => Map.put(failure, "repairable", false)},
+          %{"check_failure" => Map.put(failure, "exit_status", 1)},
+          %{"check_failure" => Map.put(failure, "index", 0)},
+          %{"check_failure" => Map.put(failure, "log_path", "other")}
+        ] do
+      Receipt.update(context.receipt, "blocked", fields)
+      before = File.read!(context.receipt)
+      assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+      assert File.read!(context.receipt) == before
+      File.write!(context.receipt, old)
+    end
+
+    Receipt.update_round(context.receipt, "blocked", %{"evidence" => nil})
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+    File.write!(context.receipt, old)
+    File.write!(Path.rootname(failure["log_path"]) <> ".json", "{}")
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+    File.rm!(failure["log_path"])
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+    refute File.exists?(Path.join(context.evidence, "operator-rework-extension.lock"))
+    refute_receive {:rework_call, _, _, _, _}
+  end
+
+  test "operator budget extension guard survives concurrent attempts, interruption and receipt rollback" do
+    context = exhausted_check_context!()
+    old = File.read!(context.receipt)
+    digest = receipt_digest(context)
+    parent = self()
+
+    on_message = fn _ ->
+      send(parent, {:extension_check_started, self()})
+      receive do: (:interrupt -> throw(:interrupted_extension))
+    end
+
+    context = %{context | opts: Keyword.put(context.opts, :on_message, on_message)}
+    task = Task.async(fn -> catch_throw(Executor.extend_rework(context, digest, 2)) end)
+    assert_receive {:extension_check_started, worker}, 5_000
+    assert Receipt.read(context.receipt)["max_rework"] == 5
+    assert Receipt.read(context.receipt)["rework_count"] == 2
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(context, receipt_digest(context), 2)
+    send(worker, :interrupt)
+    assert Task.await(task) == :interrupted_extension
+    File.write!(context.receipt, old)
+    assert {:error, {:mvp_extension_guard, :eexist}} = Executor.extend_rework(context, digest, 2)
+    assert File.read!(context.receipt) == old
+    refute_receive {:rework_call, _, _, _, _}
+  end
+
+  test "legacy resume competitor leaves no permanent guard before acquiring the execution lock" do
+    assert_legacy_competition(:resume)
+  end
+
+  test "legacy extension competitor leaves no permanent guard before acquiring the execution lock" do
+    assert_legacy_competition(:extension)
+  end
+
+  defp assert_legacy_competition(kind) do
+    {context, invoke, guard_name, guard_error} = legacy_competitor(kind)
+    raw = File.read!(context.receipt)
+    guard = Path.join(context.evidence, guard_name)
+    parent = self()
+    task = Task.async(fn -> hold_legacy_lock(context, parent) end)
+
+    assert_receive {:legacy_lock_held, worker}, 5_000
+    assert {:error, :mvp_recheck_guard_or_audit_mismatch} = invoke.()
+    refute File.exists?(guard)
+    assert File.read!(context.receipt) == raw
+    assert File.read!(Path.join(context.evidence, "operator-recheck.lock")) == "legacy"
+    send(worker, :release)
+    assert Task.await(task) == :finished
+
+    assert {:error, {:mvp_check_failed, 1}} = invoke.()
+    assert File.exists?(guard)
+    refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+    # A completed operation still retains its historical one-shot guard.
+    File.write!(context.receipt, raw)
+    assert {:error, {^guard_error, :eexist}} = invoke.()
+  end
+
+  defp hold_legacy_lock(context, parent) do
+    OperatorRecheck.legacy(context, fn ->
+      send(parent, {:legacy_lock_held, self()})
+      receive do: (:release -> :finished)
+    end)
+  end
+
+  defp legacy_competitor(:resume) do
+    context = blocked_check_context!()
+    digest = receipt_digest(context)
+    invoke = fn -> Executor.resume_checks(context, digest) end
+    {context, invoke, "operator-check-resume.lock", :mvp_resume_guard}
+  end
+
+  defp legacy_competitor(:extension) do
+    context = exhausted_check_context!()
+    context = put_in(context.settings.checks, [["sh", "-c", "exit 1"]])
+    digest = receipt_digest(context)
+    invoke = fn -> Executor.extend_rework(context, digest, 2) end
+    {context, invoke, "operator-rework-extension.lock", :mvp_extension_guard}
+  end
+
+  test "operator recheck retains legacy closures and passes the same candidate without coding or budget changes" do
+    context = current_legacy_context!()
+    before = Receipt.read(context.receipt)
+    audit = recheck_audit(context)
+    context = put_in(context.settings.checks, [["sh", "-c", "test -d '{evidence}' && test -f '{baseline}/source.txt'"]])
+    context = %{context | opts: rework_opts(context, [nil, nil, nil, nil, test_review(true)])}
+    assert {:ok, _} = Executor.recheck(context, receipt_digest(context), audit)
+    data = Receipt.read(context.receipt)
+    assert data["candidate_sha"] == before["candidate_sha"]
+    assert data["rework_count"] == 4
+    assert length(data["rounds"]) == 5
+    assert data["models"] == before["models"]
+    assert data["base_sha"] == before["base_sha"]
+    assert_receive {:rework_call, 5, :reviewer, _, _}
+    refute_receive {:rework_call, _, :coder, _, _}
+    root = Path.join(context.evidence, "operator-rechecks")
+    saved = Jason.decode!(File.read!(Path.join([root, audit["id"], "authorization.json"])))
+    assert length(saved["legacy_closure_evidence"]) == 2
+    assert saved["checks"] == context.settings.checks
+    assert saved["runtime_version"] == audit["runtime_version"]
+    completion = Jason.decode!(File.read!(Path.join([root, audit["id"], "completion.json"])))
+    assert completion["final_receipt_sha256"] == receipt_digest(context)
+    assert completion == Jason.decode!(File.read!(Path.join(root, "head.json")))
+    assert File.exists?(Path.join(context.evidence, "operator-check-resume.lock"))
+    assert File.exists?(Path.join(context.evidence, "operator-rework-extension.lock"))
+    refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+  end
+
+  test "operator recheck spends only the final remaining repair and carries verified diagnostic material to coder" do
+    for pass <- [true, false] do
+      context = current_legacy_context!()
+      audit = Map.put(recheck_audit(context), "diagnostic", "Verified minimal runtime_root repair from 94e3768; preserve packaged preflight test")
+      checks = if pass, do: [["sh", "-c", "test \"$(cat candidate.txt)\" = 'round 6' || exit 10"]], else: [["sh", "-c", "exit 10"]]
+      context = put_in(context.settings.checks, checks)
+      context = %{context | opts: rework_opts(context, [nil, nil, nil, nil, nil, test_review(true)])}
+      result = Executor.recheck(context, receipt_digest(context), audit)
+      if pass, do: assert(match?({:ok, _}, result)), else: assert(result == {:error, :mvp_rework_exhausted})
+      assert Receipt.read(context.receipt)["rework_count"] == 5
+      assert length(Receipt.read(context.receipt)["rounds"]) == 6
+      assert Receipt.read(context.receipt)["max_rework"] == 5
+      assert_receive {:rework_call, 6, :coder, prompt, _}
+      assert prompt =~ audit["diagnostic"]
+      assert prompt =~ "log_path"
+      refute_receive {:rework_call, 7, _, _, _}
+    end
+  end
+
+  test "operator recheck serializes operation IDs, retains interruption lock and rejects rollback via every entrypoint" do
+    context = blocked_check_context!()
+    raw = File.read!(context.receipt)
+    audit = recheck_audit(context)
+    parent = self()
+
+    handler = fn _ ->
+      send(parent, {:recheck_started, self()})
+      receive do: (:interrupt -> throw(:recheck_interrupted))
+    end
+
+    context = %{context | opts: Keyword.put(context.opts, :on_message, handler)}
+    task = Task.async(fn -> catch_throw(Executor.recheck(context, receipt_digest(context), audit)) end)
+    assert_receive {:recheck_started, worker}, 5_000
+    File.write!(context.receipt, raw)
+    assert_recheck_rejected(context, audit)
+    assert_recheck_rejected(context, %{audit | "id" => "other"})
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, receipt_digest(context))
+    send(worker, :interrupt)
+    assert Task.await(task) == :recheck_interrupted
+    assert File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+    refute File.exists?(Path.join([context.evidence, "operator-rechecks", audit["id"], "completion.json"]))
+    assert_recheck_rejected(context, %{audit | "id" => "after-interruption"})
+    refute_receive {:rework_call, _, _, _, _}
+  end
+
+  test "operator recheck chains normal failures and rejects same ID, old bytes and stale predecessor" do
+    context = blocked_check_context!()
+    raw = File.read!(context.receipt)
+    audit = recheck_audit(context)
+    assert {:error, {:mvp_check_failed, 1}} = Executor.recheck(context, receipt_digest(context), audit)
+    final = File.read!(context.receipt)
+    assert_recheck_rejected(context, audit)
+    second = %{audit | "id" => "second", "predecessor" => audit["id"]}
+    File.write!(context.receipt, raw)
+    assert_recheck_rejected(context, second)
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_checks(context, receipt_digest(context))
+    File.write!(context.receipt, final)
+    assert_recheck_rejected(context, %{second | "predecessor" => "unknown"})
+    assert {:error, {:mvp_check_failed, 1}} = Executor.recheck(context, receipt_digest(context), second)
+    refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+  end
+
+  test "operator recheck rejects missing or unverifiable legacy termination evidence and input changes before locking" do
+    context = current_legacy_context!()
+    audit = recheck_audit(context)
+    [resume, extension] = audit["legacy_closures"]
+    unrelated = Path.join(context.root, "unrelated-pid.json")
+    File.cp!(resume["pid_record"]["path"], unrelated)
+    wrong_directory = put_in(resume["pid_record"]["path"], unrelated)
+
+    invalid_audits = [
+      %{},
+      %{audit | "id" => "../escape"},
+      %{audit | "runtime_version" => "not-a-version"},
+      %{audit | "legacy_closures" => []},
+      %{audit | "legacy_closures" => [true]},
+      %{audit | "legacy_closures" => [extension, resume]},
+      %{audit | "legacy_closures" => [wrong_directory, extension]},
+      %{audit | "legacy_closures" => [Map.put(resume, "process_result", true), extension]},
+      %{audit | "legacy_closures" => [put_in(resume["result"]["sha256"], String.duplicate("0", 64)), extension]},
+      %{audit | "legacy_closures" => [Map.put(resume, "final_receipt", extension["final_receipt"]), extension]}
+    ]
+
+    for invalid <- invalid_audits do
+      assert_recheck_rejected(context, invalid)
+      refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+    end
+
+    pid_file = resume["pid_record"]["path"]
+    pid = Jason.decode!(File.read!(pid_file)) |> Map.put("pid", String.to_integer(System.pid()))
+    File.write!(pid_file, Jason.encode!(pid))
+    live = put_in(resume["pid_record"]["sha256"], file_digest(pid_file))
+    assert_recheck_rejected(context, %{audit | "legacy_closures" => [live, extension]})
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.recheck(context, String.duplicate("0", 64), audit)
+    wrong_budget = %{context | limit: 4}
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.recheck(wrong_budget, receipt_digest(context), audit)
+    refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+  end
+
+  test "operator recheck final independent rejection stays blocked at five repairs with its comment retained" do
+    context = current_legacy_context!()
+    audit = recheck_audit(context)
+    checks = [["sh", "-c", "test \"$(cat candidate.txt)\" = 'round 6' || exit 10"]]
+    context = put_in(context.settings.checks, checks)
+    context = %{context | opts: rework_opts(context, [nil, nil, nil, nil, nil, test_review(false)])}
+    assert {:error, :mvp_rework_exhausted} = Executor.recheck(context, receipt_digest(context), audit)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "blocked"
+    assert data["max_rework"] == 5
+    assert data["rework_count"] == 5
+    assert List.last(data["rounds"])["comment"]["id"] == 106
+    assert_receive {:rework_call, 6, :coder, _, _}
+    assert_receive {:rework_call, 6, :reviewer, _, _}
+    assert_receive {:comment_post, 6}
+
+    assert {:error, :mvp_resume_binding_mismatch} =
+             Executor.recheck(context, receipt_digest(context), %{audit | "id" => "after-rejection", "predecessor" => audit["id"], "legacy_closures" => []})
+
+    refute_receive {:mvp_publish_call, _, _, _, _, _, _, _}
+  end
+
+  test "operator recheck prevents old budget extension from bypassing the completion chain after receipt rollback" do
+    extension_context = exhausted_check_context!()
+    context = %{extension_context | limit: 2, settings: %{extension_context.settings | max_rework: 2}}
+    raw = File.read!(context.receipt)
+    audit = recheck_audit(context)
+    assert {:error, :mvp_rework_exhausted} = Executor.recheck(context, receipt_digest(context), audit)
+    File.write!(context.receipt, raw)
+    digest = receipt_digest(context)
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.extend_rework(extension_context, digest, 2)
+    assert File.read!(context.receipt) == raw
+    refute File.exists?(Path.join(context.evidence, "operator-rework-extension.lock"))
+  end
+
+  defp current_legacy_context! do
+    context = exhausted_check_context!()
+    checks = [["sh", "-c", "test \"$(cat candidate.txt)\" != 'round 5' || exit 1; exit 10"]]
+    context = put_in(context.settings.checks, checks)
+    assert {:error, {:mvp_check_failed, 1}} = Executor.extend_rework(context, receipt_digest(context), 2)
+    assert_receive {:rework_call, 4, :coder, _, _}
+    assert_receive {:rework_call, 5, :coder, _, _}
+    assert Receipt.read(context.receipt)["rework_count"] == 4
+    context
+  end
+
+  defp recheck_audit(context) do
+    data = Receipt.read(context.receipt)
+    kinds = Enum.filter(["operator_check_resume", "operator_rework_extension"], &(not is_nil(data[&1])))
+
+    closures =
+      for {kind, index} <- Enum.with_index(kinds) do
+        legacy_closure_fixture(context, data, kind, Enum.at(kinds, index + 1))
+      end
+
+    %{
+      "id" => "recheck-1",
+      "authorization" => "Explicit one-time operator authorization",
+      "runtime_version" => String.duplicate("a", 40),
+      "command" => ["elixir", "operator-recheck.exs"],
+      "predecessor" => nil,
+      "legacy_closures" => closures
+    }
+  end
+
+  defp legacy_closure_fixture(context, data, kind, next) do
+    receipt_path = if next, do: Path.join(data[next]["evidence"], "receipt-before.json"), else: context.receipt
+    receipt = Receipt.read(receipt_path)
+    root = Path.join(context.root, "closure-#{kind}")
+    File.mkdir_p!(root)
+    result = Map.new(["status", "candidate_sha", "rework_count", "pull_request"], &{&1, receipt[&1]})
+    result = Map.put(result, "result", "{:error, " <> receipt["reason"] <> "}")
+
+    files = %{
+      "pid_record" => %{"pid" => 999_999_999, "operation" => root, "release" => "/verified/release"},
+      "process_result" => %{"exit_code" => 1},
+      "result" => result,
+      "final_receipt" => receipt
+    }
+
+    Enum.reduce(files, %{"kind" => kind}, fn {name, value}, closure ->
+      path = Path.join(root, "#{name}.json")
+      # The receipt digest binds its original bytes, including whitespace.
+      File.write!(path, if(name == "final_receipt", do: File.read!(receipt_path), else: Jason.encode!(value)))
+      Map.put(closure, name, %{"path" => path, "sha256" => file_digest(path)})
+    end)
+  end
+
+  defp assert_recheck_rejected(context, audit) do
+    assert {:error, :mvp_recheck_guard_or_audit_mismatch} = Executor.recheck(context, receipt_digest(context), audit)
+  end
+
+  defp file_digest(path), do: :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower)
+
+  defp exhausted_check_context! do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    opts = rework_opts(context, [test_review(false), test_review(false)])
+    checks = [["sh", "-c", "test \"$(cat candidate.txt)\" != 'round 3' || exit 1"]]
+    assert {:error, {:mvp_check_failed, 1}} = execute_rework(context, 2, opts, checks)
+    for number <- 1..3, do: assert_receive({:rework_call, ^number, :coder, _, _})
+
+    for number <- 1..2 do
+      assert_receive {:rework_call, ^number, :reviewer, _, _}
+      assert_receive {:comment_post, ^number}
+    end
+
+    context = resume_context(context, [["sh", "-c", "printf 'repairable failure'; exit 10"]], opts, 2)
+    assert {:error, :mvp_rework_exhausted} = Executor.resume_checks(context, receipt_digest(context))
+    %{context | limit: 5, settings: %{context.settings | max_rework: 5}}
+  end
+
+  defp blocked_check_context!(limit \\ 2) do
+    context = execution_context!()
+    on_exit(fn -> File.rm_rf(context.root) end)
+    checks = [["sh", "-c", "printf 'original blocked check'; exit 1"]]
+    opts = rework_opts(context, [test_review(true)])
+    assert {:error, {:mvp_check_failed, 1}} = execute_rework(context, limit, opts, checks)
+    assert_receive {:rework_call, 1, :coder, _, _}
+    resume_context(context, checks, opts, limit)
+  end
+
+  defp resume_context(context, checks, opts, limit) do
+    data = Receipt.read(context.receipt)
+    evidence = context.receipt <> ".evidence"
+    baseline = Path.join(evidence, "baseline")
+
+    digest =
+      Path.wildcard(Path.join(baseline, "**/*"), match_dot: true)
+      |> Enum.map(fn path -> {Path.relative_to(path, baseline), :crypto.hash(:sha256, File.read!(path))} end)
+      |> :erlang.term_to_binary()
+      |> then(&:crypto.hash(:sha256, &1))
+
+    Map.merge(context, %{
+      settings: Map.put(check_settings(checks), :max_rework, limit),
+      models: models(),
+      opts: opts,
+      branch: data["branch"],
+      evidence: evidence,
+      base: data["base_sha"],
+      baseline_digest: digest,
+      limit: limit,
+      metadata: Map.new([".git/config", ".git/info/attributes", ".git/info/exclude"], &{&1, File.read(Path.join(context.workspace, &1))})
+    })
+  end
+
+  defp receipt_digest(context), do: :crypto.hash(:sha256, File.read!(context.receipt)) |> Base.encode16(case: :lower)
+
+  defp resume_tamper(context, :digest), do: context
+  defp resume_tamper(context, :settings_limit), do: put_in(context.settings.max_rework, 1)
+
+  defp resume_tamper(context, mutation) when mutation in [:metadata, :baseline, :candidate, :head, :current_branch] do
+    case mutation do
+      :metadata -> tamper_git!(:metadata, context.workspace)
+      :baseline -> File.write!(Path.join(context.evidence, "baseline/source.txt"), "changed")
+      :candidate -> File.write!(Path.join(context.workspace, "candidate.txt"), "changed")
+      :head -> Commands.git!(["reset", "--hard", context.base], context.workspace)
+      :current_branch -> Commands.git!(["checkout", "-b", "other-branch"], context.workspace)
+    end
+
+    context
+  end
+
+  defp resume_tamper(context, mutation) do
+    {key, value} =
+      %{
+        status: {"status", "checking"},
+        reason: {"reason", ":mvp_rework_exhausted"},
+        repository: {"repository", "other/repo"},
+        issue: {"issue", "99"},
+        workspace: {"workspace", "other"},
+        branch: {"branch", "other"},
+        models: {"models", %{}},
+        base: {"base_sha", "other"},
+        budget: {"max_rework", 1},
+        count: {"rework_count", 1},
+        round_number: {"round", 2},
+        round_model: {"models", %{}},
+        round_base: {"base_sha", "other"},
+        round_sha: {"candidate_sha", "other"},
+        round_evidence: {"evidence", "other"},
+        review: {"review", %{}},
+        comment: {"comment", %{}}
+      }[mutation]
+
+    if mutation in [:round_number, :round_model, :round_base, :round_sha, :round_evidence, :review, :comment] do
+      Receipt.update_round(context.receipt, "blocked", %{key => value})
+    else
+      Receipt.update(context.receipt, if(key == "status", do: value, else: "blocked"), %{key => value})
+    end
+
+    context
   end
 
   defp execute_rework(context, limit, opts, checks \\ [["git", "rev-parse", "HEAD"]]) do
@@ -909,9 +1768,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
       assert opts[:tools] == false
       assert data["rework_count"] == number - 1
 
-      if number > 1 do
-        assert Enum.at(data["rounds"], number - 2)["comment"]["id"] == 100 + number - 1
-      end
+      assert_previous_feedback(data, number)
 
       send(self(), {:rework_call, number, role, prompt, opts})
       opts[:on_message].(%{payload: %{"params" => %{"tokenUsage" => %{"total" => %{"inputTokens" => 10}}}}})
@@ -950,6 +1807,18 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
 
   defp rework_review(_reviews, _number, :invalid), do: %{"approved" => false}
   defp rework_review(reviews, number, _failure), do: Enum.at(reviews, number - 1)
+
+  defp assert_previous_feedback(_data, 1), do: :ok
+
+  defp assert_previous_feedback(data, number) do
+    previous = Enum.at(data["rounds"], number - 2)
+
+    if previous["check_failure"] do
+      assert previous["check_failure"]["repairable"]
+    else
+      assert previous["comment"]["id"] == 100 + number - 1
+    end
+  end
 
   defp rework_review_tamper(context, :review_candidate), do: File.write!(Path.join(context.workspace, "candidate.txt"), "tampered")
   defp rework_review_tamper(context, :review_baseline), do: File.write!(context.receipt <> ".evidence/baseline/source.txt", "tampered")

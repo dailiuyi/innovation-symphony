@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @wall_deadline_key {__MODULE__, :wall_deadline}
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -28,12 +29,50 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, opts \\ []) do
+    with_wall_timeout(Keyword.get(opts, :wall_timeout_ms), fn -> run_session(workspace, prompt, issue, opts) end)
+  end
+
+  defp run_session(workspace, prompt, issue, opts) do
     with {:ok, session} <- start_session(workspace, opts) do
       try do
         run_turn(session, prompt, issue, opts)
       after
         stop_session(session)
       end
+    end
+  end
+
+  # This process-local scope covers initialization and all turn reads without changing
+  # the separately exposed start_session/run_turn API or its legacy idle timeouts.
+  defp with_wall_timeout(timeout, fun) when is_nil(timeout) or (is_integer(timeout) and timeout > 0) do
+    previous = Process.get(@wall_deadline_key)
+    deadline = if timeout, do: System.monotonic_time(:millisecond) + timeout
+    Process.put(@wall_deadline_key, deadline)
+
+    try do
+      fun.()
+    after
+      if is_nil(previous), do: Process.delete(@wall_deadline_key), else: Process.put(@wall_deadline_key, previous)
+    end
+  end
+
+  defp with_wall_timeout(_, _), do: {:error, :invalid_wall_timeout}
+
+  defp read_budget(idle_timeout) do
+    case Process.get(@wall_deadline_key) do
+      nil ->
+        {:ok, idle_timeout}
+
+      deadline ->
+        remaining = deadline - System.monotonic_time(:millisecond)
+        if remaining > 0, do: {:ok, min(idle_timeout, remaining)}, else: {:error, :wall_timeout}
+    end
+  end
+
+  defp read_timeout_error(idle_error) do
+    case read_budget(0) do
+      {:error, :wall_timeout} -> {:error, :wall_timeout}
+      {:ok, _} -> {:error, idle_error}
     end
   end
 
@@ -480,6 +519,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests, output_text) do
+    # Check before receive as well as clamping after: a hot mailbox must not starve
+    # an expired deadline by continually matching messages ahead of an after 0.
+    with {:ok, wait_ms} <- read_budget(timeout_ms) do
+      state = receive_state(timeout_ms, tool_executor, auto_approve_requests, output_text)
+      receive_turn(port, on_message, pending_line, state, wait_ms)
+    end
+  end
+
+  defp receive_turn(port, on_message, pending_line, state, wait_ms) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
@@ -488,25 +536,25 @@ defmodule SymphonyElixir.Codex.AppServer do
           port,
           on_message,
           complete_line,
-          receive_state(timeout_ms, tool_executor, auto_approve_requests, output_text)
+          state
         )
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
           port,
           on_message,
-          timeout_ms,
+          state.timeout_ms,
           pending_line <> to_string(chunk),
-          tool_executor,
-          auto_approve_requests,
-          output_text
+          state.tool_executor,
+          state.auto_approve_requests,
+          state.output_text
         )
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
     after
-      timeout_ms ->
-        {:error, :turn_timeout}
+      wait_ms ->
+        read_timeout_error(:turn_timeout)
     end
   end
 
@@ -998,6 +1046,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+    with {:ok, wait_ms} <- read_budget(timeout_ms) do
+      receive_response(port, request_id, timeout_ms, pending_line, wait_ms)
+    end
+  end
+
+  defp receive_response(port, request_id, timeout_ms, pending_line, wait_ms) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
@@ -1009,8 +1063,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
     after
-      timeout_ms ->
-        {:error, :response_timeout}
+      wait_ms ->
+        read_timeout_error(:response_timeout)
     end
   end
 

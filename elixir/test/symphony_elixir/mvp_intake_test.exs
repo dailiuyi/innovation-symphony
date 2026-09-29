@@ -42,16 +42,16 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     assert settings.max_rework == 0
   end
 
-  test "A1 max_rework accepts only integers 0 through 2, including disabled configurations" do
+  test "A1 max_rework accepts only integers 0 through 5, including disabled configurations" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
 
-    for limit <- [0, 1, 2, 3, -1, 1.0, "1", nil] do
+    for limit <- [0, 1, 2, 3, 4, 5, 6, -1, 1.0, "1", nil] do
       config = Map.put(valid_mvp_config(Path.join(workflow_dir, "state")), "max_rework", limit)
 
       for enabled <- [true, false] do
         write_mvp_workflow!(Map.put(config, "enabled", enabled), Path.join(workflow_dir, "workspaces"))
 
-        if is_integer(limit) and limit in 0..2 do
+        if is_integer(limit) and limit in 0..5 do
           assert {:ok, %{max_rework: ^limit}} = MvpConfig.settings()
         else
           assert {:error, :mvp_rework_not_supported} = MvpConfig.settings()
@@ -81,6 +81,19 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     )
 
     assert {:error, :invalid_mvp_checks} = MvpConfig.settings()
+  end
+
+  test "automatic recovery config is opt in and validated for enabled and disabled MVP" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+
+    for enabled <- [true, false] do
+      config = valid_mvp_config(Path.join(workflow_dir, "recovery-state")) |> Map.put("enabled", enabled)
+      workspace = Path.join(workflow_dir, "recovery-workspaces")
+      write_mvp_workflow!(Map.put(config, "recovery", %{"enabled" => true, "max_rework" => 12}), workspace)
+      assert {:ok, %{recovery: %{enabled: true, max_rework: 12}, max_rework: 0}} = MvpConfig.settings()
+      write_mvp_workflow!(Map.put(config, "recovery", %{"enabled" => true, "stage_attempts" => 0}), workspace)
+      assert {:error, :invalid_mvp_recovery} = MvpConfig.settings()
+    end
   end
 
   test "state directory cannot overlap the workspace root or source tree" do
@@ -511,7 +524,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       {"missing state path", Map.delete(config_for.(%{}), "state_dir"), {:missing_mvp_setting, :state_dir}},
       {"blank state path", config_for.(%{"state_dir" => "  "}), {:missing_mvp_setting, :state_dir}},
       {"invalid timeout", config_for.(%{"check_timeout_ms" => -1}), :invalid_mvp_check_timeout_ms},
-      {"unsupported rework", config_for.(%{"max_rework" => 3}), :mvp_rework_not_supported},
+      {"unsupported rework", config_for.(%{"max_rework" => 6}), :mvp_rework_not_supported},
       {"invalid ready label", config_for.(%{"ready_label" => 7}), :invalid_mvp_ready_label}
     ]
 
@@ -664,6 +677,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
   end
 
   defp yaml_value(value) when is_binary(value), do: Jason.encode!(value)
+  defp yaml_value(value) when is_map(value), do: Jason.encode!(value)
   defp yaml_value(value) when is_integer(value), do: Integer.to_string(value)
   defp yaml_value(value) when is_boolean(value), do: to_string(value)
   defp yaml_value(value) when is_float(value), do: Float.to_string(value)

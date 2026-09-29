@@ -2,10 +2,11 @@ defmodule SymphonyElixir.Mvp.Config do
   @moduledoc "Configuration for the opt-in GitHub MVP intake path."
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Mvp.Recovery
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workflow
 
-  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label)
+  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery)
   @shell_names ["sh", "bash", "dash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]
 
   @type settings :: %{
@@ -18,7 +19,8 @@ defmodule SymphonyElixir.Mvp.Config do
           checks: [[String.t()]],
           state_dir: Path.t() | nil,
           check_timeout_ms: pos_integer(),
-          max_rework: 0..2,
+          max_rework: 0..5,
+          recovery: map(),
           ready_label: String.t()
         }
 
@@ -67,7 +69,8 @@ defmodule SymphonyElixir.Mvp.Config do
   defp disabled_settings(config) do
     with {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
-         :ok <- max_rework(Map.get(config, "max_rework", 0)) do
+         :ok <- max_rework(Map.get(config, "max_rework", 0)),
+         {:ok, recovery} <- Recovery.settings(config["recovery"]) do
       {:ok,
        %{
          enabled: false,
@@ -79,6 +82,7 @@ defmodule SymphonyElixir.Mvp.Config do
          state_dir: nil,
          check_timeout_ms: check_timeout_ms,
          max_rework: Map.get(config, "max_rework", 0),
+         recovery: recovery,
          ready_label: ready_label
        }}
     end
@@ -94,6 +98,7 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, state_dir} <- state_dir(config["state_dir"], workflow_dir),
          {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
          :ok <- max_rework(Map.get(config, "max_rework", 0)),
+         {:ok, recovery} <- Recovery.settings(config["recovery"]),
          {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          :ok <- required_ready_label(workflow_config, ready_label),
          :ok <- validate_path_boundaries(state_dir, workflow_config) do
@@ -108,6 +113,7 @@ defmodule SymphonyElixir.Mvp.Config do
          state_dir: state_dir,
          check_timeout_ms: check_timeout_ms,
          max_rework: Map.get(config, "max_rework", 0),
+         recovery: recovery,
          ready_label: ready_label
        }}
     end
@@ -187,7 +193,7 @@ defmodule SymphonyElixir.Mvp.Config do
   defp positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
   defp positive_integer(_value), do: {:error, :invalid_mvp_check_timeout_ms}
 
-  defp max_rework(value) when is_integer(value) and value in 0..2, do: :ok
+  defp max_rework(value) when is_integer(value) and value in 0..5, do: :ok
   defp max_rework(_value), do: {:error, :mvp_rework_not_supported}
 
   defp label(value) when is_binary(value) do
@@ -252,8 +258,8 @@ defmodule SymphonyElixir.Mvp.Config do
     archive = Path.dirname(runtime_path)
 
     # In an escript, lib_dir points inside the archive, not to a filesystem
-    # directory. Resolve the archive's symlinks before protecting its parent;
-    # keep normal OTP application directories unchanged.
+    # directory. Protect the real archive's containing directory, resolving
+    # symlinks before taking its parent; keep normal OTP paths unchanged.
     cond do
       File.regular?(archive) ->
         with {:ok, canonical_archive} <- PathSafety.canonicalize(archive) do

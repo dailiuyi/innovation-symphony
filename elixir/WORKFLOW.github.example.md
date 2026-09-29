@@ -34,14 +34,19 @@ mvp:
   allowed_models: [YOUR_CODER_MODEL, YOUR_REVIEWER_MODEL]
   allowed_actors: [YOUR_GITHUB_LOGIN]
   ready_label: ready
+  # Keep state/workspaces outside the real escript directory (symlinks resolved).
+  # Invalid MVP settings stop dispatch and are reported in the service log.
   state_dir: /var/tmp/innovation-symphony/state
   check_timeout_ms: 900000
-  # Integer 0..2; 0 preserves V0. 1/2 enable rejection comments and bounded rework.
+  # Integer 0..5; 0 preserves V0. Checks and Review share this rework budget.
+  # Fixed runners: exit 0 passes, exit 10 is repairable, other failures stop.
+  # Complete check logs are retained; only Review rejections post comments.
+  # Tests also require a complete external formatter report bound to this run.
   # See ../docs/REVIEW_REWORK.md; interrupted/uncertain attempts never auto-resume.
   max_rework: 0
   checks:
-    - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}"]
-    - [python3, "{baseline}/scripts/check_baseline.py", "{workspace}"]
+    - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}", --evidence-root, "{evidence}"]
+    - [python3, "{baseline}/scripts/check_baseline.py", "{workspace}", --baseline, "{baseline}", --evidence-root, "{evidence}"]
 ---
 
 GitHub MVP: the controller builds a finite coding/check/review/PR pipeline.

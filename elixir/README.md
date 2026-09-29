@@ -1,4 +1,4 @@
-> GH-1：`mvp.max_rework` 默认 0，显式 1/2 开启有限返工及拒绝理由回帖。评论不确定或运行中断即停止；`mix mvp.reconcile` 仅只读对账，不恢复执行。逐轮证据、Review schema、用量未知值和测试对应见 [REVIEW_REWORK.md](../docs/REVIEW_REWORK.md)。
+> GH-1 / IS-025：`mvp.max_rework` 默认 0，显式 1..5 开启检查与 Review 共用预算的有限返工；完整日志和外部 formatter 的结构化 ExUnit 报告本地保留，Review 拒绝理由回帖。普通及自定义断言可返工；未知检查错误、环境故障、缺失或矛盾报告、评论不确定或运行中断即停止。`mix mvp.reconcile` 仅只读对账，不恢复执行。`Executor.recheck/3` 仅供可信操作者在明确授权、原回执摘要和完整性核对后复检，执行级互斥与前序终态审计保护历史，已用次数不重置，轮询不会自动恢复 blocked。外部新版 `check_baseline.py` 通过 `--baseline` 显式指定原冻结快照；检查命令可用 `--evidence-root "{evidence}"` 将完整报告保存在本轮证据目录。逐轮证据、Review schema、用量未知值和测试对应见 [REVIEW_REWORK.md](../docs/REVIEW_REWORK.md)。
 
 > 本项目基于官方 Symphony 固定提交扩展，来源见 [UPSTREAM.md](../docs/UPSTREAM.md)。下方保留上游运行说明。`WORKFLOW.github.example.md` 是默认停用的 GitHub MVP 示例，使用前填写仓库、用户/模型允许名单及独立路径；`mix mvp.check /absolute/WORKFLOW.md` 仅本地检查，不启动轮询。新增配置、恢复限制及人工交接见 [IMPLEMENTATION_V0.md](../docs/IMPLEMENTATION_V0.md)。不要使用旧 Linear 示例的自动合并流程。
 
@@ -7,6 +7,8 @@ GH-3 新增 escript `--preflight`：保留 guardrails acknowledgement 参数，�
 体检要求 `tracker.active_states` 非空且只能包含 `open`（忽略首尾空白与大小写）。空列表以及包含 `closed`、`ready`、`all` 等其他状态的列表会失败；只有远端查询成功后的空队列才可通过。体检会拒绝任意页中的畸形任务记录，普通轮询仍沿用丢弃畸形记录的兼容行为。
 
 # Symphony Elixir
+
+GitHub MVP 每轮派发前校验 MVP 配置；错误记录为 `MVP dispatch disabled by invalid configuration`，修正工作流后下一轮重新校验。escript 的运行路径边界使用解析符号链接后的实际工件所在目录；普通 OTP/Mix 运行仍使用应用目录。启动验收须覆盖打包产物的 ready 候选门槛，不能仅检查 HTTP 或 `mix mvp.check`。
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.

@@ -45,25 +45,23 @@ class CheckEnvironmentTest(unittest.TestCase):
 
     def test_every_candidate_step_uses_isolation_and_preserves_check_order(self):
         with patch.object(sys, "argv", ["check_candidate.py", "/fixture/candidate"]), patch.object(
-            check_candidate.subprocess, "run"
+            check_candidate, "run_check", return_value=0
         ) as run:
             check_candidate.main()
-        self.assertEqual([call.args[0] for call in run.call_args_list], [
+        self.assertEqual([call.args[1] for call in run.call_args_list], [
             ["mix", "deps", "get"], ["mix", "format", "--check-formatted"],
             ["mix", "lint"], ["mix", "test", "--cover"],
             ["mix", "dialyzer", "--format", "short"], ["mix", "build"],
         ])
         for call in run.call_args_list:
-            self.assert_isolated(call.kwargs["env"])
-            self.assertTrue(call.kwargs["check"])
-            self.assertEqual(call.kwargs["cwd"], Path("/fixture/candidate").resolve() / "elixir")
+            self.assert_isolated(call.args[3])
+            self.assertEqual(call.args[2], Path("/fixture/candidate").resolve() / "elixir")
 
     def test_failure_stops_later_candidate_steps(self):
         with patch.object(sys, "argv", ["check_candidate.py", "/fixture/candidate"]), patch.object(
-            check_candidate.subprocess, "run", side_effect=subprocess.CalledProcessError(3, ["mix", "deps", "get"])
+            check_candidate, "run_check", return_value=1
         ) as run:
-            with self.assertRaises(subprocess.CalledProcessError):
-                check_candidate.main()
+            self.assertEqual(check_candidate.main(), 1)
         self.assertEqual(run.call_count, 1)
 
     def test_frozen_baseline_check_uses_isolation_and_propagates_failure(self):
@@ -74,15 +72,19 @@ class CheckEnvironmentTest(unittest.TestCase):
                          candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
                 path.mkdir(parents=True)
             (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
-            with patch.object(sys, "argv", ["check_baseline.py", str(candidate)]), patch.object(
-                check_baseline, "__file__", str(baseline / "scripts/check_baseline.py")
-            ), patch.object(check_baseline.subprocess, "run", side_effect=subprocess.CalledProcessError(2, ["mix", "test"])) as run:
-                with self.assertRaises(subprocess.CalledProcessError):
-                    check_baseline.main()
-            self.assert_isolated(run.call_args.kwargs["env"])
-            self.assertEqual(run.call_args.args[0], ["mix", "test"])
-            self.assertTrue(run.call_args.kwargs["check"])
-            self.assertFalse(run.call_args.kwargs["cwd"].exists())
+            (baseline / "elixir/frozen-marker").write_text("original baseline", encoding="utf-8")
+            def check_original_snapshot(*args, **kwargs):
+                self.assertEqual((args[2] / "frozen-marker").read_text(), "original baseline")
+                self.assertEqual(kwargs["candidate_root"], candidate)
+                return 10
+
+            with patch.object(sys, "argv", ["check_baseline.py", str(candidate), "--baseline", str(baseline)]), patch.object(
+                check_baseline, "run_check", side_effect=check_original_snapshot
+            ) as run:
+                self.assertEqual(check_baseline.main(), 10)
+            self.assert_isolated(run.call_args.args[3])
+            self.assertEqual(run.call_args.args[:2], ("baseline_test", ["mix", "test"]))
+            self.assertFalse(run.call_args.args[2].exists())
 
     @unittest.skipUnless(os.name == "posix", "check entrypoints require Linux/WSL")
     def test_archived_entrypoints_do_not_write_to_frozen_baseline(self):
@@ -91,12 +93,14 @@ class CheckEnvironmentTest(unittest.TestCase):
             baseline, candidate = root / "baseline", root / "candidate"
             scripts = baseline / "scripts"
             scripts.mkdir(parents=True)
-            for name in ("check_candidate.py", "check_baseline.py", "check_environment.py"):
+            for name in ("check_candidate.py", "check_baseline.py", "check_environment.py", "check_results.py", "check_formatter.exs"):
                 shutil.copy2(Path(__file__).resolve().parents[1] / name, scripts / name)
             for path in (baseline / "elixir/lib", baseline / "elixir/priv", baseline / ".github",
                          candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
                 path.mkdir(parents=True)
             (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
+            for arguments in (["init", "-q"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]):
+                subprocess.run(["git", "-C", str(candidate), *arguments], check=True, capture_output=True)
             mix = root / "mix"
             mix.write_text(f"#!{sys.executable}\n", encoding="utf-8")
             mix.chmod(0o700)
@@ -104,7 +108,9 @@ class CheckEnvironmentTest(unittest.TestCase):
             environment.pop("PYTHONDONTWRITEBYTECODE", None)
             before = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
             for name in ("check_candidate.py", "check_baseline.py"):
-                subprocess.run([sys.executable, str(scripts / name), str(candidate)], env=environment, check=True)
+                result = subprocess.run([sys.executable, str(scripts / name), str(candidate)], env=environment, capture_output=True)
+                # A fake mix exits 0 without a report: fail closed, still no baseline writes.
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 after = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
                 self.assertEqual(before, after, f"{name} mutated the frozen baseline")
 
