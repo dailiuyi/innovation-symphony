@@ -1,54 +1,10 @@
 defmodule SymphonyElixir.Watchdog do
   @moduledoc """
-  Host-local process watchdog. The escript's `--watchdog` entrypoint runs outside
-  the Symphony application. Every mutating operation is serialized by `flock`.
+  Host-local watchdog state and process checks. The CLI runs this outside the
+  Symphony application and serializes operations with a service-level `flock`.
   """
 
   @ack "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
-  @commands ~w(run start pause resume recover status)
-
-  @spec main([String.t()]) :: no_return()
-  def main([command, config_path]) when command in @commands do
-    case load_config(config_path) do
-      {:ok, config} when command == "run" -> loop(config)
-      {:ok, config} -> finish(locked(config, command))
-      error -> finish(error)
-    end
-  end
-
-  def main(_args) do
-    IO.puts(
-      :stderr,
-      "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json"
-    )
-
-    System.halt(1)
-  end
-
-  @spec once(String.t(), String.t()) :: no_return()
-  def once(command, config_path) do
-    result =
-      if System.get_env("SYMPHONY_WATCHDOG_INTERNAL") == "1" do
-        with {:ok, config} <- load_config(config_path), do: step(config, command)
-      else
-        {:error, "internal entrypoint requires the service lock"}
-      end
-
-    finish(result)
-  end
-
-  defp finish(result) do
-    case result do
-      {:ok, state} ->
-        IO.puts(Jason.encode!(state))
-        System.halt(0)
-
-      {:error, reason} ->
-        IO.puts(:stderr, "watchdog: #{reason}")
-        System.halt(1)
-    end
-  end
-
   @spec load_config(String.t()) :: {:ok, map()} | {:error, String.t()}
   def load_config(path) do
     with {:ok, raw} <- File.read(path),
@@ -78,43 +34,6 @@ defmodule SymphonyElixir.Watchdog do
 
   defp absolute_path?(value),
     do: is_binary(value) and Path.type(value) == :absolute and not String.contains?(value, <<0>>)
-
-  defp loop(config) do
-    case locked(config, "check") do
-      {:ok, _} -> :ok
-      {:error, reason} -> IO.puts(:stderr, "watchdog: #{reason}")
-    end
-
-    Process.sleep(config["interval_ms"])
-    loop(config)
-  end
-
-  defp locked(config, command) do
-    with :ok <- File.mkdir_p(config["state_dir"]),
-         true <- File.regular?(config["controller"]),
-         {output, 0} <-
-           System.cmd(
-             "flock",
-             [
-               "-x",
-               "--close",
-               lock_path(config),
-               config["controller"],
-               "--watchdog-once",
-               command,
-               config["config_path"]
-             ],
-             stderr_to_stdout: true,
-             env: [{"SYMPHONY_WATCHDOG_INTERNAL", "1"}]
-           ),
-         {:ok, state} <- Jason.decode(String.trim(output)) do
-      {:ok, state}
-    else
-      false -> {:error, "controller executable missing"}
-      {output, _} -> {:error, String.trim(output)}
-      _ -> {:error, "lock or child command failed"}
-    end
-  end
 
   @spec step(map(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def step(config, command) do
@@ -362,7 +281,7 @@ defmodule SymphonyElixir.Watchdog do
       now < old["next_at"] ->
         blocked(config, state, now, "backoff", "backoff")
 
-      port_busy?(config["port"]) ->
+      port_busy?(config) ->
         blocked(config, state, now, "status port occupied by unknown process", "blocked")
 
       true ->
@@ -469,7 +388,9 @@ defmodule SymphonyElixir.Watchdog do
         Enum.map_join([executable | args], " ", &quote_shell/1) <>
         " >> " <> quote_shell(log) <> " 2>&1 </dev/null & echo $!"
 
-    case System.cmd("sh", ["-c", script],
+    command = Map.get(config, :spawn_command, &System.cmd/3)
+
+    case command.("sh", ["-c", script],
            env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}],
            stderr_to_stdout: true
          ) do
@@ -484,7 +405,7 @@ defmodule SymphonyElixir.Watchdog do
   defp record_spawned_runner(output, config, pointer, executable, now) do
     case Integer.parse(String.trim(output)) do
       {pid, ""} ->
-        case await_identity(pid, config["workflow"], executable, 100) do
+        case await_identity(pid, config, executable, 100) do
           {:ok, identity} ->
             {:ok,
              Map.merge(identity, %{
@@ -505,37 +426,41 @@ defmodule SymphonyElixir.Watchdog do
 
   defp quote_shell(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
-  defp await_identity(pid, workflow, executable, remaining) do
-    case process_identity(pid) do
+  defp await_identity(pid, config, executable, remaining) do
+    Process.sleep(20)
+
+    case process_identity(pid, config) do
       {:ok, identity} ->
-        if matching_command?(identity["cmdline"], workflow, executable) do
+        if matching_command?(identity["cmdline"], config, executable) do
           {:ok, identity}
         else
-          retry_identity(pid, workflow, executable, remaining)
+          retry_identity(pid, config, executable, remaining)
         end
 
       _ ->
-        retry_identity(pid, workflow, executable, remaining)
+        retry_identity(pid, config, executable, remaining)
     end
   end
 
-  defp retry_identity(_pid, _workflow, _executable, 0), do: {:error, :unverifiable}
+  defp retry_identity(_pid, _config, _executable, 0), do: {:error, :unverifiable}
 
-  defp retry_identity(pid, workflow, executable, remaining) do
-    Process.sleep(20)
-    await_identity(pid, workflow, executable, remaining - 1)
+  defp retry_identity(pid, config, executable, remaining) do
+    await_identity(pid, config, executable, remaining - 1)
   end
 
   defp observe(config, state) do
     case state["process"] do
-      %{"pid" => pid} = recorded -> observe_recorded(config, recorded, process_identity(pid))
-      _ -> scan_unrecorded(config)
+      %{"pid" => pid} = recorded ->
+        observe_recorded(config, recorded, process_identity(pid, config))
+
+      _ ->
+        scan_unrecorded(config)
     end
   end
 
   defp observe_recorded(config, recorded, {:ok, current}) do
     if same_process?(current, recorded, config),
-      do: {:alive, recorded},
+      do: {:alive, Map.merge(recorded, current)},
       else: {:blocked, "recorded process identity conflict"}
   end
 
@@ -547,16 +472,21 @@ defmodule SymphonyElixir.Watchdog do
   defp same_process?(current, recorded, config) do
     current["boot_id"] == recorded["boot_id"] and
       current["start_ticks"] == recorded["start_ticks"] and
-      current["cmdline"] == recorded["cmdline"] and recorded["workflow"] == config["workflow"] and
+      recorded["workflow"] == config["workflow"] and
+      matching_command?(
+        recorded["cmdline"],
+        config,
+        Path.join(recorded["install"], "bin/symphony")
+      ) and
       matching_command?(
         current["cmdline"],
-        config["workflow"],
+        config,
         Path.join(recorded["install"], "bin/symphony")
       )
   end
 
   defp scan_unrecorded(config) do
-    case File.ls("/proc") do
+    case File.ls(proc_root(config)) do
       {:ok, entries} ->
         Enum.reduce_while(entries, :absent, &scan_entry(&1, &2, config))
 
@@ -573,13 +503,13 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp scan_pid(pid, previous, config) do
-    case File.read("/proc/#{pid}/cmdline") do
+    case File.read(Path.join([proc_root(config), Integer.to_string(pid), "cmdline"])) do
       {:ok, raw} ->
         if String.contains?(raw, config["workflow"]) and String.contains?(raw, "symphony"),
           do: {:halt, {:blocked, "unrecorded runner-like process #{pid}"}},
           else: {:cont, previous}
 
-      {:error, reason} when reason in [:eacces, :eperm] ->
+      {:error, reason} when reason != :enoent ->
         {:cont, {:blocked, "process table identity inaccessible"}}
 
       _ ->
@@ -587,11 +517,14 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp process_identity(pid) do
-    with {:ok, before} <- File.read("/proc/#{pid}/stat"),
-         {:ok, command} <- File.read("/proc/#{pid}/cmdline"),
-         {:ok, after_read} <- File.read("/proc/#{pid}/stat"),
-         {:ok, boot} <- File.read("/proc/sys/kernel/random/boot_id"),
+  defp process_identity(pid, config) do
+    root = proc_root(config)
+    process = Path.join(root, Integer.to_string(pid))
+
+    with {:ok, before} <- File.read(Path.join(process, "stat")),
+         {:ok, command} <- File.read(Path.join(process, "cmdline")),
+         {:ok, after_read} <- File.read(Path.join(process, "stat")),
+         {:ok, boot} <- File.read(Path.join([root, "sys", "kernel", "random", "boot_id"])),
          {:ok, ticks} <- stat_start_ticks(before),
          {:ok, ^ticks} <- stat_start_ticks(after_read) do
       {:ok,
@@ -624,16 +557,24 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp matching_command?(args, workflow, executable) do
-    is_list(args) and workflow in args and executable in args and @ack in args
+  defp matching_command?(args, config, executable) do
+    expected = [executable, @ack, "--logs-root", config["logs_root"], config["workflow"]]
+
+    is_list(args) and args != [] and Path.basename(hd(args)) != "setsid" and
+      Enum.member?(Enum.chunk_every(args, length(expected), 1, :discard), expected)
   end
 
-  defp port_busy?(nil), do: false
+  defp proc_root(config), do: Map.get(config, :proc_root, "/proc")
 
-  defp port_busy?(port) do
+  defp port_busy?(%{"port" => nil}), do: false
+
+  defp port_busy?(config) do
+    port = config["port"]
     hex = port |> Integer.to_string(16) |> String.pad_leading(4, "0") |> String.upcase()
 
-    Enum.any?(["/proc/net/tcp", "/proc/net/tcp6"], fn path ->
+    Enum.any?(["tcp", "tcp6"], fn table_name ->
+      path = Path.join([proc_root(config), "net", table_name])
+
       case File.read(path) do
         {:ok, table} -> String.match?(table, ~r/:#{hex}\s+[0-9A-F:]+\s+0A\s/)
         _ -> true
@@ -672,5 +613,4 @@ defmodule SymphonyElixir.Watchdog do
 
   defp state_path(config), do: config["status_file"]
   defp audit_path(config), do: Path.join(config["state_dir"], "history.jsonl")
-  defp lock_path(config), do: Path.join(config["state_dir"], "start.lock")
 end

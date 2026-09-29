@@ -8,6 +8,7 @@ defmodule SymphonyElixir.CLI do
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, preflight: :boolean, logs_root: :string, port: :integer]
+  @watchdog_commands ~w(run start pause resume recover status)
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -20,11 +21,89 @@ defmodule SymphonyElixir.CLI do
         }
 
   @spec main([String.t()]) :: no_return()
-  def main(["--watchdog" | args]), do: SymphonyElixir.Watchdog.main(args)
-  def main(["--watchdog-once", command, path]), do: SymphonyElixir.Watchdog.once(command, path)
+  def main(["--watchdog" | args]), do: watchdog_main(args)
+  def main(["--watchdog-once", command, path]), do: watchdog_once(command, path)
 
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
+  end
+
+  defp watchdog_main([command, config_path]) when command in @watchdog_commands do
+    case SymphonyElixir.Watchdog.load_config(config_path) do
+      {:ok, config} when command == "run" -> watchdog_loop(config)
+      {:ok, config} -> watchdog_finish(watchdog_locked(config, command))
+      error -> watchdog_finish(error)
+    end
+  end
+
+  defp watchdog_main(_args) do
+    IO.puts(
+      :stderr,
+      "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json"
+    )
+
+    System.halt(1)
+  end
+
+  defp watchdog_once(command, config_path) do
+    result =
+      if System.get_env("SYMPHONY_WATCHDOG_INTERNAL") == "1" do
+        with {:ok, config} <- SymphonyElixir.Watchdog.load_config(config_path),
+             do: SymphonyElixir.Watchdog.step(config, command)
+      else
+        {:error, "internal entrypoint requires the service lock"}
+      end
+
+    watchdog_finish(result)
+  end
+
+  defp watchdog_finish(result) do
+    case result do
+      {:ok, state} ->
+        IO.puts(Jason.encode!(state))
+        System.halt(0)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "watchdog: #{reason}")
+        System.halt(1)
+    end
+  end
+
+  defp watchdog_loop(config) do
+    case watchdog_locked(config, "check") do
+      {:ok, _} -> :ok
+      {:error, reason} -> IO.puts(:stderr, "watchdog: #{reason}")
+    end
+
+    Process.sleep(config["interval_ms"])
+    watchdog_loop(config)
+  end
+
+  defp watchdog_locked(config, command) do
+    with :ok <- File.mkdir_p(config["state_dir"]),
+         true <- File.regular?(config["controller"]),
+         {output, 0} <-
+           System.cmd(
+             "flock",
+             [
+               "-x",
+               "--close",
+               Path.join(config["state_dir"], "start.lock"),
+               config["controller"],
+               "--watchdog-once",
+               command,
+               config["config_path"]
+             ],
+             stderr_to_stdout: true,
+             env: [{"SYMPHONY_WATCHDOG_INTERNAL", "1"}]
+           ),
+         {:ok, state} <- Jason.decode(String.trim(output)) do
+      {:ok, state}
+    else
+      false -> {:error, "controller executable missing"}
+      {output, _} -> {:error, String.trim(output)}
+      _ -> {:error, "lock or child command failed"}
+    end
   end
 
   @doc false
