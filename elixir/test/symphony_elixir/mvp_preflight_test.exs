@@ -284,6 +284,7 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
           {[{1, {200, [issue(1), unknown_state]}}], {:error, ":github_unknown_payload"}},
           {[{1, {200, full_page}}, {2, {200, [unknown_state]}}], {:error, ":github_unknown_payload"}},
           {[{1, {200, [Map.put(issue(1), "assignee", "alice")]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {403, %{}}}], {:error, "{:github_api_status, 403}"}},
           {[{1, {503, %{}}}, {1, {200, []}}], {:ok, 0}},
           {[{1, {503, %{}}}, {1, {200, full_page}}, {2, {503, %{}}}, {2, {200, [issue(101)]}}], {:ok, 101}},
           {List.duplicate({1, {503, %{}}}, 4), {:error, "{:github_api_status, 503}"}},
@@ -325,6 +326,10 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
 
       page_count = responses |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> length()
       assert length(Regex.scan(~r/retry: /, stderr)) == length(responses) - page_count, stderr
+
+      if expected in [{:error, "{:github_api_status, 403}"}, {:error, "{:github_api_status, 503}"}] do
+        assert stderr =~ "GitHub API request failed", stderr
+      end
 
       case expected do
         {:ok, count} ->

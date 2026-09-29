@@ -53,6 +53,9 @@ defmodule SymphonyElixir.CLI do
     :ok =
       :logger.add_handler(:default, :logger_std_h, %{
         config: %{type: :standard_error},
+        # Match Elixir's handler filters; OTP's defaults drop Elixir-domain logs.
+        filters: [remote_gl: {&:logger_filters.remote_gl/2, :stop}],
+        filter_default: :log,
         formatter: Logger.default_formatter()
       })
 

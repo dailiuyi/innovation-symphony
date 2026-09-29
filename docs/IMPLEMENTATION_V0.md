@@ -26,6 +26,8 @@ escript 的运行路径位于归档内部；路径边界校验先解析真实归
 
 本次 `mix format --check-formatted` 与 `git diff --check` 通过。定向 `mix test test/symphony_elixir/mvp_preflight_test.exs test/symphony_elixir/cli_test.exs test/symphony_elixir/github_adapter_test.exs` 在 Mix.PubSub 启动时因本地 TCP socket `:eperm` 被沙箱阻止，测试未执行；未重试或使用替代测试入口。静态检查、全量测试、100% 覆盖率及打包入口回归均待控制器运行标准门禁，新增断言不代表已经通过或证明真实接入。
 
+后续控制器检查发现打包入口的重试诊断缺失：重建 `:default` 日志处理器时，OTP 默认过滤规则会丢弃 Elixir 域的日志。本次修复显式沿用 Elixir 的 remote group leader 过滤器及 `filter_default: :log`，继续将诊断写入 stderr 并在退出前刷新。保留原重试次数、分页、JSON 与退出码回归，补充无重试的 403 场景，以及 403/重试耗尽 503 的客户端错误日志断言。本地定向测试仍在 Mix.PubSub 初始化时遇到 `:eperm`，未执行测试；完整门禁由控制器验证。
+
 ## 复用与扩展
 
 基线为 openai/symphony 的 `be10a1b79df723d6d7612b5651c8522704dafb2e`，来源与文件范围见 [UPSTREAM.md](UPSTREAM.md)。不再开发独立 Python 调度器。
