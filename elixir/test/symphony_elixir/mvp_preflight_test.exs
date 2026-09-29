@@ -74,6 +74,24 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     end
   end
 
+  test "the default entry point rejects disabled workflows and empty polling states without changing files or runtime", ctx do
+    runtime_workflow = Workflow.workflow_file_path()
+    runtime = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
+
+    for {overrides, reason} <- [
+          {%{"mvp" => %{"enabled" => false}}, :mvp_preflight_requires_enabled_workflow},
+          {%{"tracker" => %{"active_states" => []}}, :mvp_preflight_requires_active_states}
+        ] do
+      write_workflow(ctx, overrides)
+      before = files(ctx.root)
+
+      assert Preflight.run(ctx.path) == {:error, reason}
+      assert files(ctx.root) == before
+      assert Workflow.workflow_file_path() == runtime_workflow
+      assert Process.whereis(SymphonyElixir.AgentRuntimeSupervisor) == runtime
+    end
+  end
+
   test "the CLI preflight path works in a fresh VM without a scheduler, task supervisor or workflow store", ctx do
     write_workflow(ctx)
 
