@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。私有 GitHub 仓库和真实 Issue #1 已接入。首轮在检查阶段 blocked，控制器已停止；未合并候选、未部署云服务。验证范围见 [VALIDATION_V0.md](VALIDATION_V0.md)，显式重跑授权见 IS-017。
+已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。私有 GitHub 仓库和真实 Issue #1 已接入；经过环境隔离与中断分支修复，PR #2 已由用户合并。2026-09-29 按 IS-019 授权切换本地 WSL 运行器，运行版本及状态见文末记录。尚未部署云服务；历史验证见 [VALIDATION_V0.md](VALIDATION_V0.md)。
 
 本机目录为 `E:\code\innovation-symphony`，远端为私有仓库 `dailiuyi/innovation-symphony`，已有 V0 基线提交。提交及运行状态以当前 Git 和回执核实。
 
@@ -40,8 +40,38 @@ python -m http.server 43222 --bind 127.0.0.1 --directory E:\code\innovation-symp
 
 2026-09-28，抽离后验证通过：9 份 Markdown 的 17 个本地链接均可解析；HTTP 预览内容与新项目 HTML 一致；ready 自动领取文案、任务筛选、模型选择、1440px 桌面截图和 390px 手机布局检查通过，无浏览器脚本错误。独立只读审查发现原型曾以 ready 命名“待人工审查”，已改为独立内部状态 awaiting_review，ready 保留为启动门槛。
 
-保存文件、Git 提交、发布到远端、安装执行服务与云端部署分别报告。真实任务派发及提供商调用已发生；完整自迭代验收、合并及候选升级尚未完成。
+保存文件、Git 提交、发布到远端、安装执行服务与云端部署分别报告。真实任务派发及提供商调用已发生，PR #2 已合并且用户已授权运行版本切换；完整自迭代闭环与回退演练仍需验收。
 
+## 2026-09-29：PR #2 合并后的本地版本切换
+
+- GitHub 合并提交：`003a0db85da88ef79b882433108df2f3d782c092`；内容与通过审查的候选 `5867d36` 一致，合并后的 CI 成功。
+- WSL 发行版：`desktop`。固定安装：`/var/tmp/innovation-symphony-v0-rerun1/releases/003a0db85da88ef79b882433108df2f3d782c092`。
+- 运行配置与 PID：`/var/tmp/innovation-symphony-v0-rerun1/runtime-v1/WORKFLOW.md`、`pid.json`；日志在同目录 `logs/log/symphony.log.1`。
+- 本地状态页：`http://127.0.0.1:43223/`；状态 API：`/api/v1/state`，仅绑定回环地址。
+- 已显式启用 `max_rework: 2`。串行处理本仓库 ready Issue；保持编码与 Review 模型冻结及独立审查，失败停止边界不变。
+- 继续原地使用 `state/attempt-4` 的领取与交付记录，未清空状态。新任务工作区为 `workspaces/v1`，旧候选工作区不受启动清理影响。
+- 旧固定安装 `runner-replay`（`50955cf`）和全部历史回执、候选证据保留。回退必须先停当前进程并确认没有活动任务，沿用最新状态及新工作区路径；旧版配置将 max_rework 改为 0，不能恢复旧状态备份覆盖新记录。
+- 以后台进程运行，未安装 Windows/WSL 开机自启动或自动重启服务。凭据通过标准输入交给启动器后仅保存在控制器环境中；关闭进程后重新启动需重新提供凭据。
+- 本次只验证固定版本构建、真实 GitHub 读取、原回执保留、进程与状态接口；没有创建新的测试 Issue，不把空队列启动视为真实自动返工闭环验收。
+
+本机操作和检查证据保存在 `.local/runtime-switch/`（忽略目录，不提交凭据或运行状态）。启动入口为 runtime-v1/launch.py，启动时拒绝已有 PID、端口冲突或预检发现非空待执行队列；该保守空队列要求是本次安装验收安排，不是产品 ready 协议的新规则。
+
+### 2026-09-29：重启服务与发布下一项 Issue
+
+- 按 IS-020 启动已安装的 `003a0db85da88ef79b882433108df2f3d782c092`。发现旧进程已退出、端口未监听，原 `/tmp/innovation-symphony-toolchain` 已丢失；固定安装、领取记录和 evidence 仍在。
+- 恢复相同版本 Erlang 28.5 / Elixir 1.19.5-otp-28 及 Hex/Rebar，工具链改放 `/var/tmp/innovation-symphony-toolchain`；更新本机 `runtime-v1/runtime-env.sh` 的路径并保留原包装器备份。这是本次启动修复，不是新部署架构或运行版本升级。
+- 启动预检通过：真实 GitHub ready 队列为空、Issue #1 关闭且原回执保留、`max_rework=2`。新进程 PID 638，状态接口返回 HTTP 200，running/retrying/blocked 均为 0。
+- 已审阅并发布 [Issue #3](https://github.com/dailiuyi/innovation-symphony/issues/3)，保持无标签，等待人工修改；升级接棒功能尚未实现。草稿已补充回执重派、Review 完成边界、接管前体检门禁及生命周期竞态的审阅结果。
+- 本轮文档仅保存到本地，未提交或推送；Issue 已发布，服务本地运行，未配置开机自启动或云部署。
+
+### 2026-09-29：再次启动服务与预检门槛修正
+
+- 再次启动已安装的 `003a0db85da88ef79b882433108df2f3d782c092`。启动前核实：旧进程已退出、端口 43223 空闲、工具链在 `/var/tmp/innovation-symphony-toolchain`；凭据取自本机 `gh` 活跃账号（dailiuyi），经标准输入交给启动器，未写入文档、仓库或本记录。
+- 首次预检失败：原 `preflight.exs` 以 `[] = candidates` 把 open 状态的全部 Issue 视为待执行队列，而 Issue #3 按发布边界保持无标签、等待人工维护。运行时领取需同时满足 tracker `required_labels: [ready]`（`Tracker.Issue.routable?/2`）与 `Mvp.Intake.ready?/2`，无标签 Issue 不会被领取。
+- 修正：预检断言改为"不存在任何 open Issue 可被运行时领取"（复用上述两个运行时判定），门槛意图不变——带着可执行 ready 任务启动仍然拒绝。原预检保留为 `runtime-v1/preflight.exs.empty-queue.bak`，新脚本同步存放于本机忽略目录 `.local/runtime-switch/preflight.claimable.exs`。
+- 预检通过：`PREFLIGHT_OK max_rework=2 claimable_queue=0 open_issues=1 issue1_receipt_retained=true usage_aggregate_loaded=true`。新进程 PID 447，状态接口 HTTP 200，running/retrying/blocked 均为 0。
+- Issue #3 保持无标签等待人工处理；服务运行期间人工打上 ready 即会被自动领取。仍未配置开机自启动，WSL 关闭或重启后进程退出，再次启动需重新提供凭据。
+- 本次只改动运行目录预检脚本与本文档，未触碰安装版本代码、WORKFLOW 配置或状态目录。
 
 ## 官方实现与 V0 本地检查
 
