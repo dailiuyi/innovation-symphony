@@ -10,29 +10,18 @@ defmodule SymphonyElixir.Watchdog do
   @spec main([String.t()]) :: no_return()
   def main([command, config_path]) when command in @commands do
     case load_config(config_path) do
-      {:ok, config} ->
-        if command == "run" do
-          loop(config)
-        else
-          case locked(config, command) do
-            {:ok, state} ->
-              IO.puts(Jason.encode!(state))
-              System.halt(0)
-
-            {:error, reason} ->
-              IO.puts(:stderr, "watchdog: #{reason}")
-              System.halt(1)
-          end
-        end
-
-      {:error, reason} ->
-        IO.puts(:stderr, "watchdog: #{reason}")
-        System.halt(1)
+      {:ok, config} when command == "run" -> loop(config)
+      {:ok, config} -> finish(locked(config, command))
+      error -> finish(error)
     end
   end
 
   def main(_args) do
-    IO.puts(:stderr, "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json")
+    IO.puts(
+      :stderr,
+      "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json"
+    )
+
     System.halt(1)
   end
 
@@ -45,6 +34,10 @@ defmodule SymphonyElixir.Watchdog do
         {:error, "internal entrypoint requires the service lock"}
       end
 
+    finish(result)
+  end
+
+  defp finish(result) do
     case result do
       {:ok, state} ->
         IO.puts(Jason.encode!(state))
@@ -69,7 +62,9 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp validate_config(config) do
-    paths = ~w(controller pointer_file state_dir status_file maintenance_file workflow credential_file logs_root)
+    paths =
+      ~w(controller pointer_file state_dir status_file maintenance_file workflow credential_file logs_root)
+
     numbers = ~w(interval_ms backoff_ms max_attempts stable_ms)
 
     if Enum.all?(paths, fn key -> absolute_path?(config[key]) end) and
@@ -81,7 +76,8 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp absolute_path?(value), do: is_binary(value) and Path.type(value) == :absolute and not String.contains?(value, <<0>>)
+  defp absolute_path?(value),
+    do: is_binary(value) and Path.type(value) == :absolute and not String.contains?(value, <<0>>)
 
   defp loop(config) do
     case locked(config, "check") do
@@ -97,7 +93,17 @@ defmodule SymphonyElixir.Watchdog do
     with :ok <- File.mkdir_p(config["state_dir"]),
          true <- File.regular?(config["controller"]),
          {output, 0} <-
-           System.cmd("flock", ["-x", "--close", lock_path(config), config["controller"], "--watchdog-once", command, config["config_path"]],
+           System.cmd(
+             "flock",
+             [
+               "-x",
+               "--close",
+               lock_path(config),
+               config["controller"],
+               "--watchdog-once",
+               command,
+               config["config_path"]
+             ],
              stderr_to_stdout: true,
              env: [{"SYMPHONY_WATCHDOG_INTERNAL", "1"}]
            ),
@@ -132,7 +138,16 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp default_state do
-    %{"paused" => false, "versions" => %{}, "process" => nil, "observed" => nil, "pointer" => nil, "phase" => "new", "last_action" => nil, "history_count" => 0}
+    %{
+      "paused" => false,
+      "versions" => %{},
+      "process" => nil,
+      "observed" => nil,
+      "pointer" => nil,
+      "phase" => "new",
+      "last_action" => nil,
+      "history_count" => 0
+    }
   end
 
   defp read_state(config) do
@@ -152,17 +167,7 @@ defmodule SymphonyElixir.Watchdog do
   defp read_state_file(config, locked?) do
     case File.read(state_path(config)) do
       {:ok, raw} ->
-        case Jason.decode(raw) do
-          {:ok, state} when is_map(state) ->
-            if valid_state?(state, config) do
-              {:ok, Map.put(state, "paused", state["paused"] or locked?)}
-            else
-              {:error, "invalid watchdog state; refusing to reset budget"}
-            end
-
-          _ ->
-            {:error, "invalid watchdog state; refusing to reset budget"}
-        end
+        decode_state(raw, config, locked?)
 
       {:error, :enoent} ->
         {:ok, default_state() |> Map.put("service", config["workflow"]) |> Map.put("paused", locked?)}
@@ -171,6 +176,20 @@ defmodule SymphonyElixir.Watchdog do
         {:error, "watchdog state unreadable"}
     end
   end
+
+  defp decode_state(raw, config, locked?) do
+    case Jason.decode(raw) do
+      {:ok, state} when is_map(state) ->
+        if valid_state?(state, config),
+          do: {:ok, Map.put(state, "paused", state["paused"] or locked?)},
+          else: invalid_state()
+
+      _ ->
+        invalid_state()
+    end
+  end
+
+  defp invalid_state, do: {:error, "invalid watchdog state; refusing to reset budget"}
 
   defp maintenance(config, state, now, paused) do
     file = config["maintenance_file"]
@@ -189,26 +208,46 @@ defmodule SymphonyElixir.Watchdog do
 
     if result == :ok do
       action = if paused, do: "pause", else: "resume"
-      update(config, state, now, action, "maintenance #{action}d", %{"paused" => paused, "phase" => if(paused, do: "paused", else: "recovered")})
+
+      update(config, state, now, action, "maintenance #{action}d", %{
+        "paused" => paused,
+        "phase" => if(paused, do: "paused", else: "recovered")
+      })
     else
       {:error, "cannot update maintenance lock"}
     end
   end
 
   defp valid_state?(state, config) do
-    state["service"] == config["workflow"] and is_boolean(state["paused"]) and
-      is_map(state["versions"]) and is_integer(state["history_count"]) and state["history_count"] >= 0 and
-      (is_nil(state["process"]) or valid_record?(state["process"])) and
-      Enum.all?(state["versions"], fn {version, value} ->
-        is_binary(version) and is_map(value) and is_integer(value["attempts"]) and value["attempts"] >= 0 and
-          is_integer(value["next_at"]) and value["next_at"] >= 0 and is_boolean(value["awaiting_human"])
-      end)
+    state["service"] == config["workflow"] and valid_state_shape?(state) and
+      valid_state_contents?(state)
+  end
+
+  defp valid_state_shape?(state) do
+    is_boolean(state["paused"]) and is_map(state["versions"]) and
+      is_integer(state["history_count"]) and state["history_count"] >= 0
+  end
+
+  defp valid_state_contents?(state) do
+    (is_nil(state["process"]) or valid_record?(state["process"])) and
+      Enum.all?(state["versions"], &valid_budget?/1)
+  end
+
+  defp valid_budget?({version, value}) do
+    is_binary(version) and is_map(value) and is_integer(value["attempts"]) and
+      value["attempts"] >= 0 and
+      is_integer(value["next_at"]) and value["next_at"] >= 0 and
+      is_boolean(value["awaiting_human"])
   end
 
   defp valid_record?(record) do
     is_map(record) and is_integer(record["pid"]) and record["pid"] > 0 and
       is_binary(record["boot_id"]) and is_binary(record["start_ticks"]) and
-      is_list(record["cmdline"]) and Enum.all?(record["cmdline"], &is_binary/1) and
+      valid_record_details?(record)
+  end
+
+  defp valid_record_details?(record) do
+    is_list(record["cmdline"]) and Enum.all?(record["cmdline"], &is_binary/1) and
       is_binary(record["workflow"]) and is_binary(record["install"]) and
       is_binary(record["version"]) and is_integer(record["seen_at"])
   end
@@ -216,23 +255,31 @@ defmodule SymphonyElixir.Watchdog do
   defp read_pointer(config) do
     case File.read(config["pointer_file"]) do
       {:ok, raw} ->
-        case Jason.decode(raw) do
-          {:ok, %{"version" => version, "install" => install}} when is_binary(version) and is_binary(install) ->
-            if String.match?(version, ~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/) and absolute_path?(install) and
-                 Path.basename(install) == version and File.dir?(install) and File.regular?(Path.join(install, "bin/symphony")) and
-                 File.regular?(config["workflow"]) and fixed_install?(install) do
-              {:ok, %{"version" => version, "install" => install}}
-            else
-              {:ok, %{"error" => "invalid pointer or fixed install"}}
-            end
-
-          _ ->
-            {:ok, %{"error" => "invalid pointer format"}}
-        end
+        decode_pointer(raw, config)
 
       {:error, _} ->
         {:ok, %{"error" => "pointer missing or unreadable"}}
     end
+  end
+
+  defp decode_pointer(raw, config) do
+    case Jason.decode(raw) do
+      {:ok, %{"version" => version, "install" => install}}
+      when is_binary(version) and is_binary(install) ->
+        if valid_pointer?(version, install, config),
+          do: {:ok, %{"version" => version, "install" => install}},
+          else: {:ok, %{"error" => "invalid pointer or fixed install"}}
+
+      _ ->
+        {:ok, %{"error" => "invalid pointer format"}}
+    end
+  end
+
+  defp valid_pointer?(version, install, config) do
+    String.match?(version, ~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/) and absolute_path?(install) and
+      Path.basename(install) == version and File.dir?(install) and
+      File.regular?(Path.join(install, "bin/symphony")) and
+      File.regular?(config["workflow"]) and fixed_install?(install)
   end
 
   defp fixed_install?(install) do
@@ -248,10 +295,17 @@ defmodule SymphonyElixir.Watchdog do
         Map.merge(old, %{"attempts" => 0, "next_at" => 0, "awaiting_human" => false})
       end)
 
-    update(config, state, now, "recover", "new budget round for #{version}", %{"versions" => versions, "phase" => "recovered"})
+    update(config, state, now, "recover", "new budget round for #{version}", %{
+      "versions" => versions,
+      "phase" => "recovered"
+    })
   end
 
-  defp recover(config, state, _pointer, now), do: update(config, state, now, "blocked", "cannot recover invalid pointer", %{"phase" => "blocked"})
+  defp recover(config, state, _pointer, now),
+    do:
+      update(config, state, now, "blocked", "cannot recover invalid pointer", %{
+        "phase" => "blocked"
+      })
 
   defp budget, do: %{"attempts" => 0, "next_at" => 0, "awaiting_human" => false}
 
@@ -271,44 +325,74 @@ defmodule SymphonyElixir.Watchdog do
   defp alive(config, state, pointer, process, now) do
     version = process["version"]
     old = Map.get(state["versions"], version, budget())
-    stable? = not old["awaiting_human"] and old["attempts"] > 0 and now - process["seen_at"] >= config["stable_ms"]
-    versions = if stable?, do: Map.put(state["versions"], version, budget()), else: state["versions"]
+
+    stable? =
+      not old["awaiting_human"] and old["attempts"] > 0 and
+        now - process["seen_at"] >= config["stable_ms"]
+
+    versions =
+      if stable?, do: Map.put(state["versions"], version, budget()), else: state["versions"]
+
     reason = if stable?, do: "process continuously present; round reset", else: "runner present"
-    update(config, state, now, "check", reason, %{"observed" => process, "process" => process, "versions" => versions, "phase" => "running", "pointer" => pointer})
+
+    update(config, state, now, "check", reason, %{
+      "observed" => process,
+      "process" => process,
+      "versions" => versions,
+      "phase" => "running",
+      "pointer" => pointer
+    })
   end
 
   defp absent(config, state, pointer, now) do
-    state =
-      if state["process"] do
-        {:ok, updated} = update(config, state, now, "exit", "recorded runner no longer exists", %{"process" => nil, "phase" => "exited"})
-        %{updated | "observed" => nil}
-      else
-        state
-      end
-
+    state = config |> record_exit(state, now) |> Map.put("observed", nil)
     version = pointer["version"]
     old = if version, do: Map.get(state["versions"], version, budget()), else: budget()
 
     cond do
       state["paused"] ->
-        update(config, state, now, "blocked", "maintenance paused", %{"phase" => "paused"})
+        blocked(config, state, now, "maintenance paused", "paused")
 
       pointer["error"] ->
-        update(config, state, now, "blocked", pointer["error"], %{"phase" => "blocked"})
+        blocked(config, state, now, pointer["error"], "blocked")
 
       old["awaiting_human"] or old["attempts"] >= config["max_attempts"] ->
-        versions = Map.put(state["versions"], version, Map.put(old, "awaiting_human", true))
-        update(config, state, now, "abandon", "version budget exhausted", %{"versions" => versions, "phase" => "awaiting_human"})
+        abandon(config, state, version, old, now)
 
       now < old["next_at"] ->
-        update(config, state, now, "blocked", "backoff", %{"phase" => "backoff"})
+        blocked(config, state, now, "backoff", "backoff")
 
       port_busy?(config["port"]) ->
-        update(config, state, now, "blocked", "status port occupied by unknown process", %{"phase" => "blocked"})
+        blocked(config, state, now, "status port occupied by unknown process", "blocked")
 
       true ->
         launch(config, state, pointer, old, now)
     end
+  end
+
+  defp record_exit(_config, %{"process" => nil} = state, _now), do: state
+
+  defp record_exit(config, state, now) do
+    {:ok, updated} =
+      update(config, state, now, "exit", "recorded runner no longer exists", %{
+        "process" => nil,
+        "observed" => state["process"],
+        "phase" => "exited"
+      })
+
+    updated
+  end
+
+  defp blocked(config, state, now, reason, phase),
+    do: update(config, state, now, "blocked", reason, %{"phase" => phase})
+
+  defp abandon(config, state, version, old, now) do
+    versions = Map.put(state["versions"], version, Map.put(old, "awaiting_human", true))
+
+    update(config, state, now, "abandon", "version budget exhausted", %{
+      "versions" => versions,
+      "phase" => "awaiting_human"
+    })
   end
 
   defp launch(config, state, pointer, old, now) do
@@ -318,13 +402,42 @@ defmodule SymphonyElixir.Watchdog do
 
       {:ok, token} ->
         version = pointer["version"]
-        next = %{"attempts" => old["attempts"] + 1, "next_at" => now + config["backoff_ms"], "awaiting_human" => false}
-        state = %{state | "versions" => Map.put(state["versions"], version, next)}
-        {:ok, state} = update(config, state, now, "attempt", "launch #{version}", %{"phase" => "starting"})
 
-        case spawn_runner(config, pointer, token, now) do
-          {:ok, process} -> update(config, state, now, "launch", "runner started", %{"process" => process, "observed" => process, "phase" => "running"})
-          {:error, reason} -> update(config, state, now, "launch_failed", reason, %{"phase" => "backoff"})
+        next = %{
+          "attempts" => old["attempts"] + 1,
+          "next_at" => now + config["backoff_ms"],
+          "awaiting_human" => false
+        }
+
+        state = %{state | "versions" => Map.put(state["versions"], version, next)}
+
+        {:ok, state} =
+          update(config, state, now, "attempt", "launch #{version}", %{"phase" => "starting"})
+
+        finish_launch(config, state, pointer, token, now)
+    end
+  end
+
+  defp finish_launch(config, state, pointer, token, now) do
+    case spawn_runner(config, pointer, token, now) do
+      {:ok, process} ->
+        update(config, state, now, "launch", "runner started", %{
+          "process" => process,
+          "observed" => process,
+          "phase" => "running"
+        })
+
+      {:error, reason} ->
+        version = pointer["version"]
+        old = state["versions"][version]
+
+        {:ok, failed} =
+          update(config, state, now, "launch_failed", reason, %{"phase" => "backoff"})
+
+        if old["attempts"] >= config["max_attempts"] do
+          abandon(config, failed, version, old, now)
+        else
+          {:ok, failed}
         end
     end
   end
@@ -356,24 +469,37 @@ defmodule SymphonyElixir.Watchdog do
         Enum.map_join([executable | args], " ", &quote_shell/1) <>
         " >> " <> quote_shell(log) <> " 2>&1 </dev/null & echo $!"
 
-    case System.cmd("sh", ["-c", script], env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}], stderr_to_stdout: true) do
+    case System.cmd("sh", ["-c", script],
+           env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}],
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
-        case Integer.parse(String.trim(output)) do
-          {pid, ""} ->
-            case await_identity(pid, config["workflow"], executable, 100) do
-              {:ok, identity} ->
-                {:ok, Map.merge(identity, %{"version" => pointer["version"], "install" => pointer["install"], "workflow" => config["workflow"], "seen_at" => now})}
-
-              _ ->
-                {:error, "started process exited before identity recording"}
-            end
-
-          _ ->
-            {:error, "launcher returned no process id"}
-        end
+        record_spawned_runner(output, config, pointer, executable, now)
 
       _ ->
         {:error, "launcher failed"}
+    end
+  end
+
+  defp record_spawned_runner(output, config, pointer, executable, now) do
+    case Integer.parse(String.trim(output)) do
+      {pid, ""} ->
+        case await_identity(pid, config["workflow"], executable, 100) do
+          {:ok, identity} ->
+            {:ok,
+             Map.merge(identity, %{
+               "version" => pointer["version"],
+               "install" => pointer["install"],
+               "workflow" => config["workflow"],
+               "seen_at" => now
+             })}
+
+          _ ->
+            {:error, "started process exited before identity recording"}
+        end
+
+      _ ->
+        {:error, "launcher returned no process id"}
     end
   end
 
@@ -401,70 +527,63 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp observe(config, state) do
-    recorded = state["process"]
-
-    case recorded do
-      %{"pid" => pid} ->
-        case process_identity(pid) do
-          {:ok, current} ->
-            if same_process?(current, recorded, config) do
-              {:alive, recorded}
-            else
-              {:blocked, "recorded process identity conflict"}
-            end
-
-          {:error, :absent} ->
-            scan_unrecorded(config)
-
-          {:error, _} ->
-            {:blocked, "recorded process identity cannot be verified"}
-        end
-
-      _ ->
-        scan_unrecorded(config)
+    case state["process"] do
+      %{"pid" => pid} = recorded -> observe_recorded(config, recorded, process_identity(pid))
+      _ -> scan_unrecorded(config)
     end
   end
 
+  defp observe_recorded(config, recorded, {:ok, current}) do
+    if same_process?(current, recorded, config),
+      do: {:alive, recorded},
+      else: {:blocked, "recorded process identity conflict"}
+  end
+
+  defp observe_recorded(config, _recorded, {:error, :absent}), do: scan_unrecorded(config)
+
+  defp observe_recorded(_config, _recorded, {:error, _}),
+    do: {:blocked, "recorded process identity cannot be verified"}
+
   defp same_process?(current, recorded, config) do
-    current["boot_id"] == recorded["boot_id"] and current["start_ticks"] == recorded["start_ticks"] and
+    current["boot_id"] == recorded["boot_id"] and
+      current["start_ticks"] == recorded["start_ticks"] and
       current["cmdline"] == recorded["cmdline"] and recorded["workflow"] == config["workflow"] and
-      matching_command?(current["cmdline"], config["workflow"], Path.join(recorded["install"], "bin/symphony"))
+      matching_command?(
+        current["cmdline"],
+        config["workflow"],
+        Path.join(recorded["install"], "bin/symphony")
+      )
   end
 
   defp scan_unrecorded(config) do
     case File.ls("/proc") do
       {:ok, entries} ->
-        result =
-          Enum.reduce_while(entries, :absent, fn entry, previous ->
-            case Integer.parse(entry) do
-              {pid, ""} ->
-                case File.read("/proc/#{pid}/cmdline") do
-                  {:ok, raw} ->
-                    if String.contains?(raw, config["workflow"]) and String.contains?(raw, "symphony") do
-                      {:halt, {:blocked, "unrecorded runner-like process #{pid}"}}
-                    else
-                      {:cont, previous}
-                    end
-
-                  {:error, :eacces} ->
-                    {:cont, {:blocked, "process table identity inaccessible"}}
-
-                  {:error, :eperm} ->
-                    {:cont, {:blocked, "process table identity inaccessible"}}
-
-                  _ ->
-                    {:cont, previous}
-                end
-
-              _ ->
-                {:cont, previous}
-            end
-          end)
-
-        result
+        Enum.reduce_while(entries, :absent, &scan_entry(&1, &2, config))
 
       _ ->
         {:blocked, "cannot scan process table"}
+    end
+  end
+
+  defp scan_entry(entry, previous, config) do
+    case Integer.parse(entry) do
+      {pid, ""} -> scan_pid(pid, previous, config)
+      _ -> {:cont, previous}
+    end
+  end
+
+  defp scan_pid(pid, previous, config) do
+    case File.read("/proc/#{pid}/cmdline") do
+      {:ok, raw} ->
+        if String.contains?(raw, config["workflow"]) and String.contains?(raw, "symphony"),
+          do: {:halt, {:blocked, "unrecorded runner-like process #{pid}"}},
+          else: {:cont, previous}
+
+      {:error, reason} when reason in [:eacces, :eperm] ->
+        {:cont, {:blocked, "process table identity inaccessible"}}
+
+      _ ->
+        {:cont, previous}
     end
   end
 
@@ -475,7 +594,13 @@ defmodule SymphonyElixir.Watchdog do
          {:ok, boot} <- File.read("/proc/sys/kernel/random/boot_id"),
          {:ok, ticks} <- stat_start_ticks(before),
          {:ok, ^ticks} <- stat_start_ticks(after_read) do
-      {:ok, %{"pid" => pid, "boot_id" => String.trim(boot), "start_ticks" => ticks, "cmdline" => String.split(command, <<0>>, trim: true)}}
+      {:ok,
+       %{
+         "pid" => pid,
+         "boot_id" => String.trim(boot),
+         "start_ticks" => ticks,
+         "cmdline" => String.split(command, <<0>>, trim: true)
+       }}
     else
       {:error, :enoent} -> {:error, :absent}
       {:error, :absent} -> {:error, :absent}
@@ -517,8 +642,20 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp update(config, state, now, action, reason, changes) do
-    state = state |> Map.merge(changes) |> Map.put("last_action", %{"at" => now, "action" => action, "reason" => reason})
-    evidence = %{"at" => now, "action" => action, "reason" => reason, "pointer" => state["pointer"], "observed" => state["observed"], "phase" => state["phase"]}
+    state =
+      state
+      |> Map.merge(changes)
+      |> Map.put("last_action", %{"at" => now, "action" => action, "reason" => reason})
+
+    evidence = %{
+      "at" => now,
+      "action" => action,
+      "reason" => reason,
+      "pointer" => state["pointer"],
+      "observed" => state["observed"],
+      "phase" => state["phase"]
+    }
+
     state = Map.update(state, "history_count", 1, &(&1 + 1))
     tmp = state_path(config) <> ".tmp.#{System.unique_integer([:positive])}"
 

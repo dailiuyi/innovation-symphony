@@ -65,7 +65,11 @@ defmodule SymphonyElixir.WatchdogTest do
     assert state["versions"] == %{}
     assert state["last_action"]["reason"] =~ "pointer"
 
-    for malformed <- ["not json", ~s({"version":"../v1","install":"/missing"}), ~s({"version":"v1","install":"/missing/v1"})] do
+    for malformed <- [
+          "not json",
+          ~s({"version":"../v1","install":"/missing"}),
+          ~s({"version":"v1","install":"/missing/v1"})
+        ] do
       File.write!(ctx.config["pointer_file"], malformed)
       assert {:ok, blocked} = Watchdog.step(ctx.config, "check")
       assert blocked["phase"] == "blocked"
@@ -99,7 +103,13 @@ defmodule SymphonyElixir.WatchdogTest do
 
   test "launch, identity, pointer change, pause and stable round reset", ctx do
     injected = Path.join(ctx.root, "injected-token")
-    install!(ctx.root, "v1", "printf '%s' \"$GITHUB_TOKEN\" > '#{injected}'\nwhile :; do sleep 1; done")
+
+    install!(
+      ctx.root,
+      "v1",
+      "printf '%s' \"$GITHUB_TOKEN\" > '#{injected}'\nwhile :; do sleep 1; done"
+    )
+
     assert {:ok, started} = Watchdog.step(ctx.config, "start")
     assert started["phase"] == "running"
     assert started["versions"]["v1"]["attempts"] == 1
@@ -177,7 +187,8 @@ defmodule SymphonyElixir.WatchdogTest do
     on_exit(fn ->
       case File.read("/proc/#{unrelated_pid}/cmdline") do
         {:ok, command} ->
-          if String.contains?(command, "sleep"), do: System.cmd("kill", [Integer.to_string(unrelated_pid)], stderr_to_stdout: true)
+          if String.contains?(command, "sleep"),
+            do: System.cmd("kill", [Integer.to_string(unrelated_pid)], stderr_to_stdout: true)
 
         _ ->
           :ok
@@ -204,9 +215,14 @@ defmodule SymphonyElixir.WatchdogTest do
     change_state(ctx.config, fn state -> put_in(state, ["versions", "v1", "next_at"], 0) end)
     assert {:ok, second} = Watchdog.step(ctx.config, "check")
     assert second["versions"]["v1"]["attempts"] == 2
-    assert {:ok, exhausted} = Watchdog.step(ctx.config, "check")
-    assert exhausted["phase"] == "awaiting_human"
-    assert exhausted["versions"]["v1"]["awaiting_human"]
+    assert second["phase"] == "awaiting_human"
+    assert second["versions"]["v1"]["awaiting_human"]
+
+    assert Enum.take(Enum.map(history(ctx.config), & &1["action"]), -2) == [
+             "launch_failed",
+             "abandon"
+           ]
+
     assert {:ok, still_exhausted} = Watchdog.step(ctx.config, "check")
     assert still_exhausted["versions"]["v1"]["attempts"] == 2
     assert {:ok, _} = Watchdog.step(ctx.config, "pause")
@@ -232,6 +248,34 @@ defmodule SymphonyElixir.WatchdogTest do
     assert retried["versions"]["v1"]["attempts"] == 1
   end
 
+  test "normal and abnormal exits use the same backoff and relaunch path", ctx do
+    config = Map.put(ctx.config, "backoff_ms", 10_000)
+    stop_file = Path.join(ctx.root, "stop-normally")
+    install!(ctx.root, "v1", "while [ ! -e '#{stop_file}' ]; do sleep 0.02; done")
+    assert {:ok, first} = Watchdog.step(config, "check")
+    first_pid = first["process"]["pid"]
+    File.write!(stop_file, "stop")
+    wait_absent(first_pid)
+    File.rm!(stop_file)
+
+    assert {:ok, after_normal_exit} = Watchdog.step(config, "check")
+    assert after_normal_exit["process"] == nil
+    assert after_normal_exit["phase"] == "backoff"
+    change_state(config, fn state -> put_in(state, ["versions", "v1", "next_at"], 0) end)
+    assert {:ok, second} = Watchdog.step(config, "check")
+    assert second["process"]["pid"] != first_pid
+    assert second["versions"]["v1"]["attempts"] == 2
+
+    second_pid = second["process"]["pid"]
+    kill_group(second_pid, config["workflow"], "-KILL")
+    wait_absent(second_pid)
+    assert {:ok, after_abnormal_exit} = Watchdog.step(config, "check")
+    assert after_abnormal_exit["phase"] == "awaiting_human"
+    assert after_abnormal_exit["versions"]["v1"]["awaiting_human"]
+    assert Enum.count(history(config), &(&1["action"] == "exit")) == 2
+    assert Enum.map(Enum.filter(history(config), &(&1["action"] == "exit")), & &1["observed"]["pid"]) == [first_pid, second_pid]
+  end
+
   test "pause persists through state reload and recovery does not clear it", ctx do
     File.mkdir_p!(ctx.config["state_dir"])
     File.write!(ctx.config["maintenance_file"], "external maintenance")
@@ -254,13 +298,20 @@ defmodule SymphonyElixir.WatchdogTest do
 
   test "corrupt state is never treated as a fresh budget", ctx do
     assert {:ok, _} = Watchdog.step(ctx.config, "pause")
-    File.write!(Path.join(ctx.config["state_dir"], "status.json"), ~s({"paused":false,"versions":{"v1":{"attempts":"bad"}}}))
+
+    File.write!(
+      Path.join(ctx.config["state_dir"], "status.json"),
+      ~s({"paused":false,"versions":{"v1":{"attempts":"bad"}}})
+    )
+
     assert {:error, reason} = Watchdog.step(ctx.config, "check")
     assert reason =~ "refusing to reset budget"
   end
 
   test "unrelated listener blocks a launch without consuming budget", ctx do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true])
+    {:ok, socket} =
+      :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true])
+
     on_exit(fn -> :gen_tcp.close(socket) end)
     {:ok, {_address, port}} = :inet.sockname(socket)
     config = Map.put(ctx.config, "port", port)
@@ -272,17 +323,32 @@ defmodule SymphonyElixir.WatchdogTest do
 
   @tag timeout: 120_000
   test "packaged manual starts share a lock; killing the watchdog leaves its runner alive", ctx do
-    {output, status} = System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"], env: [{"MIX_ENV", "test"}], stderr_to_stdout: true)
+    {output, status} =
+      System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"],
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
     assert status == 0, output
     controller = Path.expand("bin/symphony")
-    config = Map.put(ctx.config, "controller", controller)
+    config = ctx.config |> Map.put("controller", controller) |> Map.put("backoff_ms", 50)
     config_path = Path.join(ctx.root, "watchdog.json")
     File.write!(config_path, Jason.encode!(config))
 
-    {denied, 1} = System.cmd(controller, ["--watchdog-once", "start", config_path], stderr_to_stdout: true, env: [{"SYMPHONY_WATCHDOG_INTERNAL", nil}])
+    {denied, 1} =
+      System.cmd(controller, ["--watchdog-once", "start", config_path],
+        stderr_to_stdout: true,
+        env: [{"SYMPHONY_WATCHDOG_INTERNAL", nil}]
+      )
+
     assert denied =~ "requires the service lock"
 
-    tasks = for _ <- 1..2, do: Task.async(fn -> System.cmd(controller, ["--watchdog", "start", config_path], stderr_to_stdout: true) end)
+    tasks =
+      for _ <- 1..2,
+          do:
+            Task.async(fn ->
+              System.cmd(controller, ["--watchdog", "start", config_path], stderr_to_stdout: true)
+            end)
 
     for task <- tasks do
       {result, exit_code} = Task.await(task, 15_000)
@@ -293,13 +359,24 @@ defmodule SymphonyElixir.WatchdogTest do
     assert state["versions"]["v1"]["attempts"] == 1
     pid = state["process"]["pid"]
 
-    {raw_pid, 0} = System.cmd("sh", ["-c", "\"$@\" >/dev/null 2>&1 & echo $!", "watchdog-test", controller, "--watchdog", "run", config_path])
+    {raw_pid, 0} =
+      System.cmd("sh", [
+        "-c",
+        "\"$@\" >/dev/null 2>&1 & echo $!",
+        "watchdog-test",
+        controller,
+        "--watchdog",
+        "run",
+        config_path
+      ])
+
     {watchdog_pid, ""} = raw_pid |> String.trim() |> Integer.parse()
 
     on_exit(fn ->
       case File.read("/proc/#{watchdog_pid}/cmdline") do
         {:ok, command} ->
-          if String.contains?(command, config_path), do: System.cmd("kill", ["-KILL", Integer.to_string(watchdog_pid)], stderr_to_stdout: true)
+          if String.contains?(command, config_path),
+            do: System.cmd("kill", ["-KILL", Integer.to_string(watchdog_pid)], stderr_to_stdout: true)
 
         _ ->
           :ok
@@ -314,6 +391,36 @@ defmodule SymphonyElixir.WatchdogTest do
     {restarted, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
     assert Jason.decode!(restarted)["process"]["pid"] == pid
     assert Jason.decode!(restarted)["versions"]["v1"]["attempts"] == 1
+
+    {new_watchdog_raw, 0} =
+      System.cmd("sh", [
+        "-c",
+        "\"$@\" >/dev/null 2>&1 & echo $!",
+        "watchdog-test",
+        controller,
+        "--watchdog",
+        "run",
+        config_path
+      ])
+
+    {new_watchdog_pid, ""} = new_watchdog_raw |> String.trim() |> Integer.parse()
+
+    on_exit(fn ->
+      case File.read("/proc/#{new_watchdog_pid}/cmdline") do
+        {:ok, command} ->
+          if String.contains?(command, config_path),
+            do: System.cmd("kill", ["-KILL", Integer.to_string(new_watchdog_pid)])
+
+        _ ->
+          :ok
+      end
+    end)
+
+    kill_group(pid, config["workflow"])
+    wait_absent(pid)
+    replacement = wait_replacement(config["status_file"], pid)
+    assert replacement["versions"]["v1"]["attempts"] == 2
+    assert replacement["process"]["pid"] != pid
   end
 
   defp install!(root, version, body) do
@@ -326,23 +433,36 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   defp pointer!(config, version, install) do
-    File.write!(config["pointer_file"], Jason.encode!(%{"version" => version, "install" => install}))
+    File.write!(
+      config["pointer_file"],
+      Jason.encode!(%{"version" => version, "install" => install})
+    )
   end
 
   defp history(config) do
-    config["state_dir"] |> Path.join("history.jsonl") |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+    config["state_dir"]
+    |> Path.join("history.jsonl")
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.map(&Jason.decode!/1)
   end
 
   defp change_state(config, fun) do
     path = Path.join(config["state_dir"], "status.json")
-    path |> File.read!() |> Jason.decode!() |> fun.() |> Jason.encode!() |> then(&File.write!(path, &1))
+
+    path
+    |> File.read!()
+    |> Jason.decode!()
+    |> fun.()
+    |> Jason.encode!()
+    |> then(&File.write!(path, &1))
   end
 
-  defp kill_group(pid, workflow) do
+  defp kill_group(pid, workflow, signal \\ "-TERM") do
     case File.read("/proc/#{pid}/cmdline") do
       {:ok, command} ->
         if String.contains?(command, workflow) and String.contains?(command, "symphony") do
-          System.cmd("kill", ["-TERM", "--", "-#{pid}"], stderr_to_stdout: true)
+          System.cmd("kill", [signal, "--", "-#{pid}"], stderr_to_stdout: true)
         end
 
       _ ->
@@ -377,6 +497,20 @@ defmodule SymphonyElixir.WatchdogTest do
     else
       Process.sleep(20)
       wait_file(path, remaining - 1)
+    end
+  end
+
+  defp wait_replacement(path, old_pid, remaining \\ 100)
+  defp wait_replacement(_path, _old_pid, 0), do: flunk("watchdog loop did not relaunch runner")
+
+  defp wait_replacement(path, old_pid, remaining) do
+    state = path |> File.read!() |> Jason.decode!()
+
+    if is_map(state["process"]) and state["process"]["pid"] != old_pid do
+      state
+    else
+      Process.sleep(50)
+      wait_replacement(path, old_pid, remaining - 1)
     end
   end
 end
