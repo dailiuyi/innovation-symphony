@@ -74,7 +74,9 @@ defmodule SymphonyElixir.GitHub.Client do
     fetch_issues_by_ids(issue_ids, tracker_settings, request_fun)
   end
 
-  defp fetch_issues_by_states(state_names, tracker_settings, request_fun) do
+  @doc "Read issues using explicit tracker settings, without consulting the runtime workflow."
+  @spec fetch_issues_by_states([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names, tracker_settings, request_fun \\ &perform_request/5) do
     normalized_states = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
 
     case github_state_query(normalized_states) do

@@ -4,17 +4,19 @@ defmodule SymphonyElixir.CLI do
   """
 
   alias SymphonyElixir.LogFile
+  alias SymphonyElixir.Mvp.Preflight
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
+  @switches [{@acknowledgement_switch, :boolean}, preflight: :boolean, logs_root: :string, port: :integer]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
-          file_regular?: (String.t() -> boolean()),
-          set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
-          set_logs_root: (String.t() -> :ok | {:error, term()}),
-          set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
-          ensure_all_started: (-> ensure_started_result())
+          :file_regular? => (String.t() -> boolean()),
+          :set_workflow_file_path => (String.t() -> :ok | {:error, term()}),
+          :set_logs_root => (String.t() -> :ok | {:error, term()}),
+          :set_server_port_override => (non_neg_integer() | nil -> :ok | {:error, term()}),
+          :ensure_all_started => (-> ensure_started_result()),
+          optional(:preflight) => (String.t() -> {:ok, map()} | {:error, term()})
         }
 
   @spec main([String.t()]) :: no_return()
@@ -29,31 +31,57 @@ defmodule SymphonyElixir.CLI do
       :ok ->
         wait_for_shutdown()
 
+      {:ok, report} ->
+        IO.puts(Jason.encode!(report))
+        System.halt(0)
+
       {:error, message} ->
         IO.puts(:stderr, message)
         System.halt(1)
     end
   end
 
-  @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
+  @spec evaluate([String.t()], deps()) :: :ok | {:ok, map()} | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(Path.expand("WORKFLOW.md"), deps)
-        end
+        evaluate_workflow(opts, Path.expand("WORKFLOW.md"), deps)
 
       {opts, [workflow_path], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(workflow_path, deps)
-        end
+        evaluate_workflow(opts, workflow_path, deps)
 
       _ ->
         {:error, usage_message()}
+    end
+  end
+
+  defp evaluate_workflow(opts, path, deps) do
+    with :ok <- require_guardrails_acknowledgement(opts) do
+      run_mode(opts, path, deps)
+    end
+  end
+
+  defp run_mode(opts, path, deps) do
+    if Keyword.get(opts, :preflight, false) do
+      run_preflight(opts, path, deps)
+    else
+      with :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_port(opts, deps) do
+        run(path, deps)
+      end
+    end
+  end
+
+  defp run_preflight(opts, path, deps) do
+    if Keyword.has_key?(opts, :logs_root) or Keyword.has_key?(opts, :port) do
+      {:error, "--preflight cannot be combined with --logs-root or --port"}
+    else
+      preflight = Map.get(deps, :preflight, &Preflight.run/1)
+
+      case preflight.(Path.expand(path)) do
+        {:ok, report} -> {:ok, report}
+        {:error, reason} -> {:error, "Preflight failed: #{inspect(reason)}"}
+      end
     end
   end
 
@@ -78,7 +106,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--preflight | --logs-root <path> --port <port>] [path-to-WORKFLOW.md]"
   end
 
   @spec runtime_deps() :: deps()
