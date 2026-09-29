@@ -69,6 +69,8 @@ defmodule SymphonyElixir.WatchdogTest do
 
     File.write!(config_path, Jason.encode!(ctx.config))
     assert {:ok, _} = Watchdog.load_config(config_path)
+    File.write!(config_path, Jason.encode!(Map.put(ctx.config, "port", 0)))
+    assert {:ok, _} = Watchdog.load_config(config_path)
 
     File.rm!(ctx.config["pointer_file"])
     assert {:ok, state} = Watchdog.step(ctx.config, "check")
@@ -202,6 +204,30 @@ defmodule SymphonyElixir.WatchdogTest do
     assert present["versions"]["v1"]["attempts"] == 1
   end
 
+  test "workflow status port is used for launch and unknown occupancy when no override is set", ctx do
+    File.write!(ctx.config["workflow"], "---\nserver:\n  port: 43210\n---\n")
+    fake_proc = Path.join(ctx.root, "port-proc")
+    File.mkdir_p!(Path.join(fake_proc, "net"))
+    File.write!(Path.join(fake_proc, "net/tcp"), "0: 0100007F:A8CA 00000000:0000 0A 0 0\n")
+    File.write!(Path.join(fake_proc, "net/tcp6"), "")
+
+    assert {:ok, blocked} = Watchdog.step(Map.put(ctx.config, :proc_root, fake_proc), "check")
+    assert blocked["phase"] == "blocked"
+    assert blocked["last_action"]["reason"] =~ "port occupied"
+    assert blocked["versions"] == %{}
+
+    File.write!(ctx.config["workflow"], "---\nserver:\n  port: 1\n---\n")
+    assert {:ok, started} = Watchdog.step(ctx.config, "start")
+    assert ["--port", "1"] in Enum.chunk_every(started["process"]["cmdline"], 2, 1, :discard)
+    assert {:ok, alive} = Watchdog.step(ctx.config, "check")
+    assert alive["process"]["pid"] == started["process"]["pid"]
+
+    File.write!(ctx.config["workflow"], "---\nserver:\n  port: 70000\n---\n")
+    assert {:ok, invalid} = Watchdog.step(ctx.config, "check")
+    assert invalid["phase"] == "blocked"
+    assert invalid["versions"]["v1"]["attempts"] == 1
+  end
+
   test "the last permitted launch cannot earn a fresh round by staying alive", ctx do
     config = Map.put(ctx.config, "max_attempts", 1)
     assert {:ok, started} = Watchdog.step(config, "start")
@@ -234,6 +260,13 @@ defmodule SymphonyElixir.WatchdogTest do
     assert conflict["phase"] == "blocked"
     assert conflict["last_action"]["reason"] =~ "identity conflict"
     assert conflict["process"]["pid"] == pid
+    assert conflict["process"]["start_ticks"] == "reused"
+    assert conflict["observed"]["pid"] == pid
+    assert conflict["observed"]["start_ticks"] == started["process"]["start_ticks"]
+    assert List.last(history(ctx.config))["process"]["start_ticks"] == "reused"
+
+    assert List.last(history(ctx.config))["observed"]["start_ticks"] ==
+             started["process"]["start_ticks"]
 
     change_state(ctx.config, fn state ->
       state
@@ -244,6 +277,7 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:ok, command_conflict} = Watchdog.step(ctx.config, "check")
     assert command_conflict["phase"] == "blocked"
     assert command_conflict["process"]["pid"] == pid
+    assert command_conflict["observed"]["cmdline"] == started["process"]["cmdline"]
 
     change_state(ctx.config, fn state -> Map.put(state, "process", nil) end)
     assert {:ok, unrecorded} = Watchdog.step(ctx.config, "check")
@@ -276,6 +310,9 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:ok, blocked} = Watchdog.step(ctx.config, "check")
     assert blocked["phase"] == "blocked"
     assert blocked["versions"]["v1"]["attempts"] == 1
+    assert blocked["process"]["pid"] == unrelated_pid
+    assert blocked["observed"]["pid"] == unrelated_pid
+    assert blocked["observed"]["cmdline"] != started["process"]["cmdline"]
     assert File.exists?("/proc/#{unrelated_pid}")
   end
 
@@ -463,6 +500,12 @@ defmodule SymphonyElixir.WatchdogTest do
       assert {:ok, blocked} = Watchdog.step(config, "check")
       assert blocked["phase"] == "blocked"
       assert blocked["versions"]["v1"]["attempts"] == 1
+      assert blocked["process"]["pid"] == pid
+      assert blocked["observed"]["pid"] == pid
+
+      if malformed != proc_stat(pid, "Z") do
+        assert blocked["observed"]["verification"] == "unverifiable"
+      end
     end
 
     File.write!(Path.join(proc_dir, "stat"), proc_stat(pid, "S"))
@@ -491,6 +534,41 @@ defmodule SymphonyElixir.WatchdogTest do
       assert failed["versions"]["v1"]["attempts"] == 1
       refute File.read!(ctx.config["status_file"]) =~ "test-token"
     end
+  end
+
+  test "launcher execution exceptions retain failure evidence and exhaust the budget", ctx do
+    config =
+      Map.put(ctx.config, :spawn_command, fn _command, args, options ->
+        System.cmd(Path.join(ctx.root, "missing-shell"), args, options)
+      end)
+
+    assert {:ok, first} = Watchdog.step(config, "check")
+    assert first["phase"] == "backoff"
+    assert first["last_action"]["reason"] == "launcher execution error"
+    assert first["versions"]["v1"]["attempts"] == 1
+
+    assert Enum.take(Enum.map(history(config), & &1["action"]), -2) == [
+             "attempt",
+             "launch_failed"
+           ]
+
+    change_state(config, fn state -> put_in(state, ["versions", "v1", "next_at"], 0) end)
+    assert {:ok, exhausted} = Watchdog.step(config, "check")
+    assert exhausted["phase"] == "awaiting_human"
+    assert exhausted["versions"]["v1"]["attempts"] == 2
+
+    assert Enum.take(Enum.map(history(config), & &1["action"]), -3) == [
+             "attempt",
+             "launch_failed",
+             "abandon"
+           ]
+
+    assert {:ok, restarted} = Watchdog.step(config, "check")
+    assert restarted["phase"] == "awaiting_human"
+    assert restarted["versions"]["v1"]["attempts"] == 2
+    assert Enum.count(history(config), &(&1["action"] == "attempt")) == 2
+    refute File.read!(config["status_file"]) =~ "test-token"
+    refute File.read!(Path.join(config["state_dir"], "history.jsonl")) =~ "test-token"
   end
 
   test "the transient setsid launcher is never recorded as the runner", ctx do
@@ -707,6 +785,13 @@ defmodule SymphonyElixir.WatchdogTest do
     assert Jason.decode!(restarted)["process"]["pid"] == pid
     assert Jason.decode!(restarted)["versions"]["v1"]["attempts"] == 1
 
+    slow_controller = Path.join(ctx.root, "slow-controller")
+    File.write!(slow_controller, "#!/bin/sh\nsleep 0.2\nexec '#{controller}' \"$@\"\n")
+    File.chmod!(slow_controller, 0o755)
+    timed_config = %{config | "controller" => slow_controller, "interval_ms" => 400}
+    File.write!(config_path, Jason.encode!(timed_config))
+    prior_checks = restarted |> Jason.decode!() |> Map.fetch!("history_count")
+
     {new_watchdog_raw, 0} =
       System.cmd("sh", [
         "-c",
@@ -731,8 +816,12 @@ defmodule SymphonyElixir.WatchdogTest do
       end
     end)
 
+    wait_check(config["status_file"], prior_checks)
+    killed_at = System.system_time(:millisecond)
     kill_group(pid, config["workflow"])
     wait_absent(pid)
+    exit_event = wait_exit_event(config)
+    assert exit_event["at"] - killed_at <= timed_config["interval_ms"] + 100
     replacement = wait_replacement(config["status_file"], pid)
     assert replacement["versions"]["v1"]["attempts"] == 2
     assert replacement["process"]["pid"] != pid
@@ -853,6 +942,34 @@ defmodule SymphonyElixir.WatchdogTest do
     else
       Process.sleep(50)
       wait_replacement(path, old_pid, remaining - 1)
+    end
+  end
+
+  defp wait_check(path, prior_count, remaining \\ 100)
+  defp wait_check(_path, _prior_count, 0), do: flunk("watchdog loop did not complete a check")
+
+  defp wait_check(path, prior_count, remaining) do
+    state = path |> File.read!() |> Jason.decode!()
+
+    if state["history_count"] > prior_count and state["last_action"]["action"] == "check" do
+      :ok
+    else
+      Process.sleep(10)
+      wait_check(path, prior_count, remaining - 1)
+    end
+  end
+
+  defp wait_exit_event(config, remaining \\ 100)
+  defp wait_exit_event(_config, 0), do: flunk("watchdog loop did not observe runner exit")
+
+  defp wait_exit_event(config, remaining) do
+    case Enum.find(history(config), &(&1["action"] == "exit")) do
+      nil ->
+        Process.sleep(10)
+        wait_exit_event(config, remaining - 1)
+
+      event ->
+        event
     end
   end
 

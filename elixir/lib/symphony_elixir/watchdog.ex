@@ -25,7 +25,7 @@ defmodule SymphonyElixir.Watchdog do
 
     if Enum.all?(paths, fn key -> absolute_path?(config[key]) end) and
          Enum.all?(numbers, fn key -> is_integer(config[key]) and config[key] > 0 end) and
-         (is_nil(config["port"]) or (is_integer(config["port"]) and config["port"] in 1..65_535)) do
+         (is_nil(config["port"]) or (is_integer(config["port"]) and config["port"] in 0..65_535)) do
       :ok
     else
       {:error, "invalid config fields"}
@@ -49,8 +49,8 @@ defmodule SymphonyElixir.Watchdog do
         "pause" -> maintenance(config, state, now, true)
         "resume" -> maintenance(config, state, now, false)
         "recover" -> recover(config, state, pointer, now)
-        "start" -> check(config, state, pointer, now)
-        "check" -> check(config, state, pointer, now)
+        "start" -> check_with_port(config, state, pointer, now)
+        "check" -> check_with_port(config, state, pointer, now)
         _ -> {:error, "unknown watchdog operation"}
       end
     end
@@ -228,13 +228,35 @@ defmodule SymphonyElixir.Watchdog do
 
   defp budget, do: %{"attempts" => 0, "next_at" => 0, "awaiting_human" => false}
 
+  defp check_with_port(config, state, pointer, now) do
+    case effective_port(config) do
+      {:ok, port} -> check(Map.put(config, "port", port), state, pointer, now)
+      {:error, reason} -> update(config, state, now, "blocked", reason, %{"phase" => "blocked"})
+    end
+  end
+
+  defp effective_port(%{"port" => port}) when is_integer(port), do: {:ok, port}
+
+  defp effective_port(config) do
+    with {:ok, workflow} <- SymphonyElixir.Workflow.load(config["workflow"]),
+         {:ok, settings} <- SymphonyElixir.Config.Schema.parse(workflow.config),
+         port when is_nil(port) or port in 0..65_535 <- settings.server.port do
+      {:ok, port}
+    else
+      _ -> {:error, "workflow server port cannot be verified"}
+    end
+  end
+
   defp check(config, state, pointer, now) do
     case observe(config, state) do
       {:alive, process} ->
         alive(config, state, pointer, process, now)
 
-      {:blocked, reason} ->
-        update(config, state, now, "blocked", reason, %{"phase" => "blocked"})
+      {:blocked, reason, observed} ->
+        update(config, state, now, "blocked", reason, %{
+          "phase" => "blocked",
+          "observed" => observed
+        })
 
       :absent ->
         absent(config, state, pointer, now)
@@ -391,15 +413,19 @@ defmodule SymphonyElixir.Watchdog do
 
     command = Map.get(config, :spawn_command, &System.cmd/3)
 
-    case command.("sh", ["-c", script],
-           env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
-        record_spawned_runner(output, config, pointer, executable, now)
+    try do
+      case command.("sh", ["-c", script],
+             env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} ->
+          record_spawned_runner(output, config, pointer, executable, now)
 
-      _ ->
-        {:error, "launcher failed"}
+        _ ->
+          {:error, "launcher failed"}
+      end
+    rescue
+      _ -> {:error, "launcher execution error"}
     end
   end
 
@@ -462,13 +488,13 @@ defmodule SymphonyElixir.Watchdog do
   defp observe_recorded(config, recorded, {:ok, current}) do
     if same_process?(current, recorded, config),
       do: {:alive, Map.merge(recorded, current)},
-      else: {:blocked, "recorded process identity conflict"}
+      else: {:blocked, "recorded process identity conflict", current}
   end
 
   defp observe_recorded(config, _recorded, {:error, :absent}), do: scan_unrecorded(config)
 
-  defp observe_recorded(_config, _recorded, {:error, _}),
-    do: {:blocked, "recorded process identity cannot be verified"}
+  defp observe_recorded(_config, recorded, {:error, _}),
+    do: {:blocked, "recorded process identity cannot be verified", %{"pid" => recorded["pid"], "verification" => "unverifiable"}}
 
   defp same_process?(current, recorded, config) do
     current["boot_id"] == recorded["boot_id"] and
@@ -492,7 +518,7 @@ defmodule SymphonyElixir.Watchdog do
         Enum.reduce_while(entries, :absent, &scan_entry(&1, &2, config))
 
       _ ->
-        {:blocked, "cannot scan process table"}
+        {:blocked, "cannot scan process table", nil}
     end
   end
 
@@ -506,12 +532,15 @@ defmodule SymphonyElixir.Watchdog do
   defp scan_pid(pid, previous, config) do
     case File.read(Path.join([proc_root(config), Integer.to_string(pid), "cmdline"])) do
       {:ok, raw} ->
-        if String.contains?(raw, config["workflow"]) and String.contains?(raw, "symphony"),
-          do: {:halt, {:blocked, "unrecorded runner-like process #{pid}"}},
-          else: {:cont, previous}
+        if String.contains?(raw, config["workflow"]) and String.contains?(raw, "symphony") do
+          observed = %{"pid" => pid, "cmdline" => String.split(raw, <<0>>, trim: true)}
+          {:halt, {:blocked, "unrecorded runner-like process #{pid}", observed}}
+        else
+          {:cont, previous}
+        end
 
       {:error, reason} when reason != :enoent ->
-        {:cont, {:blocked, "process table identity inaccessible"}}
+        {:cont, {:blocked, "process table identity inaccessible", %{"pid" => pid}}}
 
       _ ->
         {:cont, previous}
@@ -573,7 +602,7 @@ defmodule SymphonyElixir.Watchdog do
 
   defp proc_root(config), do: Map.get(config, :proc_root, "/proc")
 
-  defp port_busy?(%{"port" => nil}), do: false
+  defp port_busy?(%{"port" => port}) when port in [nil, 0], do: false
 
   defp port_busy?(config) do
     port = config["port"]
@@ -600,6 +629,7 @@ defmodule SymphonyElixir.Watchdog do
       "action" => action,
       "reason" => reason,
       "pointer" => state["pointer"],
+      "process" => state["process"],
       "observed" => state["observed"],
       "phase" => state["phase"]
     }

@@ -102,13 +102,19 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp watchdog_loop(config) do
+    watchdog_loop(config, System.monotonic_time(:millisecond))
+  end
+
+  defp watchdog_loop(config, due_at) do
     case watchdog_locked(config, "check") do
       {:ok, _} -> :ok
       {:error, reason} -> IO.puts(:stderr, "watchdog: #{reason}")
     end
 
-    Process.sleep(config["interval_ms"])
-    watchdog_loop(config)
+    next_at = due_at + config["interval_ms"]
+    now = System.monotonic_time(:millisecond)
+    Process.sleep(max(next_at - now, 0))
+    watchdog_loop(config, max(next_at, now))
   end
 
   defp watchdog_locked(config, command) do
