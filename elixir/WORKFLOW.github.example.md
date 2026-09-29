@@ -38,7 +38,9 @@ mvp:
   # Invalid MVP settings stop dispatch and are reported in the service log.
   state_dir: /var/tmp/innovation-symphony/state
   check_timeout_ms: 900000
-  # Integer 0..2; 0 preserves V0. 1/2 enable rejection comments and bounded rework.
+  # Integer 0..2; 0 preserves V0. Checks and Review share this rework budget.
+  # Fixed runners: exit 0 passes, exit 10 is repairable, other failures stop.
+  # Complete check logs are retained; only Review rejections post comments.
   # See ../docs/REVIEW_REWORK.md; interrupted/uncertain attempts never auto-resume.
   max_rework: 0
   checks:

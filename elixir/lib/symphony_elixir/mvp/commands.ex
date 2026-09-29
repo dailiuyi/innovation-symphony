@@ -4,7 +4,26 @@ defmodule SymphonyElixir.Mvp.Commands do
   alias SymphonyElixir.Tracker
 
   @spec run([String.t()], Path.t(), pos_integer(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def run([executable | arguments], cwd, timeout_ms, opts \\ []) do
+  def run(argv, cwd, timeout_ms, opts \\ []) do
+    case execute(argv, cwd, timeout_ms, opts, "") do
+      {:ok, {output, 0}} -> {:ok, output}
+      {:ok, {output, status}} -> {:error, {:command_failed, status, String.slice(output, -4_000, 4_000)}}
+      error -> error
+    end
+  end
+
+  @doc "Stream complete merged check output to disk, including failed and timed-out commands."
+  @spec run_logged([String.t()], Path.t(), pos_integer(), Path.t()) :: {:ok, non_neg_integer()} | {:error, atom()}
+  def run_logged(argv, cwd, timeout_ms, log_path) do
+    File.write!(log_path, "")
+
+    case execute(argv, cwd, timeout_ms, [], File.stream!(log_path)) do
+      {:ok, {_stream, status}} -> {:ok, status}
+      error -> error
+    end
+  end
+
+  defp execute([executable | arguments], cwd, timeout_ms, opts, output) do
     env = clean_env() ++ Keyword.get(opts, :env, [])
 
     case System.find_executable("timeout") do
@@ -14,14 +33,13 @@ defmodule SymphonyElixir.Mvp.Commands do
       timeout ->
         seconds = Integer.to_string(max(1, div(timeout_ms + 999, 1_000))) <> "s"
 
-        case System.cmd(timeout, ["--kill-after=5s", seconds, executable | arguments],
-               cd: cwd,
-               env: env,
-               stderr_to_stdout: true
-             ) do
-          {output, 0} -> {:ok, output}
-          {output, status} -> {:error, {:command_failed, status, String.slice(output, -4_000, 4_000)}}
-        end
+        {:ok,
+         System.cmd(timeout, ["--kill-after=5s", seconds, executable | arguments],
+           cd: cwd,
+           env: env,
+           stderr_to_stdout: true,
+           into: output
+         )}
     end
   end
 

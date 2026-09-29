@@ -6,7 +6,6 @@ The controller additionally hashes the baseline before and after execution.
 """
 
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -14,9 +13,10 @@ from pathlib import Path
 # The archived baseline is fingerprinted; imports must not create __pycache__.
 sys.dont_write_bytecode = True
 from check_environment import isolated_environment
+from check_results import run_check
 
 
-def main() -> None:
+def main() -> int:
     candidate = Path(sys.argv[1]).resolve() / "elixir"
     baseline = Path(__file__).resolve().parent.parent / "elixir"
     with tempfile.TemporaryDirectory(prefix="symphony-baseline-") as temporary:
@@ -31,8 +31,8 @@ def main() -> None:
         template = baseline.parent / ".github" / "pull_request_template.md"
         (harness.parent / ".github").mkdir()
         shutil.copy2(template, harness.parent / ".github" / template.name)
-        subprocess.run(["mix", "test"], cwd=harness, env=isolated_environment(), check=True)
+        return run_check("baseline_test", ["mix", "test"], harness, isolated_environment())
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

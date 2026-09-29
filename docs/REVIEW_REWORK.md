@@ -1,12 +1,15 @@
 # GH-1：有限返工合同与验收对应
 
-来源：IS-015/016，以及 GH-1 的本轮执行规格。此文件描述任务工作区中的实现，不代表已发布、真实 GitHub 验收或运行版本升级。
+来源：IS-015/016，以及 IS-022 的检查返工更新。此文件描述任务工作区中的实现，不代表已发布、真实 GitHub 验收或运行版本升级。
 
 `mvp.max_rework` 仅接受整数 0..2，默认 0。0 保持 V0 单轮行为及 `{approved, summary}` Review 输出；显式 1/2 开启以下合同，替代 V0 中“固定为 0、未实现多轮返工”的限制。其他恢复和交付边界不变。
 
-- 只有有效、明确 `approved=false` 的独立 Review 才触发返工。最多执行 `max_rework + 1` 轮；最后一次拒绝也回帖。检查失败、模型错误、非法输出、源码/基线/Git 元数据变化均停止。
-- 同一工作区与初始 base SHA；每次编码前持久记录 `rework_count` 和新轮次。领取时模型保持冻结。每轮完整检查并调用新的只读 AppServer 会话，平台动态工具禁用。
+- 明确可修复的检查失败与有效 `approved=false` 的独立 Review 共用返工预算。最多执行 `max_rework + 1` 轮，不因失败来源切换而重置；最后一次失败保留证据并 blocked。Review 拒绝仍回帖；检查失败不新增平台评论。未知检查错误、环境/权限/超时、模型错误、非法输出、源码/基线/Git 元数据变化均停止。
+- 同一工作区与初始 base SHA；每次编码前持久记录 `rework_count` 和新轮次。领取时模型保持冻结。每轮重新执行完整检查，通过后才调用新的只读 Review 会话，平台动态工具禁用。
 - receipt 的 `rounds` 保存各轮 base/candidate SHA、模型、检查 argv、证据目录、Review、用量和评论意图。证据在 `RECEIPT.json.evidence/round-N/`；初始 `baseline/` 共享但不可修改。旧轮证据不覆盖。
+- 每项检查的完整合并 stdout/stderr 直接写入 `check-N.log`，成功、失败和超时均保留已输出的原始字节；退出状态、命令、分类与日志路径写入 `check-N.json`。`check_failure` 记录到对应轮次及顶层；开始新轮时清空顶层旧失败，历史轮次不变。日志超过 32000 字节时，编码输入提供首尾各 16000 字节及完整日志的只读路径；仅输入摘录修复非法 UTF-8，磁盘日志不截断、不重编码。
+- 固定检查 runner 协议：0 通过，10 明确可修复，其余停止。`scripts/check_results.py` 根据固定阶段、原始退出码和已核对的 Elixir 1.19 诊断分类：格式不合规、可识别 ExUnit 断言、覆盖率不足、缺失 `@spec`、项目源码编译错误可返工。未知或混合未知测试错误、未知 Credo/Dialyzer 输出、依赖下载、权限、超时、信号均停止；不得把所有 exit 1 都当成可修复。旧 runner 不产生 10 时保留停止行为。
+- 编码收到检查失败的结构化信息与日志摘录，不得降低覆盖率、禁用检查或改写证据。即使检查失败，返工前仍验证候选 SHA、工作区、Git 元数据及冻结基线完整性。编码沙箱的 Mix.PubSub socket 限制由提示明确说明，禁止重复撞同一权限错误或临时替换标准测试；正式检查由控制器执行。
 - 发评论之前保存 `comment_pending`、随机标记、完整评论正文、轮次和候选 SHA；收到匹配正文及有效 ID 才确认成功。POST 不自动重试。失败、超时、异常或不确定结果均停止；拒绝反馈按字面文本转义，ASCII `@` 替换为全角字符，不触发提及。
 - `mix mvp.reconcile WORKFLOW.md RECEIPT.json` 对评论只分页读取原 Issue，精确匹配已保存正文（含随机标记）与已知 ID。唯一匹配才补录 ID，状态仍为 blocked。零匹配、多匹配或查询失败保留记录；不补发、不恢复、不归零。中断 receipt 继续阻止再次领取，需人工检查。
 - 新 Review schema 要求 `criteria` 非空数组，每项包含 `acceptance`（验收 ID 和行为）、`tests`（文件及测试名称）、`assertion_strength`（具体断言）、`failure_sensitivity`（哪种实现破坏会导致失败）和 `adequate`。缺少测试时必须列出该验收项，`tests=[]`、`adequate=false`、`approved=false` 并说明理由。矛盾的批准或缺字段输出非法，直接停止。控制器验证结构和一致性；语义覆盖完整性由独立 reviewer 推理审查。
@@ -25,12 +28,16 @@
 | A4 | `mvp_executor_test.exs`: `A4 rework approval delivers exactly one draft PR...` 与原 `publish pushes the candidate branch...`（固定 SHA 和 Draft 请求） |
 | A5 | `mvp_executor_test.exs`: `A2 A4...`（两轮不同 SHA、共同 base、逐轮检查日志及 Review 文件） |
 | A6 | `mvp_executor_test.exs`: `A6 comment failures...`、`A6 interrupted rework...`；`mvp_rework_contract_test.exs`: 三项 `A6 ... reconciliation...` |
-| A7 | `mvp_executor_test.exs`: `A7 failed checks...`、`A7 rework mode still rejects...`；原 Git 元数据、基线变动及失败门禁测试 |
+| A7 | `mvp_executor_test.exs`: `A7 unclassified check failures...`、`A7 rework mode still rejects...`；原 Git 元数据、基线变动及失败门禁测试 |
 | A8 | `mvp_rework_contract_test.exs`: `A8 review rejects malformed...`；`mvp_executor_test.exs`: `A2 A4...` 使用缺少对应测试的明确拒绝作为返工原因 |
 | A9 | `mvp_rework_contract_test.exs`: `A9 cumulative notifications...`；`mvp_executor_test.exs`: `A2 A4...`（四次会话累计及未知字段）、`A9 interruption before any second coder message...`（首轮完整用量、拒绝回帖确认、第二轮无消息中断）、`A9 initial interruption before telemetry...`（首轮全未知及 0/1/2 兼容） |
 | A10 | `mvp_executor_test.exs`: `A10 model comments arriving after claim...` 与 `A2 A4...`（模拟运行中新增有效模型评论，每次调用断言冻结模型、禁用工具、回帖无 @、仅允许评论 API）；原 AppServer、intake 和 Draft PR 测试保留 |
 
 ## 验证与交付状态
+
+IS-022 新增验收：`mvp_executor_test.exs` 覆盖检查与 Review 两种顺序的混合返工、共用预算耗尽、零预算、超过 40000 字节及非法 UTF-8 的日志、超时输出保留、未知错误停止、完整性破坏停止及重启不重置预算。`scripts/tests/test_check_results.py` 覆盖固定 runner 的诊断分类、混合未知错误停止、原始输出保留及冻结副本不写 pycache。以下 GH-1 验证记录为历史结果，不代表本次改动的验证或安装结果。
+
+IS-023 显式续跑：`Executor.resume_checks/2` 仅供可信操作者在校验完整上下文和原回执 SHA256 后调用，调度器不自动调用。只接受检查失败的 blocked 回执，绑定原 base、候选、分支、工作区、模型、轮次和预算，并验证候选与冻结基线完整性。接受后保存原回执到原轮次的 `operator-check-resume/`，在新目录重新检查；原日志不覆盖。独占锁在成功、中断后均保留，不能自动重复调用或通过恢复旧回执重置预算。新的固定 runner 可以由操作者指定，仍记录完整命令和证据；这不是通用中断恢复或升级接棒实现。
 
 标准门禁仍是 `scripts/check_candidate.py`（格式、lint/specs、100% 覆盖率、Dialyzer、build）及控制器持有的外部冻结 `scripts/check_baseline.py`。没有修改阈值、豁免模块或冻结基线。本任务仅保存源码和测试，不提交、不推送、不建 PR。
 

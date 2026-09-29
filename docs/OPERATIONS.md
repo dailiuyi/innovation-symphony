@@ -75,6 +75,16 @@ python -m http.server 43222 --bind 127.0.0.1 --directory E:\code\innovation-symp
 
 ## 官方实现与 V0 本地检查
 
+### 2026-09-29：修复 escript 静默跳过 ready Issue
+
+- 故障：旧版打包 escript 的 `:code.lib_dir(:symphony_elixir)` 返回归档内虚拟路径，MVP 路径隔离校验报 `enotdir`；`Mvp.available?/1` 将配置错误当成不可领取，状态页仍可正常访问，因此空闲页面和 HTTP 200 未揭示故障。
+- 修复本地提交及实际运行版本：`94e376803ea1e7332e6a927d6871c1f385593204`，独立安装在同名 `releases/` 目录。归档路径使用解析符号链接后的实体工件目录，工件丢失时停止派发；每轮配置错误会明确记日志。旧 `003a0db` 安装保留。
+- 验证：380 tests、0 failures、6 个既有实平台测试跳过；覆盖率达到现有配置要求的 100%；format、lint/specs、dialyzer、build 与独立审查通过。一次上游重试时钟断言差 2ms，同 seed 完整重跑通过，未修改该断言。真实 escript 子进程覆盖合法 ready 候选、目录重叠及符号链接边界。
+- 按 IS-021 预检 ready 操作者及队列只包含获准的 Issue #3 后切换；沿用 state/attempt-4 和 workspaces/v1，原有 161 个状态/证据文件哈希不变。启动器端口探测增加 SO_REUSEADDR，避免旧连接 TIME_WAIT 被误判为仍有监听服务；仍拒绝真实端口占用。
+- 11:31（Asia/Shanghai）自动领取 GH-3，PID 13384，11:32 回执为 `coding`，已有实际 Codex 会话及 token 用量。编码与独立 Review 均为 `gpt-6-astra`，沿用 `high`；尚未证明该 Issue 完成交付。
+- 启动入口仍为 runtime-v1/launch.py；此次显式准入仅用于获准的 #3，启动后恢复原来的空可领取队列预检，未修改 ready 标签。修复提交尚未推送远端；GH-3 冻结的远端任务 base 仍为 `003a0db`，以后合并候选时须同时保留本次领取修复。
+- 本机证据保存在 `.local/intake-repair/`：release.json、applied.json、running-evidence.json；安装切换前的启动器与 PID 记录位于 runtime-v1/before-intake-fix-94e3768。未自动合并或安装 GH-3 产生的候选，也未配置云部署。
+
 保留上游 WORKFLOW.md 仅为参考；本项目使用 WORKFLOW.github.example.md，复制到独立运行目录后填写配置。不要把原 Linear 示例当作本项目执行入口。
 
 运行要求：Linux/WSL、Elixir 1.19.x / OTP 28（沿用官方 mise.toml）、Git、GNU timeout、Python 3，以及原生 Linux Codex CLI。必须确认 `codex` 不是 `/mnt/c` 的 Windows npm 包装脚本。首次接入前先准备独立运行目录、工作区和状态目录；本次没有安装常驻服务。
