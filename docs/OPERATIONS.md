@@ -1,5 +1,11 @@
 # 原型运行与项目交付
 
+## 2026-09-29 自动恢复实测
+
+控制器 `07f74936f77e30c6337da70a1fec9476a61eac8f` 已发布、通过 CI 并安装在本地 WSL。Issue #3 保留原五次返工，通过自动诊断及两次新增编码，自动处理一次真实测试失败后通过完整检查和独立 Review，交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)。完整版本、检查数字和证据见 [验收记录](VALIDATION_AUTOMATIC_RECOVERY.md)。
+
+运行入口仍为 `runtime-v1`，状态目录仍为 `state/attempt-4`，intake 已恢复，历史证据未清空。PR 候选尚未合并或安装；按 IS-027，与 main 的冲突由人处理，停止自动集成扩展，不持续追赶主分支。下文保留此前各次启动与切换的历史记录。
+
 ## 当前状态
 
 已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。私有 GitHub 仓库和真实 Issue #1 已接入；经过环境隔离与中断分支修复，PR #2 已由用户合并。2026-09-29 按 IS-019 授权切换本地 WSL 运行器，运行版本及状态见文末记录。尚未部署云服务；历史验证见 [VALIDATION_V0.md](VALIDATION_V0.md)。
@@ -106,6 +112,23 @@ mix build
 本仓库已获得明确接入及 Issue #1 派发授权。新接入时设置 GITHUB_REPO/GITHUB_TOKEN、模型白名单与允许的 ready 操作者，将 mvp.enabled 设为 true，并使用上游 CLI 的显式 guardrails acknowledgement 开关启动。首次启用会扫描获准的存量 ready Issue，不能作为只读连通性测试。
 
 自迭代运行时，固定版本 A 安装在候选工作区之外。修改发生在 B 的工作区；PR 待人审核。完整领取状态及 evidence 必须在升级时保留，已进入编码/发布阶段的失败不自动重试。具体恢复命令见 IMPLEMENTATION_V0.md。
+
+### GH-3 只读体检
+
+新增 `--preflight` 用于独立进程中加载候选配置并只读查询 GitHub；它直接退出，不启动调度。配置须为完整且已启用的 GitHub MVP 配置；停用模板不能作为候选可接管的证据。与 `mvp.check` 不同，这会访问配置指定的 GitHub 仓库，执行前需有该仓库的读取授权。
+
+以下是调用示例，不是安装、切换或已执行记录。`CANDIDATE_ESCRIPT` 和 `CANDIDATE_WORKFLOW` 指向隔离的固定安装及配置；`PREFLIGHT_TIMEOUT` 由操作者明确指定 GNU timeout 时限，本次没有确定产品默认值。
+
+```sh
+timeout --signal=KILL "${PREFLIGHT_TIMEOUT:?set an explicit duration}" \
+  "${CANDIDATE_ESCRIPT:?set the fixed candidate path}" \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --preflight "${CANDIDATE_WORKFLOW:?set the candidate workflow path}"
+```
+
+保存标准输出、标准错误和退出码：0 表示配置及只读轮询通过，非零（包括外部超时）表示未通过。成功输出示例：`{"mode":"preflight","status":"passed","issue_count":0}`。体检不验证模型、命令执行或回执兼容性；成功不自动接管，也不证明 A 已退出。A 收尾、升级/回退入口仍未实现，完整边界见 [实现合同](IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
+
+体检的标准输出仅包含成功 JSON；重试日志和失败原因写入标准错误，解析 JSON 时不要合并两个输出流。沿用客户端的有界安全重试；重试后查询成功仍可通过，耗尽重试或任一页含未知状态、畸形记录则失败，不计为合法空队列。日志重定向仅用于退出式 CLI 体检，不改变正常服务的日志配置。
 
 ### 检查环境与显式重跑
 

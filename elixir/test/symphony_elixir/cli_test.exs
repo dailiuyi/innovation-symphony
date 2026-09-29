@@ -5,6 +5,29 @@ defmodule SymphonyElixir.CLITest do
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
+  test "preflight returns a report without applying runtime options or starting Symphony" do
+    report = %{mode: "preflight", status: "passed", issue_count: 1}
+
+    deps = %{
+      preflight: fn path ->
+        assert path == Path.expand("candidate.md")
+        {:ok, report}
+      end
+    }
+
+    assert {:ok, ^report} = CLI.evaluate([@ack_flag, "--preflight", "candidate.md"], deps)
+    assert {:error, banner} = CLI.evaluate(["--preflight", "candidate.md"], deps)
+    assert banner =~ @ack_flag
+
+    for option <- [["--port", "4000"], ["--logs-root", "logs"]] do
+      assert {:error, message} = CLI.evaluate([@ack_flag, "--preflight"] ++ option, deps)
+      assert message =~ "cannot be combined"
+    end
+
+    assert {:error, "Preflight failed: :unreachable"} =
+             CLI.evaluate([@ack_flag, "--preflight"], %{preflight: fn _ -> {:error, :unreachable} end})
+  end
+
   test "returns the guardrails acknowledgement banner when the flag is missing" do
     parent = self()
 

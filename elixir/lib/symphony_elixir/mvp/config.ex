@@ -26,12 +26,19 @@ defmodule SymphonyElixir.Mvp.Config do
 
   @spec settings() :: {:ok, settings()} | {:error, term()}
   def settings do
-    with {:ok, workflow} <- Workflow.current(),
-         {:ok, settings} <-
+    with {:ok, workflow} <- Workflow.current() do
+      settings(workflow, workflow_dir())
+    end
+  end
+
+  @doc "Validate an explicitly loaded workflow without changing the runtime workflow."
+  @spec settings(Workflow.loaded_workflow(), Path.t()) :: {:ok, settings()} | {:error, term()}
+  def settings(workflow, workflow_dir) do
+    with {:ok, settings} <-
            validate_mvp_config(
              Map.get(workflow.config, "mvp", %{}),
              workflow.config,
-             workflow_dir()
+             workflow_dir
            ) do
       {:ok, Map.put(settings, :configured, Map.has_key?(workflow.config, "mvp"))}
     end

@@ -479,6 +479,23 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     end
   end
 
+  test "OTP runtime roots preserve the application directory and resolve directory aliases" do
+    root = unique_path("otp-runtime")
+    runtime_path = Path.join(root, "symphony_elixir")
+    alias_path = unique_path("otp-runtime-alias")
+    File.mkdir_p!(runtime_path)
+    File.ln_s!(runtime_path, alias_path)
+
+    try do
+      assert {:ok, ^runtime_path} = MvpConfig.runtime_root(runtime_path)
+      assert {:ok, ^runtime_path} = MvpConfig.runtime_root(alias_path)
+      assert {:error, :mvp_runtime_path_unavailable} = MvpConfig.runtime_root(Path.join(root, "missing"))
+    after
+      File.rm_rf!(root)
+      File.rm!(alias_path)
+    end
+  end
+
   test "MVP config reports meaningful errors for malformed and unsafe values" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     config_for = fn changes -> Map.merge(valid_mvp_config(unique_path("state")), changes) end

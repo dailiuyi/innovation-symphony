@@ -74,7 +74,19 @@ defmodule SymphonyElixir.GitHub.Client do
     fetch_issues_by_ids(issue_ids, tracker_settings, request_fun)
   end
 
-  defp fetch_issues_by_states(state_names, tracker_settings, request_fun) do
+  @doc "Read issues using explicit tracker settings, without consulting the runtime workflow."
+  @spec fetch_issues_by_states([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names, tracker_settings, request_fun \\ &perform_request/5) do
+    fetch_state_pages(state_names, tracker_settings, request_fun, false)
+  end
+
+  @doc "Read issues for preflight, rejecting malformed records instead of dropping them."
+  @spec fetch_issues_by_states_strict([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states_strict(state_names, tracker_settings, request_fun \\ &perform_request/5) do
+    fetch_state_pages(state_names, tracker_settings, request_fun, true)
+  end
+
+  defp fetch_state_pages(state_names, tracker_settings, request_fun, strict?) do
     normalized_states = state_names |> Enum.map(&normalize_state/1) |> MapSet.new()
 
     case github_state_query(normalized_states) do
@@ -83,7 +95,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
       state_query ->
         with {:ok, github_settings} <- settings(tracker_settings) do
-          do_fetch_pages(github_settings, state_query, normalized_states, 1, request_fun, [])
+          do_fetch_pages(github_settings, state_query, normalized_states, 1, request_fun, [], strict?)
         end
     end
   end
@@ -102,7 +114,7 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp do_fetch_pages(settings, state_query, requested_states, page, request_fun, acc) do
+  defp do_fetch_pages(settings, state_query, requested_states, page, request_fun, acc, strict?) do
     params = %{
       "state" => state_query,
       "per_page" => @page_size,
@@ -121,14 +133,14 @@ defmodule SymphonyElixir.GitHub.Client do
              request_fun,
              false
            ),
-         true <- is_list(payload) or {:error, :github_unknown_payload} do
-      issues = normalize_state_page(payload, settings.repo, requested_states)
+         true <- is_list(payload) or {:error, :github_unknown_payload},
+         {:ok, issues} <- normalize_state_page(payload, settings.repo, requested_states, strict?) do
       updated_acc = [issues | acc]
 
       if length(payload) < @page_size do
         {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
       else
-        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
+        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc, strict?)
       end
     end
   end
@@ -166,18 +178,53 @@ defmodule SymphonyElixir.GitHub.Client do
     {:error, :github_unknown_payload}
   end
 
-  defp normalize_state_page(payload, repo, requested_states) do
-    issues = Enum.map(payload, &normalize_issue(&1, repo))
+  defp normalize_state_page(payload, repo, requested_states, strict?) do
+    issues =
+      Enum.map(payload, fn raw ->
+        if not strict? or valid_preflight_issue?(raw), do: normalize_issue(raw, repo)
+      end)
+
     malformed_count = Enum.count(issues, &is_nil/1)
 
-    if malformed_count > 0 do
-      Logger.warning("Dropping malformed GitHub issue records count=#{malformed_count}")
-    end
+    if strict? and malformed_count > 0 do
+      {:error, :github_unknown_payload}
+    else
+      if malformed_count > 0 do
+        Logger.warning("Dropping malformed GitHub issue records count=#{malformed_count}")
+      end
 
-    issues
-    |> Enum.reject(&is_nil/1)
-    |> Enum.filter(&MapSet.member?(requested_states, normalize_state(&1.state)))
+      filtered =
+        issues
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(&MapSet.member?(requested_states, normalize_state(&1.state)))
+
+      {:ok, filtered}
+    end
   end
+
+  # Validate before normalization/filtering: unknown states must not become an
+  # apparently empty queue, and malformed nested fields must not raise in get_in.
+  defp valid_preflight_issue?(%{} = issue) do
+    normalize_state(issue["state"]) in ["open", "closed"] and
+      valid_assignee?(issue["assignee"]) and valid_labels?(issue["labels"])
+  end
+
+  defp valid_preflight_issue?(_issue), do: false
+
+  defp valid_assignee?(nil), do: true
+  defp valid_assignee?(%{"login" => login}), do: present_string?(login)
+  defp valid_assignee?(_assignee), do: false
+
+  defp valid_labels?(nil), do: true
+
+  defp valid_labels?(labels) when is_list(labels) do
+    Enum.all?(labels, fn
+      %{"name" => name} -> present_string?(name)
+      name -> present_string?(name)
+    end)
+  end
+
+  defp valid_labels?(_labels), do: false
 
   defp normalize_issue(issue, repo) when is_map(issue) and is_binary(repo) do
     issue_number = issue["number"]
