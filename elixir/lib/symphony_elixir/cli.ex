@@ -21,8 +21,8 @@ defmodule SymphonyElixir.CLI do
         }
 
   @spec main([String.t()]) :: no_return()
-  def main(["--watchdog" | args]), do: watchdog_main(args)
-  def main(["--watchdog-once", command, path]), do: watchdog_once(command, path)
+  def main(["--watchdog" | args]), do: System.halt(watchdog_main(args))
+  def main(["--watchdog-once", command, path]), do: System.halt(watchdog_once(command, path))
 
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
@@ -42,16 +42,21 @@ defmodule SymphonyElixir.CLI do
       "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json"
     )
 
-    System.halt(1)
+    1
   end
 
   defp watchdog_once(command, config_path) do
     result =
-      if System.get_env("SYMPHONY_WATCHDOG_INTERNAL") == "1" do
-        with {:ok, config} <- SymphonyElixir.Watchdog.load_config(config_path),
-             do: SymphonyElixir.Watchdog.step(config, command)
-      else
-        {:error, "internal entrypoint requires the service lock"}
+      case SymphonyElixir.Watchdog.load_config(config_path) do
+        {:ok, config} ->
+          if service_lock_held?(config) do
+            SymphonyElixir.Watchdog.step(config, command)
+          else
+            {:error, "internal entrypoint requires the service lock"}
+          end
+
+        error ->
+          error
       end
 
     watchdog_finish(result)
@@ -61,11 +66,32 @@ defmodule SymphonyElixir.CLI do
     case result do
       {:ok, state} ->
         IO.puts(Jason.encode!(state))
-        System.halt(0)
+        0
 
       {:error, reason} ->
         IO.puts(:stderr, "watchdog: #{reason}")
-        System.halt(1)
+        1
+    end
+  end
+
+  # GNU flock keeps its locked descriptor open in the command by default. A
+  # caller-supplied environment variable is not proof of ownership of that lock.
+  defp service_lock_held?(config) do
+    lock_path = Path.join(config["state_dir"], "start.lock")
+
+    with {:ok, descriptors} <- File.ls("/proc/self/fd") do
+      Enum.any?(descriptors, fn descriptor ->
+        fd = Path.join("/proc/self/fd", descriptor)
+
+        with {:ok, ^lock_path} <- File.read_link(fd),
+             {:ok, info} <- File.read(Path.join("/proc/self/fdinfo", descriptor)) do
+          String.match?(info, ~r/^lock:\s+\d+: FLOCK\s+ADVISORY\s+WRITE\s/m)
+        else
+          _ -> false
+        end
+      end)
+    else
+      _ -> false
     end
   end
 
@@ -87,22 +113,22 @@ defmodule SymphonyElixir.CLI do
              "flock",
              [
                "-x",
-               "--close",
                Path.join(config["state_dir"], "start.lock"),
                config["controller"],
                "--watchdog-once",
                command,
                config["config_path"]
              ],
-             stderr_to_stdout: true,
-             env: [{"SYMPHONY_WATCHDOG_INTERNAL", "1"}]
+             stderr_to_stdout: true
            ),
-         {:ok, state} <- Jason.decode(String.trim(output)) do
+         {:ok, state} when is_map(state) <- Jason.decode(String.trim(output)) do
       {:ok, state}
     else
       false -> {:error, "controller executable missing"}
+      {:error, %Jason.DecodeError{}} -> {:error, "invalid watchdog child response"}
+      {:error, reason} -> {:error, reason}
+      {:ok, _} -> {:error, "invalid watchdog child response"}
       {output, _} -> {:error, String.trim(output)}
-      _ -> {:error, "lock or child command failed"}
     end
   end
 

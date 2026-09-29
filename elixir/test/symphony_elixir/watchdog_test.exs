@@ -506,6 +506,42 @@ defmodule SymphonyElixir.WatchdogTest do
     config_path = Path.join(ctx.root, "watchdog.json")
     File.write!(config_path, Jason.encode!(config))
 
+    {status_json, 0} = System.cmd(controller, ["--watchdog", "status", config_path])
+    assert Jason.decode!(status_json)["phase"] == "new"
+
+    missing_controller = Path.join(ctx.root, "missing-controller")
+    File.write!(config_path, Jason.encode!(%{config | "controller" => missing_controller}))
+
+    {missing, 1} =
+      System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
+
+    assert missing =~ "controller executable missing"
+
+    child = Path.join(ctx.root, "child-controller")
+    File.write!(child, "#!/bin/sh\nprintf '%s\\n' 'child failed'\nexit 7\n")
+    File.chmod!(child, 0o755)
+    File.write!(config_path, Jason.encode!(%{config | "controller" => child}))
+
+    {failed, 1} =
+      System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
+
+    assert failed =~ "child failed"
+
+    File.write!(child, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n")
+
+    {malformed, 1} =
+      System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
+
+    assert malformed =~ "watchdog: invalid watchdog child response"
+
+    File.write!(child, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
+
+    {wrong_shape, 1} =
+      System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
+
+    assert wrong_shape =~ "watchdog: invalid watchdog child response"
+    File.write!(config_path, Jason.encode!(config))
+
     {usage, 1} = System.cmd(controller, ["--watchdog"], stderr_to_stdout: true)
     assert usage =~ "Usage: symphony --watchdog"
 
@@ -514,6 +550,13 @@ defmodule SymphonyElixir.WatchdogTest do
 
     assert invalid =~ "invalid or unreadable watchdog config"
 
+    {invalid_internal, 1} =
+      System.cmd(controller, ["--watchdog-once", "start", "missing.json"],
+        stderr_to_stdout: true
+      )
+
+    assert invalid_internal =~ "invalid or unreadable watchdog config"
+
     {denied, 1} =
       System.cmd(controller, ["--watchdog-once", "start", config_path],
         stderr_to_stdout: true,
@@ -521,6 +564,15 @@ defmodule SymphonyElixir.WatchdogTest do
       )
 
     assert denied =~ "requires the service lock"
+
+    {forged, 1} =
+      System.cmd(controller, ["--watchdog-once", "start", config_path],
+        stderr_to_stdout: true,
+        env: [{"SYMPHONY_WATCHDOG_INTERNAL", "1"}]
+      )
+
+    assert forged =~ "requires the service lock"
+    refute File.exists?(config["status_file"])
 
     tasks =
       for _ <- 1..2,
