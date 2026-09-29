@@ -317,50 +317,100 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "failed starts back off, exhaust per-version budget and require explicit recovery", ctx do
-    install!(ctx.root, "v1", "exit 2")
-    first = check_after_quick_exit(ctx.config)
+    proc_root = Path.join(ctx.root, "empty-proc")
+    File.mkdir_p!(proc_root)
+
+    config =
+      ctx.config
+      |> Map.put(:proc_root, proc_root)
+      |> Map.put(:spawn_command, fn _, _, _ -> {"failed", 1} end)
+
+    assert {:ok, first} = Watchdog.step(config, "check")
     assert first["versions"]["v1"]["attempts"] == 1
     assert first["phase"] == "backoff"
-    assert {:ok, waiting} = Watchdog.step(ctx.config, "check")
+    assert first["last_action"]["reason"] == "launcher failed"
+    assert first["observed"] == nil
+    assert {:ok, waiting} = Watchdog.step(config, "check")
     assert waiting["phase"] == "backoff"
     assert waiting["versions"]["v1"]["attempts"] == 1
 
-    change_state(ctx.config, fn state -> put_in(state, ["versions", "v1", "next_at"], 0) end)
-    second = check_after_quick_exit(ctx.config)
+    change_state(config, fn state -> put_in(state, ["versions", "v1", "next_at"], 0) end)
+    assert {:ok, second} = Watchdog.step(config, "check")
     assert second["versions"]["v1"]["attempts"] == 2
     assert second["phase"] == "awaiting_human"
     assert second["versions"]["v1"]["awaiting_human"]
 
-    assert Enum.take(Enum.map(history(ctx.config), & &1["action"]), -2) == [
+    assert Enum.take(Enum.map(history(config), & &1["action"]), -2) == [
              "launch_failed",
              "abandon"
            ]
 
-    assert {:ok, still_exhausted} = Watchdog.step(ctx.config, "check")
+    assert {:ok, still_exhausted} = Watchdog.step(config, "check")
     assert still_exhausted["versions"]["v1"]["attempts"] == 2
-    assert {:ok, _} = Watchdog.step(ctx.config, "pause")
-    assert {:ok, resumed} = Watchdog.step(ctx.config, "resume")
+    assert {:ok, _} = Watchdog.step(config, "pause")
+    assert {:ok, resumed} = Watchdog.step(config, "resume")
     assert resumed["versions"]["v1"]["awaiting_human"]
-    assert {:ok, after_resume} = Watchdog.step(ctx.config, "check")
+    assert {:ok, after_resume} = Watchdog.step(config, "check")
     assert after_resume["phase"] == "awaiting_human"
 
     install2 = install!(ctx.root, "v2", "exit 0")
-    pointer!(ctx.config, "v2", install2)
-    other = check_after_quick_exit(ctx.config)
-    assert other["versions"]["v2"]["attempts"] == 1, inspect(other["last_action"])
+    pointer!(config, "v2", install2)
+    assert {:ok, other} = Watchdog.step(config, "check")
+    assert other["versions"]["v2"]["attempts"] == 1
     assert other["phase"] == "backoff"
-    pointer!(ctx.config, "v1", ctx.install)
-    assert {:ok, old} = Watchdog.step(ctx.config, "check")
+    assert other["last_action"]["reason"] == "launcher failed"
+    pointer!(config, "v1", ctx.install)
+
+    missing_proc = Map.put(config, :proc_root, Path.join(ctx.root, "missing-proc"))
+    assert {:ok, inaccessible} = Watchdog.step(missing_proc, "check")
+    assert inaccessible["phase"] == "blocked"
+    assert inaccessible["last_action"]["reason"] == "cannot scan process table"
+    assert inaccessible["observed"] == nil
+    assert inaccessible["versions"]["v1"]["awaiting_human"]
+    assert List.last(history(config))["reason"] == "cannot scan process table"
+
+    suspect = Path.join(proc_root, "123456")
+    File.mkdir_p!(suspect)
+    File.write!(Path.join(suspect, "cmdline"), "symphony\0#{config["workflow"]}\0")
+    assert {:ok, suspicious} = Watchdog.step(config, "check")
+    assert suspicious["phase"] == "blocked"
+    assert suspicious["last_action"]["reason"] =~ "unrecorded runner-like process"
+    assert suspicious["observed"]["pid"] == 123_456
+    assert List.last(history(config))["observed"]["pid"] == 123_456
+    assert suspicious["versions"]["v1"]["attempts"] == 2
+    File.rm_rf!(suspect)
+
+    assert {:ok, old} = Watchdog.step(config, "check")
     assert old["phase"] == "awaiting_human"
-    assert_audit_complete(ctx.config)
+    assert old["last_action"]["reason"] == "version budget exhausted"
+    assert old["observed"] == nil
+    assert old["versions"]["v1"]["attempts"] == 2
+    assert old["versions"]["v2"]["attempts"] == 1
+    assert Enum.count(history(config), &(&1["action"] == "attempt")) == 3
+    assert List.last(history(config))["action"] == "abandon"
 
     previous = old["history_count"]
-    assert {:ok, recovered} = Watchdog.step(ctx.config, "recover")
+    assert {:ok, recovered} = Watchdog.step(config, "recover")
     assert recovered["versions"]["v1"]["attempts"] == 0
+    assert recovered["versions"]["v2"]["attempts"] == 1
     assert recovered["history_count"] == previous + 1
-    assert {:ok, retried} = Watchdog.step(ctx.config, "check")
+    assert List.last(history(config))["action"] == "recover"
+    assert {:ok, retried} = Watchdog.step(config, "check")
     assert retried["versions"]["v1"]["attempts"] == 1
-    assert_audit_complete(ctx.config)
+    assert retried["last_action"]["reason"] == "launcher failed"
+    assert retried["observed"] == nil
+    assert retried["history_count"] == length(history(config))
+    assert List.last(history(config))["reason"] == "launcher failed"
+  end
+
+  test "a real runner that exits immediately consumes one attempt and backs off", ctx do
+    install!(ctx.root, "v1", "exit 2")
+    exited = check_after_quick_exit(ctx.config)
+    assert exited["phase"] == "backoff"
+    assert exited["versions"]["v1"]["attempts"] == 1
+    assert exited["process"] == nil
+    assert exited["observed"] == nil
+    assert Enum.count(history(ctx.config), &(&1["action"] == "attempt")) == 1
   end
 
   test "normal and abnormal exits use the same backoff and relaunch path", ctx do
