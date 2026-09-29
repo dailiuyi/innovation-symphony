@@ -82,6 +82,8 @@ timeout --signal=KILL "${PREFLIGHT_TIMEOUT:?set an explicit duration}" \
 
 保存标准输出、标准错误和退出码：0 表示配置及只读轮询通过，非零（包括外部超时）表示未通过。成功输出示例：`{"mode":"preflight","status":"passed","issue_count":0}`。体检不验证模型、命令执行或回执兼容性；成功不自动接管，也不证明 A 已退出。A 收尾、升级/回退入口仍未实现，完整边界见 [实现合同](IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
 
+体检的标准输出仅包含成功 JSON；重试日志和失败原因写入标准错误，解析 JSON 时不要合并两个输出流。沿用客户端的有界安全重试；重试后查询成功仍可通过，耗尽重试或任一页含未知状态、畸形记录则失败，不计为合法空队列。日志重定向仅用于退出式 CLI 体检，不改变正常服务的日志配置。
+
 ### 检查环境与显式重跑
 
 `scripts/check_candidate.py` 和 `scripts/check_baseline.py` 调用 Mix 时移除 `GITHUB_REPO`、`GITHUB_TOKEN`、`GH_TOKEN`。保留 PATH、Mix/Hex/mise 缓存等构建配置；不修改父进程环境。控制器已有的动态凭据过滤继续适用。这是当前 GitHub MVP 的配置隔离，不是通用环境白名单或安全沙箱。

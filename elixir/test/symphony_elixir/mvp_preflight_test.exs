@@ -85,6 +85,47 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     end
   end
 
+  test "strict reads reject unknown states and malformed nested fields before filtering", ctx do
+    write_workflow(ctx)
+    before = files(ctx.root)
+
+    for overrides <- [
+          %{"state" => "bogus"},
+          %{"state" => 1},
+          %{"assignee" => "alice"},
+          %{"assignee" => []},
+          %{"assignee" => %{}},
+          %{"assignee" => %{"login" => 1}},
+          %{"labels" => %{}},
+          %{"labels" => [nil]},
+          %{"labels" => [%{"name" => 1}]}
+        ] do
+      malformed = Map.merge(issue(101), overrides)
+
+      for body <- [[malformed], [issue(1), malformed]] do
+        assert {:error, :github_unknown_payload} = probe(ctx.path, fn "GET", _, _, nil, _ -> {:ok, %{status: 200, body: body}} end)
+      end
+
+      # Even a known, unselected state must have a valid record shape.
+      closed_malformed = Map.put(malformed, "state", "closed")
+
+      unless Map.has_key?(overrides, "state") do
+        assert {:error, :github_unknown_payload} =
+                 probe(ctx.path, fn "GET", _, _, nil, _ -> {:ok, %{status: 200, body: [closed_malformed]}} end)
+      end
+    end
+
+    for body <- [
+          [Map.put(issue(1), "state", "closed")],
+          [Map.merge(issue(1), %{"assignee" => %{"login" => "alice"}, "labels" => ["ready"]})]
+        ] do
+      count = if hd(body)["state"] == "closed", do: 0, else: 1
+      assert {:ok, %{issue_count: ^count}} = probe(ctx.path, fn "GET", _, _, nil, _ -> {:ok, %{status: 200, body: body}} end)
+    end
+
+    assert files(ctx.root) == before
+  end
+
   test "invalid or disabled configurations fail before any remote call", ctx do
     never_fetch = fn _, _ -> flunk("invalid configuration must not contact GitHub") end
 
@@ -210,7 +251,7 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
   end
 
   @tag timeout: 120_000
-  test "the packaged escript emits success JSON with exit zero and rejects malformed responses", ctx do
+  test "the packaged escript separates JSON and diagnostics through retries and rejects malformed pages", ctx do
     # Build the actual configured entry point. Only the Req transport is replaced,
     # using an external fixture beam and VM config; the packaged code is untouched.
     {build_output, build_status} =
@@ -225,23 +266,45 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     end
 
     write_workflow(ctx)
+    File.mkdir_p!(Path.join(ctx.root, "state/evidence"))
+    File.write!(Path.join(ctx.root, "state/receipt.json"), ~s({"status":"awaiting_human"}))
+    File.write!(Path.join(ctx.root, "state/evidence/keep"), "existing evidence")
+    stderr_path = ctx.root <> ".stderr"
+    on_exit(fn -> File.rm(stderr_path) end)
+    full_page = Enum.map(1..100, &issue/1)
+    unknown_state = Map.put(issue(101), "state", "bogus")
 
-    for {pages, expected} <- [
-          {%{1 => Enum.map(1..100, &issue/1), 2 => [issue(101)]}, {:ok, 101}},
-          {%{1 => []}, {:ok, 0}},
-          {%{1 => [%{}]}, :error},
-          {%{1 => [issue(1), %{}]}, :error},
-          {%{1 => Enum.map(1..100, &issue/1), 2 => [%{}]}, :error}
+    for {responses, expected} <- [
+          {[{1, {200, full_page}}, {2, {200, [issue(101)]}}], {:ok, 101}},
+          {[{1, {200, []}}], {:ok, 0}},
+          {[{1, {200, [%{}]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, [issue(1), %{}]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, full_page}}, {2, {200, [%{}]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, [unknown_state]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, [issue(1), unknown_state]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, full_page}}, {2, {200, [unknown_state]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {200, [Map.put(issue(1), "assignee", "alice")]}}], {:error, ":github_unknown_payload"}},
+          {[{1, {503, %{}}}, {1, {200, []}}], {:ok, 0}},
+          {[{1, {503, %{}}}, {1, {200, full_page}}, {2, {503, %{}}}, {2, {200, [issue(101)]}}], {:ok, 101}},
+          {List.duplicate({1, {503, %{}}}, 4), {:error, "{:github_api_status, 503}"}},
+          {[{1, {200, full_page}} | List.duplicate({2, {503, %{}}}, 4)], {:error, "{:github_api_status, 503}"}},
+          {List.duplicate({1, {:transport_error, :timeout}}, 4), {:error, ":github_api_request"}}
         ] do
       config_path = Path.join(fixture_dir, "preflight.config")
-      config = [req: [default_options: [plug: {SymphonyElixir.PreflightGitHubPlug, pages}]]]
+      # Keep the client's real retry policy and default attempt limit; skip only
+      # the backoff wait in this transport fixture.
+      config = [req: [default_options: [plug: {SymphonyElixir.PreflightGitHubPlug, responses}, retry_delay: 0]]]
       File.write!(config_path, :io_lib.format(~c"~tp.~n", [config]))
       before = files(ctx.root)
 
       {output, status} =
         System.cmd(
-          "timeout",
+          "sh",
           [
+            "-c",
+            ~s(exec "$@" 2>"$PREFLIGHT_STDERR"),
+            "preflight-test",
+            "timeout",
             "--signal=KILL",
             "15s",
             "escript",
@@ -250,19 +313,31 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
             "--preflight",
             ctx.path
           ],
-          env: [{"ERL_FLAGS", "#{System.get_env("ERL_FLAGS")} -pa #{inspect(fixture_dir)} -config #{inspect(config_path)}"}],
-          stderr_to_stdout: true
+          env: [
+            {"ERL_FLAGS", "#{System.get_env("ERL_FLAGS")} -pa #{inspect(fixture_dir)} -config #{inspect(config_path)}"},
+            {"PREFLIGHT_STDERR", stderr_path}
+          ]
         )
+
+      stderr = File.read!(stderr_path)
+      requests = Regex.scan(~r/^preflight-request page=(\d+)$/m, stderr, capture: :all_but_first)
+      assert requests == Enum.map(responses, fn {page, _} -> [to_string(page)] end), stderr
+
+      page_count = responses |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> length()
+      assert length(Regex.scan(~r/retry: /, stderr)) == length(responses) - page_count, stderr
 
       case expected do
         {:ok, count} ->
-          assert status == 0, output
+          assert status == 0, output <> stderr
           assert Jason.decode!(output) == %{"mode" => "preflight", "status" => "passed", "issue_count" => count}
+          refute stderr =~ "Preflight failed:"
 
-        :error ->
-          assert status == 1, output
-          assert output =~ "Preflight failed: :github_unknown_payload"
-          refute output =~ ~s("status":"passed")
+        {:error, reason} ->
+          assert status == 1, output <> stderr
+          assert output == ""
+          assert stderr =~ "Preflight failed:"
+          assert stderr =~ reason
+          refute stderr =~ ~s("status":"passed")
       end
 
       assert files(ctx.root) == before

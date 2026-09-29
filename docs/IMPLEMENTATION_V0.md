@@ -22,6 +22,8 @@ escript 的运行路径位于归档内部；路径边界校验先解析真实归
 
 返修保留状态回归断言：通用配置校验先拒绝无效状态，`closed` 及混合有效/无效状态同样不得触发远端请求；`open` 的大小写与空白形式须实际发起 GET。独立 VM 中真实 `CLI.main` 配置失败的非零退出断言继续保留。新增测试构建并执行实际 escript，通过 Req 的测试 Plug 替换传输层，解析标准输出 JSON 并断言成功退出码为 0，同时验证畸形响应退出码为 1、运行监督器未启动、测试目录内容未变；不修改打包代码或连接真实 GitHub。
 
+本轮返修在严格读取的状态过滤前校验响应状态及 assignee/labels 的嵌套类型，未知状态返回 `github_unknown_payload`；合法 `closed` 记录仍按查询状态过滤，普通轮询行为不变。CLI 体检在启动查询依赖前将默认日志处理器定向到 stderr，退出前刷新日志，stdout 保留完整成功 JSON。真实 escript 回归分别捕获两条输出流，覆盖首页/混合页/后续页未知状态、503 后空队列成功、重试后分页成功、首页及后续页重试耗尽、传输失败，并断言请求页序列、重试次数、退出码及只读边界。测试仅把重试等待设为 0，不改变客户端的重试策略和次数上限。
+
 本次 `mix format --check-formatted` 与 `git diff --check` 通过。定向 `mix test test/symphony_elixir/mvp_preflight_test.exs test/symphony_elixir/cli_test.exs test/symphony_elixir/github_adapter_test.exs` 在 Mix.PubSub 启动时因本地 TCP socket `:eperm` 被沙箱阻止，测试未执行；未重试或使用替代测试入口。静态检查、全量测试、100% 覆盖率及打包入口回归均待控制器运行标准门禁，新增断言不代表已经通过或证明真实接入。
 
 ## 复用与扩展

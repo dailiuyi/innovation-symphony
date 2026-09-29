@@ -27,7 +27,9 @@ defmodule SymphonyElixir.CLI do
   @doc false
   @spec main([String.t()], (-> ensure_started_result())) :: no_return()
   def main(args, ensure_all_started) do
-    case evaluate(args, runtime_deps(ensure_all_started)) do
+    deps = Map.put(runtime_deps(ensure_all_started), :preflight, &preflight_with_stderr_logging/1)
+
+    case evaluate(args, deps) do
       :ok ->
         wait_for_shutdown()
 
@@ -38,6 +40,26 @@ defmodule SymphonyElixir.CLI do
       {:error, message} ->
         IO.puts(:stderr, message)
         System.halt(1)
+    end
+  end
+
+  # Only the exiting CLI preflight process changes its logger. Configure it before
+  # starting query dependencies so retries cannot contaminate the JSON on stdout.
+  defp preflight_with_stderr_logging(path) do
+    {:ok, _} = Application.ensure_all_started(:logger)
+    Logger.flush()
+    :logger.remove_handler(:default)
+
+    :ok =
+      :logger.add_handler(:default, :logger_std_h, %{
+        config: %{type: :standard_error},
+        formatter: Logger.default_formatter()
+      })
+
+    try do
+      Preflight.run(path)
+    after
+      Logger.flush()
     end
   end
 

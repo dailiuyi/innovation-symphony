@@ -197,6 +197,18 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              )
   end
 
+  test "ordinary polling still filters unknown states while strict preflight rejects them" do
+    request = fn "GET", _, _, nil, _ ->
+      {:ok, %{status: 200, body: [raw_issue(1), Map.put(raw_issue(2), "state", "bogus")]}}
+    end
+
+    assert {:ok, [%Issue{id: "1"}]} =
+             GitHubClient.fetch_issues_by_states_for_test(["open"], tracker_settings(), request)
+
+    assert {:error, :github_unknown_payload} =
+             GitHubClient.fetch_issues_by_states_strict(["open"], tracker_settings(), request)
+  end
+
   test "client refreshes numeric IDs in order, omits 404s, and rejects malformed refreshes" do
     request_fun = fn "GET", path, %{}, nil, _settings ->
       send(self(), {:github_id_path, path})

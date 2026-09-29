@@ -179,7 +179,11 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp normalize_state_page(payload, repo, requested_states, strict?) do
-    issues = Enum.map(payload, &normalize_issue(&1, repo))
+    issues =
+      Enum.map(payload, fn raw ->
+        if not strict? or valid_preflight_issue?(raw), do: normalize_issue(raw, repo)
+      end)
+
     malformed_count = Enum.count(issues, &is_nil/1)
 
     if strict? and malformed_count > 0 do
@@ -197,6 +201,30 @@ defmodule SymphonyElixir.GitHub.Client do
       {:ok, filtered}
     end
   end
+
+  # Validate before normalization/filtering: unknown states must not become an
+  # apparently empty queue, and malformed nested fields must not raise in get_in.
+  defp valid_preflight_issue?(%{} = issue) do
+    normalize_state(issue["state"]) in ["open", "closed"] and
+      valid_assignee?(issue["assignee"]) and valid_labels?(issue["labels"])
+  end
+
+  defp valid_preflight_issue?(_issue), do: false
+
+  defp valid_assignee?(nil), do: true
+  defp valid_assignee?(%{"login" => login}), do: present_string?(login)
+  defp valid_assignee?(_assignee), do: false
+
+  defp valid_labels?(nil), do: true
+
+  defp valid_labels?(labels) when is_list(labels) do
+    Enum.all?(labels, fn
+      %{"name" => name} -> present_string?(name)
+      name -> present_string?(name)
+    end)
+  end
+
+  defp valid_labels?(_labels), do: false
 
   defp normalize_issue(issue, repo) when is_map(issue) and is_binary(repo) do
     issue_number = issue["number"]
