@@ -1,5 +1,16 @@
 # 原型运行与项目交付
 
+## 2026-09-29 当前 main 安装与运行切换
+
+- 按 IS-028，用户明确要求安装当前 main。PR #4 已合并；安装固定提交 `11acc1b8b40d471247b60b55d92239ea6ae81a1d`，其 [GitHub CI](https://github.com/dailiuyi/innovation-symphony/actions/runs/36545295566) 成功。该提交与此前通过 478 项 Elixir 测试（0 失败、6 跳过、覆盖率 100%）及 28 项 Python 集成测试的冲突修复内容一致。
+- WSL `desktop` 独立安装目录：`/var/tmp/innovation-symphony-v0-rerun1/releases/11acc1b8b40d471247b60b55d92239ea6ae81a1d`。从固定 Git 提交安装，重新编译和 escript 构建通过，安装工作树干净。
+- 新版实际 `--preflight` 通过真实 GitHub 只读查询，返回 `status=passed`、`issue_count=0`；旧进程空闲后暂停领取并退出，新进程 PID `3268970` 的 cwd 与固定安装一致。
+- 沿用 `runtime-v1`、`state/attempt-4`、`workspaces/v1`。编码和 Review 仍为 Astra，恢复策略及预算未改变；仅将启动器、工具链包装器和检查脚本路径指向新安装。新服务恢复原有 ready 领取配置。
+- 状态接口 `http://127.0.0.1:43223/api/v1/state` 返回 HTTP 200，running/retrying/blocked 均为 0；两份历史回执及证据所在的 576 项目录、文件、链接条目内容全部保持不变。
+- 旧 `07f7493` 安装及运行文件备份保留，`previous-release.json` 记录实际旧版本。本机证据在 `.local/main-switch-11acc1b/`，运行侧备份在 `operator-main-switch-11acc1b8b40d/runtime-before/`。未新建或重新派发 Issue，未配置云部署或开机自启动；本次人工切换不作为完整自动接棒或回退演练的验收。
+
+以下章节保留各次交付时的历史状态；当前运行版本以上述固定提交为准。
+
 ## 2026-09-29 自动恢复实测
 
 控制器 `07f74936f77e30c6337da70a1fec9476a61eac8f` 已发布、通过 CI 并安装在本地 WSL。Issue #3 保留原五次返工，通过自动诊断及两次新增编码，自动处理一次真实测试失败后通过完整检查和独立 Review，交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)。完整版本、检查数字和证据见 [验收记录](VALIDATION_AUTOMATIC_RECOVERY.md)。
