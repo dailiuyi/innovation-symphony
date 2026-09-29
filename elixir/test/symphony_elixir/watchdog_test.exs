@@ -394,7 +394,7 @@ defmodule SymphonyElixir.WatchdogTest do
     assert unreadable["versions"] == %{}
 
     File.rmdir!(Path.join(fake_proc, "123/cmdline"))
-    assert {:ok, port_blocked} = Watchdog.step(Map.put(config, "port", 43210), "check")
+    assert {:ok, port_blocked} = Watchdog.step(Map.put(config, "port", 43_210), "check")
     assert port_blocked["last_action"]["reason"] =~ "port occupied"
     assert port_blocked["versions"] == %{}
   end
