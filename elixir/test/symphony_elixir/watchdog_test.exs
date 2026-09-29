@@ -570,6 +570,44 @@ defmodule SymphonyElixir.WatchdogTest do
       )
 
     assert forged =~ "requires the service lock"
+
+    lock_path = Path.join(config["state_dir"], "start.lock")
+    unrelated_lock = Path.join(ctx.root, "unrelated.lock")
+
+    {unrelated, 1} =
+      System.cmd(
+        "flock",
+        ["-x", unrelated_lock, controller, "--watchdog-once", "status", config_path],
+        stderr_to_stdout: true
+      )
+
+    assert unrelated =~ "requires the service lock"
+
+    {unlocked_descriptor, 1} =
+      System.cmd(
+        "sh",
+        [
+          "-c",
+          "exec 9>\"$1\"; shift; exec \"$@\"",
+          "watchdog-test",
+          lock_path,
+          controller,
+          "--watchdog-once",
+          "status",
+          config_path
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert unlocked_descriptor =~ "requires the service lock"
+
+    {locked, 0} =
+      System.cmd(
+        "flock",
+        ["-x", lock_path, controller, "--watchdog-once", "status", config_path]
+      )
+
+    assert Jason.decode!(locked)["phase"] == "new"
     refute File.exists?(config["status_file"])
 
     tasks =

@@ -79,18 +79,24 @@ defmodule SymphonyElixir.CLI do
   defp service_lock_held?(config) do
     lock_path = Path.join(config["state_dir"], "start.lock")
 
-    with {:ok, descriptors} <- File.ls("/proc/self/fd") do
-      Enum.any?(descriptors, fn descriptor ->
-        fd = Path.join("/proc/self/fd", descriptor)
+    case File.ls("/proc/self/fd") do
+      {:ok, descriptors} -> Enum.any?(descriptors, &service_lock_descriptor?(&1, lock_path))
+      _ -> false
+    end
+  end
 
-        with {:ok, ^lock_path} <- File.read_link(fd),
-             {:ok, info} <- File.read(Path.join("/proc/self/fdinfo", descriptor)) do
-          String.match?(info, ~r/^lock:\s+\d+: FLOCK\s+ADVISORY\s+WRITE\s/m)
-        else
-          _ -> false
-        end
-      end)
-    else
+  defp service_lock_descriptor?(descriptor, lock_path) do
+    fd = Path.join("/proc/self/fd", descriptor)
+
+    case File.read_link(fd) do
+      {:ok, ^lock_path} -> service_lock_info?(descriptor)
+      _ -> false
+    end
+  end
+
+  defp service_lock_info?(descriptor) do
+    case File.read(Path.join("/proc/self/fdinfo", descriptor)) do
+      {:ok, info} -> String.match?(info, ~r/^lock:\s+\d+: FLOCK\s+ADVISORY\s+WRITE\s/m)
       _ -> false
     end
   end
