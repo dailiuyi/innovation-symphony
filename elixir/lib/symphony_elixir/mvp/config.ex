@@ -18,7 +18,7 @@ defmodule SymphonyElixir.Mvp.Config do
           checks: [[String.t()]],
           state_dir: Path.t() | nil,
           check_timeout_ms: pos_integer(),
-          max_rework: 0..2,
+          max_rework: 0..5,
           ready_label: String.t()
         }
 
@@ -180,7 +180,7 @@ defmodule SymphonyElixir.Mvp.Config do
   defp positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
   defp positive_integer(_value), do: {:error, :invalid_mvp_check_timeout_ms}
 
-  defp max_rework(value) when is_integer(value) and value in 0..2, do: :ok
+  defp max_rework(value) when is_integer(value) and value in 0..5, do: :ok
   defp max_rework(_value), do: {:error, :mvp_rework_not_supported}
 
   defp label(value) when is_binary(value) do

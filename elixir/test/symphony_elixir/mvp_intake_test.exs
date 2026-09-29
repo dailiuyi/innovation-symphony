@@ -42,16 +42,16 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     assert settings.max_rework == 0
   end
 
-  test "A1 max_rework accepts only integers 0 through 2, including disabled configurations" do
+  test "A1 max_rework accepts only integers 0 through 5, including disabled configurations" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
 
-    for limit <- [0, 1, 2, 3, -1, 1.0, "1", nil] do
+    for limit <- [0, 1, 2, 3, 4, 5, 6, -1, 1.0, "1", nil] do
       config = Map.put(valid_mvp_config(Path.join(workflow_dir, "state")), "max_rework", limit)
 
       for enabled <- [true, false] do
         write_mvp_workflow!(Map.put(config, "enabled", enabled), Path.join(workflow_dir, "workspaces"))
 
-        if is_integer(limit) and limit in 0..2 do
+        if is_integer(limit) and limit in 0..5 do
           assert {:ok, %{max_rework: ^limit}} = MvpConfig.settings()
         else
           assert {:error, :mvp_rework_not_supported} = MvpConfig.settings()
@@ -494,7 +494,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       {"missing state path", Map.delete(config_for.(%{}), "state_dir"), {:missing_mvp_setting, :state_dir}},
       {"blank state path", config_for.(%{"state_dir" => "  "}), {:missing_mvp_setting, :state_dir}},
       {"invalid timeout", config_for.(%{"check_timeout_ms" => -1}), :invalid_mvp_check_timeout_ms},
-      {"unsupported rework", config_for.(%{"max_rework" => 3}), :mvp_rework_not_supported},
+      {"unsupported rework", config_for.(%{"max_rework" => 6}), :mvp_rework_not_supported},
       {"invalid ready label", config_for.(%{"ready_label" => 7}), :invalid_mvp_ready_label}
     ]
 

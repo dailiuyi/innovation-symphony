@@ -1,8 +1,8 @@
 # GH-1：有限返工合同与验收对应
 
-来源：IS-015/016，以及 IS-022 的检查返工更新。此文件描述任务工作区中的实现，不代表已发布、真实 GitHub 验收或运行版本升级。
+来源：IS-015/016、IS-022 的检查返工更新及 IS-024 的五次预算。此文件描述任务工作区中的实现，发布及运行状态须另行核实。
 
-`mvp.max_rework` 仅接受整数 0..2，默认 0。0 保持 V0 单轮行为及 `{approved, summary}` Review 输出；显式 1/2 开启以下合同，替代 V0 中“固定为 0、未实现多轮返工”的限制。其他恢复和交付边界不变。
+`mvp.max_rework` 仅接受整数 0..5，默认 0。0 保持 V0 单轮行为及 `{approved, summary}` Review 输出；显式 1..5 开启以下合同，替代原 0..2 上限。五次返工加初始轮，最多六轮；已用次数不会因配置增额而归零。其他恢复和交付边界不变。
 
 - 明确可修复的检查失败与有效 `approved=false` 的独立 Review 共用返工预算。最多执行 `max_rework + 1` 轮，不因失败来源切换而重置；最后一次失败保留证据并 blocked。Review 拒绝仍回帖；检查失败不新增平台评论。未知检查错误、环境/权限/超时、模型错误、非法输出、源码/基线/Git 元数据变化均停止。
 - 同一工作区与初始 base SHA；每次编码前持久记录 `rework_count` 和新轮次。领取时模型保持冻结。每轮重新执行完整检查，通过后才调用新的只读 Review 会话，平台动态工具禁用。
@@ -24,13 +24,13 @@
 | --- | --- |
 | A1 | `mvp_intake_test.exs`: `A1 max_rework accepts only integers...`；`mvp_executor_test.exs`: `A1 executor rejects...`；原 `creates a checked candidate...`、`a rejected review prevents publish` 保留旧路径 |
 | A2 | `mvp_executor_test.exs`: `A2 A4 A5 A8 A9 A10 rejection is posted before rework...`；`mvp_app_server_test.exs`: 原 `MVP session freezes model...` 验证独立 AppServer 的只读参数 |
-| A3 | `mvp_executor_test.exs`: `A3 continuous rejection...`（1/2 两种上限，含最终评论 ID） |
+| A3 | `mvp_executor_test.exs`: `A3 continuous rejection...`（1/2 两种上限，含最终评论 ID）；`operator budget extension preserves...` 验证已用两次后最多再三次 |
 | A4 | `mvp_executor_test.exs`: `A4 rework approval delivers exactly one draft PR...` 与原 `publish pushes the candidate branch...`（固定 SHA 和 Draft 请求） |
 | A5 | `mvp_executor_test.exs`: `A2 A4...`（两轮不同 SHA、共同 base、逐轮检查日志及 Review 文件） |
 | A6 | `mvp_executor_test.exs`: `A6 comment failures...`、`A6 interrupted rework...`；`mvp_rework_contract_test.exs`: 三项 `A6 ... reconciliation...` |
 | A7 | `mvp_executor_test.exs`: `A7 unclassified check failures...`、`A7 rework mode still rejects...`；原 Git 元数据、基线变动及失败门禁测试 |
 | A8 | `mvp_rework_contract_test.exs`: `A8 review rejects malformed...`；`mvp_executor_test.exs`: `A2 A4...` 使用缺少对应测试的明确拒绝作为返工原因 |
-| A9 | `mvp_rework_contract_test.exs`: `A9 cumulative notifications...`；`mvp_executor_test.exs`: `A2 A4...`（四次会话累计及未知字段）、`A9 interruption before any second coder message...`（首轮完整用量、拒绝回帖确认、第二轮无消息中断）、`A9 initial interruption before telemetry...`（首轮全未知及 0/1/2 兼容） |
+| A9 | `mvp_rework_contract_test.exs`: `A9 cumulative notifications...`；`mvp_executor_test.exs`: `A2 A4...`（四次会话累计及未知字段）、`A9 interruption before any second coder message...`（首轮完整用量、拒绝回帖确认、第二轮无消息中断）、`A9 initial interruption before telemetry...`（首轮全未知及 0..5 兼容） |
 | A10 | `mvp_executor_test.exs`: `A10 model comments arriving after claim...` 与 `A2 A4...`（模拟运行中新增有效模型评论，每次调用断言冻结模型、禁用工具、回帖无 @、仅允许评论 API）；原 AppServer、intake 和 Draft PR 测试保留 |
 
 ## 验证与交付状态
@@ -39,7 +39,11 @@ IS-022 新增验收：`mvp_executor_test.exs` 覆盖检查与 Review 两种顺�
 
 IS-023 显式续跑：`Executor.resume_checks/2` 仅供可信操作者在校验完整上下文和原回执 SHA256 后调用，调度器不自动调用。只接受检查失败的 blocked 回执，绑定原 base、候选、分支、工作区、模型、轮次和预算，并验证候选与冻结基线完整性。接受后保存原回执到原轮次的 `operator-check-resume/`，在新目录重新检查；原日志不覆盖。独占锁在成功、中断后均保留，不能自动重复调用或通过恢复旧回执重置预算。新的固定 runner 可以由操作者指定，仍记录完整命令和证据；这不是通用中断恢复或升级接棒实现。
 
-标准门禁仍是 `scripts/check_candidate.py`（格式、lint/specs、100% 覆盖率、Dialyzer、build）及控制器持有的外部冻结 `scripts/check_baseline.py`。没有修改阈值、豁免模块或冻结基线。本任务仅保存源码和测试，不提交、不推送、不建 PR。
+IS-024 增额续跑：`Executor.extend_rework(context, receipt_sha256, previous_limit)` 仅用于用户明确增加总预算后的操作者调用。旧预算须已耗尽，新预算大于旧预算且至多为 5；只接受最后一轮可修复检查失败及匹配的磁盘检查 JSON，不接受单纯 Review 拒绝、一般中断或结果不确定状态。再次核对原执行身份、候选、Git 元数据、冻结基线和回执摘要，保存旧回执及最新授权 Issue 全文到 `operator-rework-extension/`。永久独占锁和回执标记禁止第二次增额或恢复旧回执后重入。重新检查同一候选不消耗返工，后续新编码轮才递增计数和用量；原两次历史及日志、旧续跑锁均保留。六项 `operator budget extension...` 测试覆盖剩余预算、原候选通过、越界、完整性、检查证据、并发和中断重入。
+
+标准门禁仍是 `scripts/check_candidate.py`（格式、lint/specs、100% 覆盖率、Dialyzer、build）及控制器持有的外部冻结 `scripts/check_baseline.py`。不降低阈值或豁免模块。IS-024 修改预算合同后，本次控制器验证仅在独立基线副本中将旧“3 超出上限”断言更新为“6 超出上限”、合法区间更新为 0..5，并保留精确差异；Issue #3 原始冻结基线不变。
+
+以下为 GH-1 的历史验证记录，当时仅保存源码和测试，尚未提交、推送或建 PR；不限制 IS-023/024 已明确授权的发布和运行切换。
 
 本沙箱的标准 `mix test` 在 Mix.PubSub 启动时因 TCP socket `:eperm` 失败。可用已安装依赖直接编译和运行 ExUnit 做补充验证，但不能代替完整门禁；真实 GitHub 评论、模型质量和版本接棒仍由控制器及人工验收。
 

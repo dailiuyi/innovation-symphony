@@ -8,9 +8,55 @@ defmodule SymphonyElixir.Mvp.Executor do
   def run(workspace, issue, settings, models, receipt, opts \\ []) do
     limit = Map.get(settings, :max_rework, 0)
 
-    with true <- (is_integer(limit) and limit in 0..2) or {:error, :mvp_rework_not_supported},
+    with true <- (is_integer(limit) and limit in 0..5) or {:error, :mvp_rework_not_supported},
          true <- is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started} do
       execute(workspace, issue, settings, models, receipt, opts)
+    end
+  end
+
+  @doc """
+  Internal operator-only, one-time increase of an exhausted check-repair budget.
+
+  The context pins the original execution as for resume_checks/2, but limit and
+  settings.max_rework contain the newly authorized total (at most five). The old
+  limit must match the raw SHA256-bound receipt and its consumed rework count.
+  Only a final repairable check failure with matching on-disk evidence is accepted;
+  Review rejection and generic interrupted runs require separate investigation.
+  The caller supplies the latest authorized Issue scope, retained in the audit.
+  This does not reset counters, release intake, or remove either operator guard.
+  """
+  @spec extend_rework(map(), String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
+  def extend_rework(context, expected_receipt_digest, previous_limit) do
+    with {:ok, _raw, _data} <- resume_binding(context, expected_receipt_digest, {:extend, previous_limit}),
+         :ok <- extension_guard(context),
+         {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, {:extend, previous_limit}) do
+      evidence = Path.join(context.evidence, "operator-rework-extension")
+
+      with :ok <- File.mkdir(evidence),
+           :ok <- File.write(Path.join(evidence, "receipt-before.json"), raw, [:exclusive, :sync]) do
+        audit = %{
+          "receipt_sha256" => expected_receipt_digest,
+          "previous_limit" => previous_limit,
+          "new_limit" => context.limit,
+          "rework_count" => data["rework_count"],
+          "candidate_sha" => data["candidate_sha"],
+          "evidence" => evidence,
+          "checks" => context.settings.checks,
+          "issue_scope" => Map.take(context.issue, [:id, :identifier, :title, :description])
+        }
+
+        :ok = File.write(Path.join(evidence, "authorization.json"), Jason.encode!(audit, pretty: true), [:exclusive, :sync])
+        :ok = record(context, "checking", %{"operator_rework_extension" => audit, "max_rework" => context.limit, "reason" => nil, "check_failure" => nil})
+        result = check_and_review(context, length(data["rounds"]), data["candidate_sha"], evidence)
+        finish(context, result)
+      end
+    end
+  end
+
+  defp extension_guard(context) do
+    case File.write(Path.join(context.evidence, "operator-rework-extension.lock"), "operator rework extension\n", [:exclusive, :sync]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:mvp_extension_guard, reason}}
     end
   end
 
@@ -48,12 +94,12 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp resume_binding(context, digest) do
+  defp resume_binding(context, digest, mode \\ :resume) do
     with {:ok, raw} <- File.read(context.receipt),
          true <- Base.encode16(:crypto.hash(:sha256, raw), case: :lower) == digest,
          {:ok, data} <- Jason.decode(raw),
          true <- is_map(data),
-         true <- resume_identity?(context, data),
+         true <- resume_identity?(context, data, mode),
          true <- resume_rounds?(context, data),
          {:ok, branch} <- Commands.git(["branch", "--show-current"], context.workspace),
          true <- branch == context.branch,
@@ -65,7 +111,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp resume_identity?(context, data) do
+  defp resume_identity?(context, data, mode) do
     expected = %{
       "status" => "blocked",
       "repository" => context.repository.repo,
@@ -74,24 +120,56 @@ defmodule SymphonyElixir.Mvp.Executor do
       "branch" => context.branch,
       "base_sha" => context.base,
       "models" => Map.new(context.models, fn {key, value} -> {Atom.to_string(key), value} end),
-      "max_rework" => context.limit
+      "max_rework" => previous_limit(context, mode)
     }
 
     Map.take(data, Map.keys(expected)) == expected and data["repository"] == context.issue.native_ref["repo"] and
-      context.evidence == context.receipt <> ".evidence" and resume_state?(context, data)
+      context.evidence == context.receipt <> ".evidence" and resume_state?(context, data, mode)
   end
 
-  defp resume_state?(context, data) do
-    is_integer(context.limit) and context.limit in 1..2 and context.settings.max_rework == context.limit and
+  defp previous_limit(context, :resume), do: context.limit
+  defp previous_limit(_context, {:extend, limit}), do: limit
+
+  defp resume_state?(context, data, :resume) do
+    is_integer(context.limit) and context.limit in 1..5 and context.settings.max_rework == context.limit and
       is_binary(data["reason"]) and Regex.match?(~r/^\{:mvp_check_failed, [1-9][0-9]*\}$/, data["reason"]) and
       is_nil(data["operator_check_resume"]) and is_list(data["rounds"]) and data["rounds"] != []
+  end
+
+  defp resume_state?(context, data, {:extend, previous_limit}) do
+    extension_budget?(context, data, previous_limit) and
+      data["reason"] == ":mvp_rework_exhausted" and is_nil(data["operator_rework_extension"]) and
+      is_list(data["rounds"]) and data["rounds"] != [] and extension_failure?(data)
+  end
+
+  defp extension_budget?(context, data, previous_limit) do
+    is_integer(previous_limit) and previous_limit in 1..4 and
+      is_integer(context.limit) and context.limit > previous_limit and context.limit <= 5 and
+      context.settings.max_rework == context.limit and data["rework_count"] == previous_limit
+  end
+
+  defp extension_failure?(data) do
+    last = List.last(data["rounds"])
+    failure = data["check_failure"]
+
+    with %{"repairable" => true, "exit_status" => 10, "index" => index, "log_path" => log} <- failure,
+         true <- is_map(last) and last["check_failure"] == failure and is_integer(index) and index > 0,
+         true <- is_binary(last["evidence"]),
+         true <- log in Enum.map([last["evidence"], Path.join(last["evidence"], "operator-check-resume")], &Path.join(&1, "check-#{index}.log")),
+         true <- File.regular?(log),
+         {:ok, raw} <- File.read(Path.rootname(log) <> ".json"),
+         {:ok, ^failure} <- Jason.decode(raw) do
+      true
+    else
+      _ -> false
+    end
   end
 
   defp resume_rounds?(context, data) do
     rounds = data["rounds"]
     last = List.last(rounds)
 
-    length(rounds) <= context.limit + 1 and data["rework_count"] == length(rounds) - 1 and resume_candidate?(last, data) and
+    length(rounds) <= data["max_rework"] + 1 and data["rework_count"] == length(rounds) - 1 and resume_candidate?(last, data) and
       Enum.all?(Enum.with_index(rounds, 1), fn {round, number} ->
         is_map(round) and round["round"] == number and round["base_sha"] == context.base and round["models"] == data["models"] and
           is_binary(round["candidate_sha"]) and round["evidence"] == Path.join(context.evidence, "round-#{number}")

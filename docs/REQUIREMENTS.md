@@ -45,4 +45,8 @@ ready 表示可开始执行，review、blocked 等标签表达基本工作流状
 
 ## GH-1 有限返工
 
-按 IS-015/016 与 IS-022，明确可修复的测试、覆盖率、格式等检查失败交回编码 Agent，与有效独立 Review 拒绝共用最多两次返工预算。每次修复重新执行完整检查，模型及初始 base 冻结，逐轮完整保留检查 stdout/stderr、退出状态和候选证据。Review 拒绝仍先回帖原 Issue；检查失败反馈保留在本地证据及编码输入中。未知错误、环境故障与中断仍停止，历史 blocked 任务不自动恢复，交付仍止于 Draft PR。工程兼容默认 `max_rework=0`，显式 1/2 启用。实现和验收对应见 [REVIEW_REWORK.md](REVIEW_REWORK.md)，真实执行验收尚未完成。
+按 IS-024，明确可修复的测试、覆盖率、格式等检查失败交回编码 Agent，与有效独立 Review 拒绝共用最多五次返工预算（替代 IS-016/022 的两次）。每次修复重新执行完整检查，模型及初始 base 冻结，逐轮完整保留检查 stdout/stderr、退出状态和候选证据。Review 拒绝仍先回帖原 Issue；检查失败反馈保留在本地证据及编码输入中。未知错误、环境故障与中断仍停止，历史 blocked 任务不自动恢复，交付仍止于 Draft PR。工程兼容默认 `max_rework=0`，显式 1..5 启用。Issue #3 已用两次保留，获准增额后仅有三次剩余返工。实现和验收对应见 [REVIEW_REWORK.md](REVIEW_REWORK.md)。
+
+## GH-3 只读体检第一阶段
+
+按 IS-024，Issue #3 先交付只读 `--preflight`：校验配置并查询 GitHub，报告结果后退出，不启动调度、不领取、不写回执或远端数据。完整升级接棒留到后续，原草稿中的通知、收尾、超时重派及自动回退机制仍待确认。当前验收见 [003-readonly-preflight.md](issue-drafts/003-readonly-preflight.md)，完整后续方向保留在 [002-graceful-upgrade-handover.md](issue-drafts/002-graceful-upgrade-handover.md)。
