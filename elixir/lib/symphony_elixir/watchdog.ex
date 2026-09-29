@@ -247,6 +247,7 @@ defmodule SymphonyElixir.Watchdog do
 
     stable? =
       not old["awaiting_human"] and old["attempts"] > 0 and
+        old["attempts"] < config["max_attempts"] and
         now - process["seen_at"] >= config["stable_ms"]
 
     versions =
@@ -380,7 +381,7 @@ defmodule SymphonyElixir.Watchdog do
 
   defp spawn_runner(config, pointer, token, now) do
     executable = Path.join(pointer["install"], "bin/symphony")
-    args = [@ack, "--logs-root", config["logs_root"], config["workflow"]]
+    args = runner_args(config)
     log = Path.join(config["state_dir"], "runner.log")
 
     script =
@@ -558,10 +559,16 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp matching_command?(args, config, executable) do
-    expected = [executable, @ack, "--logs-root", config["logs_root"], config["workflow"]]
+    expected = [executable | runner_args(config)]
 
     is_list(args) and args != [] and Path.basename(hd(args)) != "setsid" and
       Enum.member?(Enum.chunk_every(args, length(expected), 1, :discard), expected)
+  end
+
+  defp runner_args(config) do
+    base = [@ack, "--logs-root", config["logs_root"]]
+    port = if config["port"], do: ["--port", Integer.to_string(config["port"])], else: []
+    base ++ port ++ [config["workflow"]]
   end
 
   defp proc_root(config), do: Map.get(config, :proc_root, "/proc")

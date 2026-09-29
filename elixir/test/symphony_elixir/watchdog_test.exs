@@ -146,8 +146,9 @@ defmodule SymphonyElixir.WatchdogTest do
     assert after_exec["phase"] == "running"
     assert after_exec["process"]["pid"] == pid
     refute hd(after_exec["process"]["cmdline"]) == "launcher"
-    assert {:ok, no_status_port} = Watchdog.step(Map.put(ctx.config, "port", 1), "check")
-    assert no_status_port["process"]["pid"] == pid
+    assert {:ok, changed_port} = Watchdog.step(Map.put(ctx.config, "port", 1), "check")
+    assert changed_port["phase"] == "blocked"
+    assert changed_port["process"]["pid"] == pid
 
     File.write!(ctx.config["pointer_file"], "malformed")
     assert {:ok, pointer_error_while_running} = Watchdog.step(ctx.config, "check")
@@ -182,6 +183,47 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:ok, stable} = Watchdog.step(ctx.config, "check")
     assert stable["versions"]["v2"]["attempts"] == 0
     assert stable["history_count"] > 1
+  end
+
+  test "configured status port is passed to the fixed runner and checked in its identity", ctx do
+    arguments = Path.join(ctx.root, "runner-arguments")
+    install!(ctx.root, "v1", "printf '%s\\n' \"$@\" > '#{arguments}'\nwhile :; do sleep 1; done")
+    config = Map.put(ctx.config, "port", 1)
+
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["phase"] == "running"
+    assert ["--port", "1"] in Enum.chunk_every(started["process"]["cmdline"], 2, 1, :discard)
+    wait_file(arguments)
+    assert File.read!(arguments) =~ "--port\n1\n"
+
+    # The test runner deliberately has no listener; an unresponsive port is not an exit.
+    assert {:ok, present} = Watchdog.step(config, "check")
+    assert present["process"]["pid"] == started["process"]["pid"]
+    assert present["versions"]["v1"]["attempts"] == 1
+  end
+
+  test "the last permitted launch cannot earn a fresh round by staying alive", ctx do
+    config = Map.put(ctx.config, "max_attempts", 1)
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["versions"]["v1"]["attempts"] == 1
+
+    change_state(config, fn state -> put_in(state, ["process", "seen_at"], 0) end)
+    assert {:ok, stable} = Watchdog.step(config, "check")
+    assert stable["versions"]["v1"]["attempts"] == 1
+    refute stable["last_action"]["reason"] =~ "round reset"
+
+    pid = stable["process"]["pid"]
+    kill_group(pid, config["workflow"])
+    wait_absent(pid)
+    assert {:ok, exhausted} = Watchdog.step(config, "check")
+    assert exhausted["phase"] == "awaiting_human"
+    assert exhausted["versions"]["v1"]["attempts"] == 1
+
+    assert {:ok, still_exhausted} = Watchdog.step(config, "check")
+    assert still_exhausted["phase"] == "awaiting_human"
+    assert {:ok, recovered} = Watchdog.step(config, "recover")
+    assert recovered["versions"]["v1"]["attempts"] == 0
+    assert_audit_complete(config)
   end
 
   test "identity conflict and missing record fail closed", ctx do
@@ -273,6 +315,7 @@ defmodule SymphonyElixir.WatchdogTest do
     pointer!(ctx.config, "v1", ctx.install)
     assert {:ok, old} = Watchdog.step(ctx.config, "check")
     assert old["phase"] == "awaiting_human"
+    assert_audit_complete(ctx.config)
 
     previous = old["history_count"]
     assert {:ok, recovered} = Watchdog.step(ctx.config, "recover")
@@ -280,6 +323,7 @@ defmodule SymphonyElixir.WatchdogTest do
     assert recovered["history_count"] == previous + 1
     assert {:ok, retried} = Watchdog.step(ctx.config, "check")
     assert retried["versions"]["v1"]["attempts"] == 1
+    assert_audit_complete(ctx.config)
   end
 
   test "normal and abnormal exits use the same backoff and relaunch path", ctx do
@@ -308,6 +352,7 @@ defmodule SymphonyElixir.WatchdogTest do
     assert after_abnormal_exit["versions"]["v1"]["awaiting_human"]
     assert Enum.count(history(config), &(&1["action"] == "exit")) == 2
     assert Enum.map(Enum.filter(history(config), &(&1["action"] == "exit")), & &1["observed"]["pid"]) == [first_pid, second_pid]
+    assert_audit_complete(config)
   end
 
   test "pause persists through state reload and recovery does not clear it", ctx do
@@ -331,6 +376,9 @@ defmodule SymphonyElixir.WatchdogTest do
 
     assert {:ok, status} = Watchdog.step(ctx.config, "status")
     assert status["history_count"] == started["history_count"]
+    actions = Enum.map(history(ctx.config), & &1["action"])
+    assert Enum.all?(~w(blocked pause resume recover launch), &(&1 in actions))
+    assert_audit_complete(ctx.config)
   end
 
   test "corrupt state is never treated as a fresh budget", ctx do
@@ -712,6 +760,33 @@ defmodule SymphonyElixir.WatchdogTest do
     |> File.read!()
     |> String.split("\n", trim: true)
     |> Enum.map(&Jason.decode!/1)
+  end
+
+  defp assert_audit_complete(config) do
+    state = config["status_file"] |> File.read!() |> Jason.decode!()
+    entries = history(config)
+    assert state["history_count"] == length(entries)
+
+    for entry <- entries do
+      assert is_integer(entry["at"])
+      assert is_binary(entry["action"])
+      assert is_binary(entry["reason"])
+      assert is_binary(entry["phase"])
+      assert entry["pointer"]["version"] in ["v1", "v2"]
+      assert Map.has_key?(entry, "observed")
+
+      if entry["observed"] do
+        assert is_integer(entry["observed"]["pid"])
+        assert is_binary(entry["observed"]["version"])
+        assert is_binary(entry["observed"]["boot_id"])
+        assert is_binary(entry["observed"]["start_ticks"])
+        assert is_binary(entry["observed"]["install"])
+      end
+    end
+
+    latest = List.last(entries)
+    assert state["last_action"] == Map.take(latest, ["at", "action", "reason"])
+    assert state["pointer"] == latest["pointer"]
   end
 
   defp change_state(config, fun) do

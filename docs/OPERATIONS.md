@@ -142,7 +142,7 @@ timeout --signal=KILL "${PREFLIGHT_TIMEOUT:?set an explicit duration}" \
 
 以下是 GH-5 源码交付后的操作合同；当前运行服务尚未安装或启用看门狗。值守只处理进程退出，不作健康检查、更新、回退或任务处置。先核实固定安装、`WORKFLOW.md` 的状态目录及工作区、Elixir/OTP 和原生 Linux `codex`、Git、GNU timeout、`flock`、`setsid`、`sh` 所在的 `PATH`，再配置新入口。旧 `runtime-v1/launch.py` 是历史安装脚本，不参与新互斥；接入看门狗前须人工暂停值守、结束该旧入口启动的进程并核实退出。其一次性空队列预检不属于 ready 领取规则。
 
-看门狗配置为 JSON，以下路径和数字均是工程示例，按实际固定安装填写。`controller` 是含本代码的打包 `bin/symphony`；`state_dir`、`status_file`、`maintenance_file` 与 `pointer_file` 必须位于持久目录，不能放在临时清理目录。`workflow` 是原运行配置的**同一个绝对路径**；不复制、重建或清空其中指定的状态与工作区。
+看门狗配置为 JSON，以下路径和数字均是工程示例，按实际固定安装填写。`controller` 是含本代码的打包 `bin/symphony`；`state_dir`、`status_file`、`maintenance_file` 与 `pointer_file` 必须位于持久目录，不能放在临时清理目录。`workflow` 是原运行配置的**同一个绝对路径**；不复制、重建或清空其中指定的状态与工作区。配置 `port` 时，值守会把它作为 `--port` 传给固定安装，并在后续进程身份核对中匹配这个参数；运行中的进程端口没有响应不会触发另启。
 
 ```json
 {
