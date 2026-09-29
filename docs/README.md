@@ -5,6 +5,8 @@
 | V0 实现范围与恢复边界 | [IMPLEMENTATION_V0.md](IMPLEMENTATION_V0.md) |
 | GH-1 有限返工合同与验收对应 | [REVIEW_REWORK.md](REVIEW_REWORK.md) |
 | 技术失败自动诊断、修复与验收 | [AUTOMATIC_RECOVERY.md](AUTOMATIC_RECOVERY.md) |
+| Coder 自主测试、四条隔离底线与实施配置 | [CODER_EXECUTION_RULES.md](CODER_EXECUTION_RULES.md) |
+| 隔离自主测试实测与恢复记录 | [VALIDATION_CODER_ISOLATION.md](VALIDATION_CODER_ISOLATION.md) |
 | 自动恢复实测与 Issue #3 交付记录 | [VALIDATION_AUTOMATIC_RECOVERY.md](VALIDATION_AUTOMATIC_RECOVERY.md) |
 | 已批准的结构化检查与复检修复 | [004-structured-check-recovery.md](issue-drafts/004-structured-check-recovery.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |

@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @environment_status_id 4
+  @environment_info_id 5
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @wall_deadline_key {__MODULE__, :wall_deadline}
@@ -22,6 +24,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_id: String.t(),
           workspace: Path.t(),
           worker_host: String.t() | nil,
+          execution_environment: map() | nil,
           dynamic_tool_binding: map(),
           model: String.t() | nil,
           tools_enabled: boolean()
@@ -82,19 +85,23 @@ defmodule SymphonyElixir.Codex.AppServer do
     model = Keyword.get(opts, :model)
     read_only = Keyword.get(opts, :read_only, false) == true
     tools_enabled = Keyword.get(opts, :tools, true) != false
+    execution_environment = Keyword.get(opts, :execution_environment)
 
     with :ok <- validate_model_option(model),
          {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
+         :ok <- validate_execution_environment(execution_environment, worker_host, expanded_workspace),
          dynamic_tool_binding = DynamicTool.bind(),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
+         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, execution_environment) do
       metadata = port_metadata(port, worker_host)
+      session_workspace = if execution_environment, do: execution_environment.cwd, else: expanded_workspace
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
+           session_policies <- apply_execution_environment(session_policies, execution_environment),
            session_policies <- apply_read_only_policy(session_policies, read_only),
            {:ok, thread_id} <-
              do_start_session(
                port,
-               expanded_workspace,
+               session_workspace,
                session_policies,
                dynamic_tool_binding,
                model,
@@ -109,7 +116,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
-           workspace: expanded_workspace,
+           workspace: session_workspace,
+           execution_environment: execution_environment,
            worker_host: worker_host,
            dynamic_tool_binding: dynamic_tool_binding,
            model: model,
@@ -136,7 +144,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           dynamic_tool_binding: dynamic_tool_binding,
           model: model,
           tools_enabled: tools_enabled
-        },
+        } = session,
         prompt,
         issue,
         opts \\ []
@@ -152,7 +160,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       turn_sandbox_policy: turn_sandbox_policy,
       thread_id: thread_id,
       workspace: workspace,
-      model: model
+      model: model,
+      execution_environment: Map.get(session, :execution_environment)
     }
 
     callbacks = %{
@@ -188,7 +197,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       approval_policy: turn_state.approval_policy,
       turn_sandbox_policy: turn_state.turn_sandbox_policy,
       model: turn_state.model,
-      output_schema: output_schema
+      output_schema: output_schema,
+      execution_environment: turn_state.execution_environment
     }
 
     case start_turn(turn_state.port, turn_state.thread_id, turn_options) do
@@ -297,7 +307,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil, dynamic_tool_binding) do
+  defp start_port(workspace, nil, dynamic_tool_binding, execution_environment) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -311,8 +321,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             :exit_status,
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
-            cd: String.to_charlist(workspace),
-            env: tracker_secret_port_env(dynamic_tool_binding),
+            cd: String.to_charlist(host_config_cwd(workspace, execution_environment)),
+            env: tracker_secret_port_env(dynamic_tool_binding) ++ execution_environment_port_env(execution_environment),
             line: @port_line_bytes
           ]
         )
@@ -321,7 +331,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, worker_host, dynamic_tool_binding) when is_binary(worker_host) do
+  defp start_port(workspace, worker_host, dynamic_tool_binding, nil) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, dynamic_tool_binding)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
@@ -422,6 +432,67 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp apply_read_only_policy(session_policies, false), do: session_policies
 
+  # This option is supplied only by the controller after preparing an external sandbox.
+  # The host-only CODEX_HOME must contain its trusted environments.toml and credentials.
+  defp validate_execution_environment(nil, _worker_host, _workspace), do: :ok
+
+  defp validate_execution_environment(%{id: id, cwd: cwd, codex_home: home} = environment, nil, workspace)
+       when is_binary(id) and is_binary(cwd) and is_binary(home) do
+    with true <- Enum.sort(Map.keys(environment)) == [:codex_home, :cwd, :id],
+         true <- Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\z/, id) and id != "local",
+         true <- String.starts_with?(cwd, "/") and cwd != "/" and not String.contains?(cwd, ["\n", "\r", <<0>>]),
+         true <- Path.expand(cwd) == cwd,
+         true <- Path.type(home) == :absolute and not String.contains?(home, ["\n", "\r", <<0>>]),
+         {:ok, canonical_home} <- PathSafety.canonicalize(home),
+         true <- canonical_home == home and File.dir?(home),
+         false <- canonical_home == workspace or String.starts_with?(canonical_home, workspace <> "/"),
+         {:ok, %{type: :regular}} <- File.lstat(Path.join(home, "environments.toml")) do
+      :ok
+    else
+      _ -> {:error, :invalid_execution_environment}
+    end
+  end
+
+  defp validate_execution_environment(_, _, _), do: {:error, :invalid_execution_environment}
+
+  defp execution_environment_port_env(nil), do: []
+
+  defp execution_environment_port_env(%{codex_home: home}) do
+    [{~c"CODEX_HOME", String.to_charlist(home)}] ++
+      Enum.map(
+        ~w(CODEX_EXEC_SERVER_URL CODEX_EXEC_SERVER_NOISE_REGISTRY_URL CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID),
+        &{String.to_charlist(&1), false}
+      )
+  end
+
+  defp apply_execution_environment(policies, nil), do: policies
+
+  defp apply_execution_environment(policies, environment) do
+    policies
+    |> Map.put(:thread_sandbox, "workspace-write")
+    |> Map.put(:turn_sandbox_policy, %{
+      "type" => "workspaceWrite",
+      "writableRoots" => [environment.cwd, "/tmp", "/home/coder"],
+      "networkAccess" => true,
+      "excludeTmpdirEnvVar" => false,
+      "excludeSlashTmp" => false
+    })
+    |> Map.put(:execution_environment, environment)
+  end
+
+  defp environment_params(params, nil), do: params
+
+  defp environment_params(params, %{id: id, cwd: cwd, codex_home: home}) do
+    params
+    |> Map.put("cwd", home)
+    |> Map.put("environments", [%{"environmentId" => id, "cwd" => cwd}])
+  end
+
+  # Top-level cwd is also used for host configuration discovery. Keep it away
+  # from candidate-controlled project files; only the selected executor uses cwd.
+  defp host_config_cwd(workspace, nil), do: workspace
+  defp host_config_cwd(_workspace, %{codex_home: home}), do: home
+
   defp validate_model_option(nil), do: :ok
   defp validate_model_option(model) when is_binary(model) and byte_size(model) > 0, do: :ok
   defp validate_model_option(_model), do: {:error, :invalid_model}
@@ -443,16 +514,37 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp completed_agent_message_text(_payload), do: nil
 
   defp do_start_session(port, workspace, session_policies, dynamic_tool_binding, model, tools_enabled) do
-    case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies, dynamic_tool_binding, model, tools_enabled)
-      {:error, reason} -> {:error, reason}
+    with :ok <- send_initialize(port),
+         :ok <- verify_execution_environment(port, Map.get(session_policies, :execution_environment)) do
+      start_thread(port, workspace, session_policies, dynamic_tool_binding, model, tools_enabled)
+    end
+  end
+
+  defp verify_execution_environment(_port, nil), do: :ok
+
+  defp verify_execution_environment(port, %{id: id, cwd: cwd}) do
+    send_message(port, %{"method" => "environment/status", "id" => @environment_status_id, "params" => %{"environmentId" => "local"}})
+
+    case await_response(port, @environment_status_id) do
+      {:ok, %{"status" => "unknown"}} ->
+        send_message(port, %{"method" => "environment/info", "id" => @environment_info_id, "params" => %{"environmentId" => id}})
+
+        with {:ok, %{"cwd" => reported}} <- await_response(port, @environment_info_id),
+             true <- reported == "file://" <> URI.encode(cwd) do
+          :ok
+        else
+          _ -> {:error, :execution_environment_unavailable}
+        end
+
+      _ ->
+        {:error, :execution_environment_local_fallback}
     end
   end
 
   defp start_thread(
          port,
          workspace,
-         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
+         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox} = policies,
          dynamic_tool_binding,
          model,
          tools_enabled
@@ -465,6 +557,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     params = if tools_enabled, do: Map.put(params, "dynamicTools", dynamic_tool_binding.tool_specs), else: params
     params = maybe_put_model(params, model)
+    params = environment_params(params, Map.get(policies, :execution_environment))
 
     send_message(port, %{"method" => "thread/start", "id" => @thread_start_id, "params" => params})
 
@@ -496,6 +589,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     }
 
     params = maybe_put_model(params, options.model)
+    params = environment_params(params, options.execution_environment)
     params = if is_map(options.output_schema), do: Map.put(params, "outputSchema", options.output_schema), else: params
 
     send_message(port, %{"method" => "turn/start", "id" => @turn_start_id, "params" => params})

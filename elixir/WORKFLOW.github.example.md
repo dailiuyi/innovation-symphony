@@ -44,6 +44,10 @@ mvp:
   # Tests also require a complete external formatter report bound to this run.
   # See ../docs/REVIEW_REWORK.md; interrupted/uncertain attempts never auto-resume.
   max_rework: 0
+  # Opt in only after preparing Linux isolation and trusted offline dependencies.
+  # Full path/resource configuration: ../docs/CODER_EXECUTION_RULES.md
+  sandbox:
+    enabled: false
   checks:
     - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}", --evidence-root, "{evidence}"]
     - [python3, "{baseline}/scripts/check_baseline.py", "{workspace}", --baseline, "{baseline}", --evidence-root, "{evidence}"]

@@ -22,7 +22,8 @@ defmodule SymphonyChecks.Formatter do
       event: "test_finished",
       test_id: inspect(test.module) <> ":" <> Atom.to_string(test.name),
       state: Atom.to_string(status),
-      failures: failures
+      failures: failures,
+      reason: skip_reason(test.state)
     }
 
     {:noreply, emit(%{state | counts: counts}, event)}
@@ -56,6 +57,9 @@ defmodule SymphonyChecks.Formatter do
   defp test_state({:skipped, _}), do: {:skipped, []}
   defp test_state({:excluded, _}), do: {:excluded, []}
   defp test_state({:invalid, _}), do: {:invalid, []}
+
+  defp skip_reason({state, reason}) when state in [:skipped, :excluded], do: inspect(reason)
+  defp skip_reason(_), do: nil
 
   defp failure_types(failures) do
     Enum.map(failures, fn {kind, reason, _stack} ->

@@ -4,6 +4,8 @@
 
 当前阶段：基于 [官方 Symphony](https://github.com/openai/symphony) 的 Elixir 实现开发 GitHub MVP。复用其调度、工作区、GitHub Client、AppServer 和状态页面，补充评论选模型、独立 Review、检查门禁和 Draft PR 交付。人工合并与升级。
 
+IS-033 实施 coder 同会话自检：通过显式启用的 Linux 任务隔离，允许测试、静态分析和本地服务在编码阶段直接运行；控制器仍在独立环境执行冻结门禁并安排新鲜 Review。配置、四条底线及当前验收范围见 [Coder 执行规则](docs/CODER_EXECUTION_RULES.md)。
+
 GH-3 当前候选仅有 `--preflight` 接管前只读配置及 GitHub 轮询体检；不启动调度，成功后退出。体检拒绝不含 `open` / `closed` 的状态列表，防止未查询远端就报告通过。A 收尾、版本切换和自动回退仍未实现，待确认机制未定案，完整 GH-3 尚未通过验收。见 [体检边界](docs/IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
 
 GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复检查失败与 Review 拒绝共用预算，完整保存检查日志，Review 拒绝理由仍回帖。默认 `max_rework=0` 保持兼容，显式 1..5 启用，最多五次返工加初始一轮。固定检查 runner 使用结构化 ExUnit 结果识别普通及自定义断言，核对完整报告与退出码；缺失或矛盾报告不能通过。显式复检绑定原候选、基线、模型和预算，保留历史操作及终态审计，已用次数不重置；不会因修改配置而自动重启所有 blocked 任务。源码发布与实际运行版本须分别核实。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。

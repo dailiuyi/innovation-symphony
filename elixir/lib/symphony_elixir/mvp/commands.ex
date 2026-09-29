@@ -55,7 +55,7 @@ defmodule SymphonyElixir.Mvp.Commands do
       opts
     )
     |> case do
-      {:ok, output} -> {:ok, String.trim(output)}
+      {:ok, output} -> {:ok, if(Keyword.get(opts, :preserve_output, false), do: output, else: String.trim(output))}
       {:error, {:command_failed, status, _output}} -> {:error, {:git_failed, List.first(arguments), status}}
       error -> error
     end

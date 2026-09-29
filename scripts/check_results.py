@@ -49,7 +49,7 @@ def read_report(path: Path, identity: dict) -> dict:
     if events[0].get("event") != "suite_started" or events[-1].get("event") != "suite_finished":
         raise ValueError("missing suite boundary")
     counts = dict(total=0, passed=0, failed=0, skipped=0, excluded=0, invalid=0)
-    failures, seen = [], set()
+    failures, seen, tests = [], set(), []
     module_failures = []
     for event in events[1:-1]:
         if event.get("event") == "module_failed":
@@ -63,6 +63,7 @@ def read_report(path: Path, identity: dict) -> dict:
         if test_id in seen or state not in counts or state == "total":
             raise ValueError("duplicate test or unknown state")
         seen.add(test_id)
+        tests.append({"id": test_id, "state": state, "reason": event.get("reason")})
         counts["total"] += 1
         counts[state] += 1
         details = event["failures"]
@@ -80,7 +81,7 @@ def read_report(path: Path, identity: dict) -> dict:
     if any(not isinstance(failure, dict) or set(failure) != {"kind", "type"}
            or not all(isinstance(value, str) for value in failure.values()) for failure in failures):
         raise ValueError("invalid exception details")
-    return {"counts": counts, "failures": failures}
+    return {"counts": counts, "failures": failures, "tests": tests}
 
 
 def _unique_fields(pairs: list[tuple]) -> dict:
@@ -137,8 +138,10 @@ def classify_result(stage: str, returncode: int, output: str, report: dict | Non
             r"\s+Threshold:\s+([\d.]+)%", text,
         )
         if returncode == 0:
+            counts = report["counts"]
             return ((STOP, "exit 0 contradicts failed tests or coverage") if failed or coverage
-                    else (SUCCESS, "complete passing suite"))
+                    else (SUCCESS, "suite completed: " + ", ".join(
+                        f"{name}={counts[name]}" for name in ("passed", "failed", "skipped", "excluded", "invalid"))))
         if returncode == 2:
             return (REPAIRABLE, "complete assertion failures") if failed else (STOP, "exit 2 without failed tests")
         if stage == "test" and coverage:
@@ -151,6 +154,12 @@ def classify_result(stage: str, returncode: int, output: str, report: dict | Non
         return STOP, "unexplained coverage exit or changed threshold"
     if returncode == 0:
         return SUCCESS, "process passed"
+    if stage == "credo" and returncode in range(1, 32) and not _ENVIRONMENT_FAILURE.search(text):
+        if re.search(r"found [1-9]\d* (?:code readability issue|refactoring opportunit|software design suggestion|warning)", text):
+            return REPAIRABLE, "recognized Credo findings"
+    if stage == "dialyzer" and returncode == 2 and not _ENVIRONMENT_FAILURE.search(text):
+        if re.search(r"Total errors: [1-9]\d*", text) and "warnings were emitted" in text:
+            return REPAIRABLE, "recognized Dialyzer findings"
     if returncode not in {1, 2, 3} or _ENVIRONMENT_FAILURE.search(text):
         return STOP, "environment diagnostic or unexpected process exit"
     if stage == "format" and returncode == 1:
@@ -173,7 +182,7 @@ def classify(stage: str, returncode: int, output: str, report: dict | None = Non
 
 def _runner_digest() -> str:
     digest = hashlib.sha256()
-    for name in ("check_results.py", "check_environment.py", "check_candidate.py", "check_baseline.py"):
+    for name in ("check_results.py", "check_environment.py", "check_candidate.py", "check_baseline.py", "check_isolated.py"):
         digest.update(name.encode())
         digest.update(Path(__file__).resolve().with_name(name).read_bytes())
     return digest.hexdigest()
@@ -240,6 +249,8 @@ def run_check(stage: str, arguments: list[str], cwd: Path, environment: dict[str
                                          report, test_execution_not_started=test_execution_not_started)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         reason = f"runner/report validation failed: {type(error).__name__}: {error}"
-    _save_json(evidence / "result.json", dict(identity=identity, child_exit=child_exit, outcome=result, reason=reason))
+    _save_json(evidence / "result.json", dict(identity=identity, child_exit=child_exit, outcome=result, reason=reason,
+                                             counts=report.get("counts") if report else None,
+                                             tests=report.get("tests", []) if report else []))
     print(f"\n[check] stage={stage} child_exit={child_exit} outcome={result} reason={reason}", flush=True)
     return result

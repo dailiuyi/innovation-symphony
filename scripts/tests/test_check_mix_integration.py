@@ -128,6 +128,21 @@ end'''
             result, _, _, output = self.run_fixture(body)
             self.assertEqual(result, 1, output)
 
+    def test_passing_report_preserves_skip_and_exclusion_reasons(self):
+        body = '''test "pass", do: assert(true)
+@tag skip: "requires authorized external platform"
+test "skip", do: assert(false)
+@tag :external
+test "exclude", do: assert(false)'''
+        result, detail, _, output = self.run_fixture(body, helper='ExUnit.start(exclude: [:external])')
+        self.assertEqual(result, 0, output)
+        tests = {item['state']: item for item in detail['tests']}
+        self.assertEqual(set(tests), {'passed', 'skipped', 'excluded'})
+        self.assertIn('requires authorized external platform', tests['skipped']['reason'])
+        self.assertTrue(tests['excluded']['reason'])
+        self.assertEqual(detail['counts']['passed'], 1)
+        self.assertIn('skipped=1, excluded=1', detail['reason'])
+
     def test_coverage_below_100_is_repairable(self):
         source = 'defmodule CheckFixture do\n  def hit, do: :ok\n  def missed, do: :missed\nend\n'
         result, detail, _, output = self.run_fixture('test "hit", do: assert(CheckFixture.hit() == :ok)', cover=True, source=source)

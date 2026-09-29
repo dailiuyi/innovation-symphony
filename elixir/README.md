@@ -8,6 +8,8 @@ GH-3 新增 escript `--preflight`：保留 guardrails acknowledgement 参数，�
 
 # Symphony Elixir
 
+IS-033 新增显式 `mvp.sandbox`：在 Linux bubblewrap/cgroup 环境内执行 coder 自检与正式检查，宿主保留模型连接，任务使用 Codex stdio execution environment；未启用时保留兼容行为。所需路径、离线依赖、资源参数和审计恢复见 [CODER_EXECUTION_RULES.md](../docs/CODER_EXECUTION_RULES.md)。支持该能力的 Codex、bubblewrap 与 cgroup 必须先验收，失败不得自动回到宿主执行。
+
 GitHub MVP 每轮派发前校验 MVP 配置；错误记录为 `MVP dispatch disabled by invalid configuration`，修正工作流后下一轮重新校验。escript 的运行路径边界使用解析符号链接后的实际工件所在目录；普通 OTP/Mix 运行仍使用应用目录。启动验收须覆盖打包产物的 ready 候选门槛，不能仅检查 HTTP 或 `mix mvp.check`。
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
