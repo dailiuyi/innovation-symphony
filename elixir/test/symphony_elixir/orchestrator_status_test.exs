@@ -1,6 +1,32 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  test "invalid MVP configuration is reported on polling and recovers after reload" do
+    path = Workflow.workflow_file_path()
+    write_workflow_file!(path, tracker_kind: "memory")
+    valid_workflow = File.read!(path)
+    File.write!(path, String.replace(valid_workflow, "---\n", "---\nmvp:\n  enabled: true\n", global: false))
+
+    assert {:error, {:invalid_mvp_config, {:missing_mvp_setting, :coder_model}}} = Config.validate!()
+
+    log =
+      capture_log(fn ->
+        pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :InvalidMvpOrchestrator)})
+        send(pid, :run_poll_cycle)
+        assert %{running: [], retrying: [], blocked: []} = GenServer.call(pid, :snapshot)
+        assert :sys.get_state(pid).claimed == MapSet.new()
+
+        File.write!(path, valid_workflow)
+        assert :ok = Config.validate!()
+        send(pid, :run_poll_cycle)
+        assert %{running: [], retrying: [], blocked: []} = GenServer.call(pid, :snapshot)
+        stop_supervised!(Orchestrator)
+      end)
+
+    assert log =~ "MVP dispatch disabled by invalid configuration"
+    assert log =~ "missing_mvp_setting, :coder_model"
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()

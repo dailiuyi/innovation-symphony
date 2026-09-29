@@ -19,6 +19,7 @@ GH-1 更新：默认 0 的历史合同继续兼容；显式 `max_rework=1/2` 的
 - tracker.required_labels 必须包含 mvp.ready_label，两处按大小写不敏感规则一致判断。ready 必须仍存在，最近添加者在 allowed_actors 中。首次启用会处理获准的存量 ready；不是旧博客的“只认新标签事件”。没有收回或自动替换模型的隐式规则。
 - 固定独立评论：`/symphony models coder=MODEL reviewer=MODEL`，可只指定一个角色。仅允许名单内非 Bot 用户的整条评论有效；按评论 ID 累计覆盖角色。开始前冻结，运行中编辑不改变本轮模型。授权用户的非法指令或非白名单模型阻塞，不静默回退。
 - 一次领取、一轮编码、一轮检查和独立 Review；max_rework=0。同一仓库+Issue 的 receipt 持久阻止重复执行，包括进程重启。磁盘状态目录必须保留且不能与源码/工作区重叠；比较前解析符号链接，不能定位运行目录时拒绝启用。不宣称多机或多状态目录的分布式去重。
+- 运行目录校验兼容打包 escript：对归档内虚拟应用路径，改用实际归档文件所在目录，解析符号链接后再比较隔离边界；普通 OTP/Mix 使用应用目录。每轮派发前校验 MVP 配置，失败明确记录日志并停止派发，不把配置错误静默当作“无候选”。这不改变 ready、模型选择或 receipt 的去重合同。
 - 编码进程没有 GitHub tracker token 和平台动态工具；保持 workspace-write 默认沙箱。Review 使用新进程/新会话和 read-only。控制器拥有检查、Git 提交、推送与 PR 创建。
 - 测试命令来自运行工作流的 argv，不解析 Issue 中的 shell。`{baseline}` 是任务开始前从 base SHA 归档到状态目录的副本；`{workspace}` 是候选。示例先跑候选检查，再以基线中的构建配置和测试验证候选 lib。保留测试日志、Review JSON、base/candidate SHA；检查后或 Review 后源码发生变化会阻断发布。
 - 发布前再次读取 Issue open/ready；先保存 publish_pending，再创建专用新分支及 Draft PR。已有分支不覆盖。不确定网络结果保留记录，通过只读 GitHub 查询对账，不盲目重发。

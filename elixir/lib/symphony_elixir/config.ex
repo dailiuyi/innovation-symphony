@@ -98,7 +98,12 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    WorkflowStore.force_reload()
+    with :ok <- WorkflowStore.force_reload() do
+      case mvp_settings() do
+        {:ok, _settings} -> :ok
+        {:error, reason} -> {:error, {:invalid_mvp_config, reason}}
+      end
+    end
   end
 
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::

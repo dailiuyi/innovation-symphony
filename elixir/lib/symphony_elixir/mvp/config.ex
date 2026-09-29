@@ -230,11 +230,33 @@ defmodule SymphonyElixir.Mvp.Config do
   defp disjoint_runtime(path, error) do
     case :code.lib_dir(:symphony_elixir) do
       runtime_path when is_list(runtime_path) ->
-        with {:ok, canonical} <- PathSafety.canonicalize(List.to_string(runtime_path)) do
+        with {:ok, canonical} <- runtime_root(List.to_string(runtime_path)) do
           disjoint(path, canonical, error)
         end
 
       _ ->
+        {:error, :mvp_runtime_path_unavailable}
+    end
+  end
+
+  @doc false
+  @spec runtime_root(Path.t()) :: {:ok, Path.t()} | {:error, term()}
+  def runtime_root(runtime_path) do
+    archive = Path.dirname(runtime_path)
+
+    # In an escript, lib_dir points inside the archive, not to a filesystem
+    # directory. Protect the real archive's containing directory, resolving
+    # symlinks before taking its parent; keep normal OTP paths unchanged.
+    cond do
+      File.regular?(archive) ->
+        with {:ok, canonical_archive} <- PathSafety.canonicalize(archive) do
+          {:ok, Path.dirname(canonical_archive)}
+        end
+
+      File.dir?(runtime_path) ->
+        PathSafety.canonicalize(runtime_path)
+
+      true ->
         {:error, :mvp_runtime_path_unavailable}
     end
   end

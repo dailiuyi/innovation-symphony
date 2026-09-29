@@ -34,6 +34,8 @@ mvp:
   allowed_models: [YOUR_CODER_MODEL, YOUR_REVIEWER_MODEL]
   allowed_actors: [YOUR_GITHUB_LOGIN]
   ready_label: ready
+  # Keep state/workspaces outside the real escript directory (symlinks resolved).
+  # Invalid MVP settings stop dispatch and are reported in the service log.
   state_dir: /var/tmp/innovation-symphony/state
   check_timeout_ms: 900000
   # Integer 0..2; 0 preserves V0. 1/2 enable rejection comments and bounded rework.

@@ -4,6 +4,8 @@
 
 # Symphony Elixir
 
+GitHub MVP 每轮派发前校验 MVP 配置；错误记录为 `MVP dispatch disabled by invalid configuration`，修正工作流后下一轮重新校验。escript 的运行路径边界使用解析符号链接后的实际工件所在目录；普通 OTP/Mix 运行仍使用应用目录。启动验收须覆盖打包产物的 ready 候选门槛，不能仅检查 HTTP 或 `mix mvp.check`。
+
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 

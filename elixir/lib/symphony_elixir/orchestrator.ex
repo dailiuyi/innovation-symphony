@@ -286,6 +286,10 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Invalid WORKFLOW.md config: #{message}")
         state
 
+      {:error, {:invalid_mvp_config, reason}} ->
+        Logger.error("MVP dispatch disabled by invalid configuration: #{inspect(reason)}")
+        state
+
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state
