@@ -2,10 +2,11 @@ defmodule SymphonyElixir.Mvp.Config do
   @moduledoc "Configuration for the opt-in GitHub MVP intake path."
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Mvp.Recovery
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workflow
 
-  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label)
+  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery)
   @shell_names ["sh", "bash", "dash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]
 
   @type settings :: %{
@@ -19,6 +20,7 @@ defmodule SymphonyElixir.Mvp.Config do
           state_dir: Path.t() | nil,
           check_timeout_ms: pos_integer(),
           max_rework: 0..5,
+          recovery: map(),
           ready_label: String.t()
         }
 
@@ -60,7 +62,8 @@ defmodule SymphonyElixir.Mvp.Config do
   defp disabled_settings(config) do
     with {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
-         :ok <- max_rework(Map.get(config, "max_rework", 0)) do
+         :ok <- max_rework(Map.get(config, "max_rework", 0)),
+         {:ok, recovery} <- Recovery.settings(config["recovery"]) do
       {:ok,
        %{
          enabled: false,
@@ -72,6 +75,7 @@ defmodule SymphonyElixir.Mvp.Config do
          state_dir: nil,
          check_timeout_ms: check_timeout_ms,
          max_rework: Map.get(config, "max_rework", 0),
+         recovery: recovery,
          ready_label: ready_label
        }}
     end
@@ -87,6 +91,7 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, state_dir} <- state_dir(config["state_dir"], workflow_dir),
          {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
          :ok <- max_rework(Map.get(config, "max_rework", 0)),
+         {:ok, recovery} <- Recovery.settings(config["recovery"]),
          {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          :ok <- required_ready_label(workflow_config, ready_label),
          :ok <- validate_path_boundaries(state_dir, workflow_config) do
@@ -101,6 +106,7 @@ defmodule SymphonyElixir.Mvp.Config do
          state_dir: state_dir,
          check_timeout_ms: check_timeout_ms,
          max_rework: Map.get(config, "max_rework", 0),
+         recovery: recovery,
          ready_label: ready_label
        }}
     end

@@ -83,6 +83,19 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     assert {:error, :invalid_mvp_checks} = MvpConfig.settings()
   end
 
+  test "automatic recovery config is opt in and validated for enabled and disabled MVP" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+
+    for enabled <- [true, false] do
+      config = valid_mvp_config(Path.join(workflow_dir, "recovery-state")) |> Map.put("enabled", enabled)
+      workspace = Path.join(workflow_dir, "recovery-workspaces")
+      write_mvp_workflow!(Map.put(config, "recovery", %{"enabled" => true, "max_rework" => 12}), workspace)
+      assert {:ok, %{recovery: %{enabled: true, max_rework: 12}, max_rework: 0}} = MvpConfig.settings()
+      write_mvp_workflow!(Map.put(config, "recovery", %{"enabled" => true, "stage_attempts" => 0}), workspace)
+      assert {:error, :invalid_mvp_recovery} = MvpConfig.settings()
+    end
+  end
+
   test "state directory cannot overlap the workspace root or source tree" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     workspace_root = Path.join(workflow_dir, "shared-workspace")
@@ -647,6 +660,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
   end
 
   defp yaml_value(value) when is_binary(value), do: Jason.encode!(value)
+  defp yaml_value(value) when is_map(value), do: Jason.encode!(value)
   defp yaml_value(value) when is_integer(value), do: Integer.to_string(value)
   defp yaml_value(value) when is_boolean(value), do: to_string(value)
   defp yaml_value(value) when is_float(value), do: Float.to_string(value)

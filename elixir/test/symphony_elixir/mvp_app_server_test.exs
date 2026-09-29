@@ -112,6 +112,77 @@ defmodule SymphonyElixir.MVPAppServerTest do
     assert thread_start["params"]["model"] == "not-in-the-app-server-catalog"
   end
 
+  for mode <- ["startup-busy", "startup-noeol", "turn-busy", "turn-noeol"] do
+    test "wall deadline bounds #{mode} and closes the port", %{test: test} do
+      {workspace, issue, _trace} = wall_test_context!(test, unquote(mode))
+      ports_before = owned_ports()
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :wall_timeout} =
+               AppServer.run(workspace, "bounded turn", issue,
+                 wall_timeout_ms: 250,
+                 tools: false,
+                 on_message: fn _ -> :ok end
+               )
+
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed >= 200
+      assert elapsed < 1_500
+      assert owned_ports() == ports_before
+      assert Process.get({AppServer, :wall_deadline}) == nil
+    end
+  end
+
+  test "wall option validates early and its scope restores after a normal session", %{test: test} do
+    for invalid <- [0, -1, "250", true] do
+      assert {:error, :invalid_wall_timeout} = AppServer.run("unused", "unused", %{}, wall_timeout_ms: invalid)
+    end
+
+    {workspace, issue, _trace} = wall_test_context!(test, "success")
+    key = {AppServer, :wall_deadline}
+    Process.put(key, :outer_scope)
+
+    try do
+      assert {:ok, %{output_text: "review approved"}} =
+               AppServer.run(workspace, "review", issue, wall_timeout_ms: 5_000, tools: false)
+
+      assert Process.get(key) == :outer_scope
+      assert {:ok, _} = AppServer.run(workspace, "legacy review", issue, tools: false)
+      assert Process.get(key) == :outer_scope
+    after
+      Process.delete(key)
+    end
+  end
+
+  defp wall_test_context!(test, mode) do
+    root = Path.join(System.tmp_dir!(), "mvp-wall-#{test}-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(root) end)
+    workspace = Path.join(root, "workspace")
+    trace = Path.join(root, "trace.jsonl")
+    binary = Path.join(root, "fake-codex")
+    File.mkdir_p!(workspace)
+    write_fake_app_server!(binary)
+
+    environment = "env SYMP_TEST_APP_SERVER_TRACE=#{shell_quote(trace)} SYMP_TEST_APP_SERVER_MODE=#{mode}"
+    command = environment <> " " <> shell_quote(binary)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: root,
+      codex_command: command,
+      codex_read_timeout_ms: 5_000,
+      codex_turn_timeout_ms: 5_000
+    )
+
+    issue = %Issue{id: "wall", identifier: "WALL-1", title: "Bounded session", state: "In Progress"}
+    {workspace, issue, trace}
+  end
+
+  defp owned_ports do
+    Port.list()
+    |> Enum.filter(&(Port.info(&1, :connected) == {:connected, self()}))
+    |> MapSet.new()
+  end
+
   defp write_fake_app_server!(codex_binary) do
     File.write!(
       codex_binary,
@@ -120,12 +191,23 @@ defmodule SymphonyElixir.MVPAppServerTest do
       count=0
       trace_file="$SYMP_TEST_APP_SERVER_TRACE"
 
+      busy_stream() {
+        while :; do
+          case "$SYMP_TEST_APP_SERVER_MODE" in
+            *noeol) printf '%10000s' 'x' ;;
+            *) printf '%s\\n' '{"id":999,"method":"test/progress","result":{}}' ;;
+          esac
+          sleep 0.002
+        done
+      }
+
       while IFS= read -r line; do
         count=$((count + 1))
         printf '%s\\n' "$line" >> "$trace_file"
 
         case "$count" in
           1)
+            case "$SYMP_TEST_APP_SERVER_MODE" in startup-*) busy_stream ;; esac
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
@@ -139,6 +221,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
             ;;
           4)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"mvp-turn"}}}'
+            case "$SYMP_TEST_APP_SERVER_MODE" in turn-*) busy_stream ;; esac
             printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","phase":"commentary","text":"checking the review requirements"}}}'
             printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","phase":"final_answer","text":"review approved"}}}'
             printf '%s\\n' '{"method":"item/tool/call","id":"tool-call-1","params":{"tool":"unexposed_tool","arguments":{}}}'

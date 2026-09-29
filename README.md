@@ -8,6 +8,8 @@ GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复
 
 ## 已确认的使用方式
 
+本轮按 IS-026 完善显式启用的自动恢复：可由模型解决的技术失败交回编码或新的只读诊断，普通修复窗口无需逐次人工批准，同时保留严格检查、独立 Review、资源熔断与完整证据。未启用策略的任务继续遵守上面的 0..5 兼容合同；旧回执只通过明确审计迁移，不批量重启。工程默认和待验证矩阵见 [自动恢复合同](docs/AUTOMATIC_RECOVERY.md)。当前实现及真实 Issue #3 闭环尚待验证，不代表已发布或运行。
+
 1. 在已接入仓库创建 Issue，写明需求。
 2. 可选：在一条独立 Issue 评论中，通过约定格式指定编码模型和 Review 模型。
 3. 添加 `ready` 标签，机器人自动发现并领取执行，无需用户先指派机器人。
@@ -22,6 +24,7 @@ GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复
 - [文档入口](docs/README.md)
 - [已确认需求](docs/REQUIREMENTS.md)
 - [决策记录与被替代的决定](docs/DECISIONS.md)
+- [自动恢复与自身迭代合同](docs/AUTOMATIC_RECOVERY.md)
 - [待讨论问题](docs/OPEN_QUESTIONS.md)
 - [架构与试点提案](docs/DESIGN_PROPOSAL.md)
 - [Issue 交互协议草案](docs/ISSUE_PROTOCOL.md)

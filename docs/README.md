@@ -4,6 +4,7 @@
 | --- | --- |
 | V0 实现范围与恢复边界 | [IMPLEMENTATION_V0.md](IMPLEMENTATION_V0.md) |
 | GH-1 有限返工合同与验收对应 | [REVIEW_REWORK.md](REVIEW_REWORK.md) |
+| 技术失败自动诊断、修复与验收 | [AUTOMATIC_RECOVERY.md](AUTOMATIC_RECOVERY.md) |
 | 已批准的结构化检查与复检修复 | [004-structured-check-recovery.md](issue-drafts/004-structured-check-recovery.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |
 | 官方来源及改动接缝 | [UPSTREAM.md](UPSTREAM.md) |
