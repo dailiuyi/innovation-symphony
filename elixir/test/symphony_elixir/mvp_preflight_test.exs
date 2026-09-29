@@ -75,20 +75,22 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
   end
 
   test "nonempty states must select a GitHub request before preflight can pass", ctx do
-    for states <- [["ready"], ["all"], [" "], ["todo", "review"]] do
+    never_fetch = fn _, _ -> flunk("invalid polling states must not contact GitHub") end
+
+    for states <- [["ready"], ["all"], [" "], ["todo", "review"], ["Closed"], ["open", "closed"], ["open", "ready"]] do
       write_workflow(ctx, %{"tracker" => %{"active_states" => states}})
       before = files(ctx.root)
 
-      assert {:error, :mvp_preflight_requires_github_polling_states} = Preflight.run(ctx.path)
+      assert {:error, :invalid_github_states} = Preflight.run(ctx.path, fetch_issues: never_fetch)
       assert files(ctx.root) == before
     end
 
-    for {states, query} <- [{[" OPEN "], "open"}, {["Closed"], "closed"}, {["open", "closed"], "all"}] do
+    for states <- [["open"], [" OPEN "], ["Open", "open"]] do
       write_workflow(ctx, %{"tracker" => %{"active_states" => states}})
 
       assert {:ok, %{status: "passed", issue_count: 0}} =
                probe(ctx.path, fn "GET", "/repos/owner/repo/issues", params, nil, _ ->
-                 assert params["state"] == query
+                 assert params["state"] == "open"
                  send(self(), :github_polled)
                  {:ok, %{status: 200, body: []}}
                end)
