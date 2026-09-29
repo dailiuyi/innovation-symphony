@@ -41,6 +41,8 @@ IS-025 本轮控制器验证（2026-09-29）：真实 Python/Mix 集成 28 项�
 
 验证期间既有调度计时测试曾出现 `8739 < 9000` 的波动；未修改测试或调度逻辑，同 seed `574223` 重跑通过，最终完整候选及冻结回归也通过。完整阶段日志与结构化报告保存于本机 WSL `/var/tmp/innovation-symphony-structured-recheck-evidence/`，最终汇总日志位于 `/var/tmp/innovation-symphony-structured-recheck/`。这些是控制器修复的验证证据；发布、服务切换和 #3 的最终执行结果仍须分别核实。
 
+CI 的 Python 集成和 `make all` 由 `mise exec --` 启动，让子进程继承项目固定的 Erlang/Elixir 工具链。仅依赖按当前目录解析版本的 shim 会在 `/tmp` 测试项目中丢失版本选择，导致 `No version is set for shim: erl`；此类环境错误保持停止，不伪装成断言失败或降低检查标准。
+
 IS-022 新增验收：`mvp_executor_test.exs` 覆盖检查与 Review 两种顺序的混合返工、共用预算耗尽、零预算、超过 40000 字节及非法 UTF-8 的日志、超时输出保留、未知错误停止、完整性破坏停止及重启不重置预算。`scripts/tests/test_check_results.py` 覆盖固定 runner 的诊断分类、混合未知错误停止、原始输出保留及冻结副本不写 pycache。以下 GH-1 验证记录为历史结果，不代表本次改动的验证或安装结果。
 
 IS-023 显式续跑：`Executor.resume_checks/2` 仅供可信操作者在校验完整上下文和原回执 SHA256 后调用，调度器不自动调用。只接受检查失败的 blocked 回执，绑定原 base、候选、分支、工作区、模型、轮次和预算，并验证候选与冻结基线完整性。接受后保存原回执到原轮次的 `operator-check-resume/`，在新目录重新检查；原日志不覆盖。独占锁在成功、中断后均保留，不能自动重复调用或通过恢复旧回执重置预算。新的固定 runner 可以由操作者指定，仍记录完整命令和证据；这不是通用中断恢复或升级接棒实现。

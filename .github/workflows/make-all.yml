@@ -37,7 +37,7 @@ jobs:
       - name: Verify check environment isolation
         env:
           RUN_MIX_INTEGRATION: "1"
-        run: python3 -m unittest discover -s ../scripts/tests -v
+        run: mise exec -- python3 -m unittest discover -s ../scripts/tests -v
 
       - name: Verify make all
-        run: make all
+        run: mise exec -- make all
