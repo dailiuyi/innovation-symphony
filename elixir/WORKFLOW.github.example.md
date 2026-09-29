@@ -41,11 +41,12 @@ mvp:
   # Integer 0..5; 0 preserves V0. Checks and Review share this rework budget.
   # Fixed runners: exit 0 passes, exit 10 is repairable, other failures stop.
   # Complete check logs are retained; only Review rejections post comments.
+  # Tests also require a complete external formatter report bound to this run.
   # See ../docs/REVIEW_REWORK.md; interrupted/uncertain attempts never auto-resume.
   max_rework: 0
   checks:
-    - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}"]
-    - [python3, "{baseline}/scripts/check_baseline.py", "{workspace}"]
+    - [python3, "{baseline}/scripts/check_candidate.py", "{workspace}", --evidence-root, "{evidence}"]
+    - [python3, "{baseline}/scripts/check_baseline.py", "{workspace}", --baseline, "{baseline}", --evidence-root, "{evidence}"]
 ---
 
 GitHub MVP: the controller builds a finite coding/check/review/PR pipeline.

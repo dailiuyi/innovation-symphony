@@ -72,9 +72,15 @@ class CheckEnvironmentTest(unittest.TestCase):
                          candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
                 path.mkdir(parents=True)
             (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
-            with patch.object(sys, "argv", ["check_baseline.py", str(candidate)]), patch.object(
-                check_baseline, "__file__", str(baseline / "scripts/check_baseline.py")
-            ), patch.object(check_baseline, "run_check", return_value=10) as run:
+            (baseline / "elixir/frozen-marker").write_text("original baseline", encoding="utf-8")
+            def check_original_snapshot(*args, **kwargs):
+                self.assertEqual((args[2] / "frozen-marker").read_text(), "original baseline")
+                self.assertEqual(kwargs["candidate_root"], candidate)
+                return 10
+
+            with patch.object(sys, "argv", ["check_baseline.py", str(candidate), "--baseline", str(baseline)]), patch.object(
+                check_baseline, "run_check", side_effect=check_original_snapshot
+            ) as run:
                 self.assertEqual(check_baseline.main(), 10)
             self.assert_isolated(run.call_args.args[3])
             self.assertEqual(run.call_args.args[:2], ("baseline_test", ["mix", "test"]))
@@ -87,12 +93,14 @@ class CheckEnvironmentTest(unittest.TestCase):
             baseline, candidate = root / "baseline", root / "candidate"
             scripts = baseline / "scripts"
             scripts.mkdir(parents=True)
-            for name in ("check_candidate.py", "check_baseline.py", "check_environment.py", "check_results.py"):
+            for name in ("check_candidate.py", "check_baseline.py", "check_environment.py", "check_results.py", "check_formatter.exs"):
                 shutil.copy2(Path(__file__).resolve().parents[1] / name, scripts / name)
             for path in (baseline / "elixir/lib", baseline / "elixir/priv", baseline / ".github",
                          candidate / "elixir/lib", candidate / "elixir/priv", candidate / "elixir/deps"):
                 path.mkdir(parents=True)
             (baseline / ".github/pull_request_template.md").write_text("fixture", encoding="utf-8")
+            for arguments in (["init", "-q"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]):
+                subprocess.run(["git", "-C", str(candidate), *arguments], check=True, capture_output=True)
             mix = root / "mix"
             mix.write_text(f"#!{sys.executable}\n", encoding="utf-8")
             mix.chmod(0o700)
@@ -100,7 +108,9 @@ class CheckEnvironmentTest(unittest.TestCase):
             environment.pop("PYTHONDONTWRITEBYTECODE", None)
             before = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
             for name in ("check_candidate.py", "check_baseline.py"):
-                subprocess.run([sys.executable, str(scripts / name), str(candidate)], env=environment, check=True)
+                result = subprocess.run([sys.executable, str(scripts / name), str(candidate)], env=environment, capture_output=True)
+                # A fake mix exits 0 without a report: fail closed, still no baseline writes.
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 after = {str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("*") if path.is_file()}
                 self.assertEqual(before, after, f"{name} mutated the frozen baseline")
 

@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.Executor do
   @moduledoc "Bounded coder/check/reviewer rounds using independent upstream AppServer sessions."
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.{Commands, Delivery, Feedback, Receipt, Review, Usage}
+  alias SymphonyElixir.Mvp.{Commands, Delivery, Feedback, OperatorRecheck, Receipt, Review, Usage}
 
   @spec run(Path.t(), map(), map(), map(), Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def run(workspace, issue, settings, models, receipt, opts \\ []) do
@@ -11,6 +11,24 @@ defmodule SymphonyElixir.Mvp.Executor do
     with true <- (is_integer(limit) and limit in 0..5) or {:error, :mvp_rework_not_supported},
          true <- is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started} do
       execute(workspace, issue, settings, models, receipt, opts)
+    end
+  end
+
+  @doc "Internal, explicitly authorized recheck of a pinned blocked candidate; never called by intake."
+  @spec recheck(map(), String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def recheck(context, expected_receipt_digest, authorization) do
+    with {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, :recheck),
+         {:ok, operation} <- OperatorRecheck.begin(context, raw, data, authorization) do
+      # No after/rescue releases this lock: an interrupted controller requires investigation.
+      with {:ok, _, _} <- resume_binding(context, expected_receipt_digest, :recheck) do
+        evidence = operation.directory
+        context = Map.put(context, :operator_diagnostic, authorization["diagnostic"])
+        :ok = record(context, "checking", %{"operator_recheck" => authorization["id"], "reason" => nil, "check_failure" => nil})
+        result = check_and_review(context, length(data["rounds"]), data["candidate_sha"], evidence)
+        result = finish(context, result)
+        :ok = OperatorRecheck.complete(operation, result)
+        result
+      end
     end
   end
 
@@ -28,8 +46,14 @@ defmodule SymphonyElixir.Mvp.Executor do
   @spec extend_rework(map(), String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
   def extend_rework(context, expected_receipt_digest, previous_limit) do
     with {:ok, _raw, _data} <- resume_binding(context, expected_receipt_digest, {:extend, previous_limit}),
-         :ok <- extension_guard(context),
-         {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, {:extend, previous_limit}) do
+         :ok <- extension_guard(context, :check) do
+      OperatorRecheck.legacy(context, fn -> extend_bound(context, expected_receipt_digest, previous_limit) end)
+    end
+  end
+
+  defp extend_bound(context, expected_receipt_digest, previous_limit) do
+    with {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, {:extend, previous_limit}),
+         :ok <- extension_guard(context) do
       evidence = Path.join(context.evidence, "operator-rework-extension")
 
       with :ok <- File.mkdir(evidence),
@@ -53,8 +77,8 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp extension_guard(context) do
-    case File.write(Path.join(context.evidence, "operator-rework-extension.lock"), "operator rework extension\n", [:exclusive, :sync]) do
+  defp extension_guard(context, mode \\ :create) do
+    case guard_file(Path.join(context.evidence, "operator-rework-extension.lock"), "operator rework extension\n", mode) do
       :ok -> :ok
       {:error, reason} -> {:error, {:mvp_extension_guard, reason}}
     end
@@ -72,8 +96,14 @@ defmodule SymphonyElixir.Mvp.Executor do
   @spec resume_checks(map(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def resume_checks(context, expected_receipt_digest) do
     with {:ok, _raw, _data} <- resume_binding(context, expected_receipt_digest),
-         :ok <- resume_guard(context),
-         {:ok, raw, data} <- resume_binding(context, expected_receipt_digest) do
+         :ok <- resume_guard(context, :check) do
+      OperatorRecheck.legacy(context, fn -> resume_bound(context, expected_receipt_digest) end)
+    end
+  end
+
+  defp resume_bound(context, expected_receipt_digest) do
+    with {:ok, raw, data} <- resume_binding(context, expected_receipt_digest),
+         :ok <- resume_guard(context) do
       number = length(data["rounds"])
       evidence = Path.join(List.last(data["rounds"])["evidence"], "operator-check-resume")
 
@@ -87,18 +117,22 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp resume_guard(context) do
-    case File.write(Path.join(context.evidence, "operator-check-resume.lock"), "operator check resume\n", [:exclusive, :sync]) do
+  defp resume_guard(context, mode \\ :create) do
+    case guard_file(Path.join(context.evidence, "operator-check-resume.lock"), "operator check resume\n", mode) do
       :ok -> :ok
       {:error, reason} -> {:error, {:mvp_resume_guard, reason}}
     end
   end
+
+  defp guard_file(path, content, :create), do: File.write(path, content, [:exclusive, :sync])
+  defp guard_file(path, _content, :check), do: if(File.exists?(path), do: {:error, :eexist}, else: :ok)
 
   defp resume_binding(context, digest, mode \\ :resume) do
     with {:ok, raw} <- File.read(context.receipt),
          true <- Base.encode16(:crypto.hash(:sha256, raw), case: :lower) == digest,
          {:ok, data} <- Jason.decode(raw),
          true <- is_map(data),
+         true <- mode == :recheck or not File.exists?(Path.join(context.evidence, "operator-rechecks")),
          true <- resume_identity?(context, data, mode),
          true <- resume_rounds?(context, data),
          {:ok, branch} <- Commands.git(["branch", "--show-current"], context.workspace),
@@ -128,12 +162,20 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp previous_limit(context, :resume), do: context.limit
+  defp previous_limit(context, :recheck), do: context.limit
   defp previous_limit(_context, {:extend, limit}), do: limit
 
   defp resume_state?(context, data, :resume) do
     is_integer(context.limit) and context.limit in 1..5 and context.settings.max_rework == context.limit and
       is_binary(data["reason"]) and Regex.match?(~r/^\{:mvp_check_failed, [1-9][0-9]*\}$/, data["reason"]) and
       is_nil(data["operator_check_resume"]) and is_list(data["rounds"]) and data["rounds"] != []
+  end
+
+  defp resume_state?(context, data, :recheck) do
+    is_integer(context.limit) and context.limit in 1..5 and context.settings.max_rework == context.limit and
+      is_binary(data["reason"]) and
+      (Regex.match?(~r/^\{:mvp_check_failed, [1-9][0-9]*\}$/, data["reason"]) or data["reason"] == ":mvp_rework_exhausted") and
+      is_list(data["rounds"]) and data["rounds"] != []
   end
 
   defp resume_state?(context, data, {:extend, previous_limit}) do
@@ -326,7 +368,8 @@ defmodule SymphonyElixir.Mvp.Executor do
     record(context, "checking", %{"check_failure" => failure})
 
     if failure["repairable"] and context.limit > 0 do
-      rework(context, number, sha, Map.put(failure, "kind", "check"))
+      feedback = failure |> Map.put("kind", "check") |> Map.put("operator_diagnostic", Map.get(context, :operator_diagnostic))
+      rework(context, number, sha, feedback)
     else
       {:error, {:mvp_check_failed, failure["index"]}}
     end
@@ -334,7 +377,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp rework(context, number, sha, feedback) do
     if number <= context.limit do
-      round(context, number + 1, sha, feedback)
+      round(Map.delete(context, :operator_diagnostic), number + 1, sha, feedback)
     else
       {:error, :mvp_rework_exhausted}
     end
@@ -429,7 +472,9 @@ defmodule SymphonyElixir.Mvp.Executor do
     |> Enum.with_index(1)
     |> Enum.reduce_while(:ok, fn {argv, index}, :ok ->
       on_message.(%{event: :mvp_check_started, timestamp: DateTime.utc_now(), message: "check #{index}"})
-      command = Enum.map(argv, &(&1 |> String.replace("{workspace}", workspace) |> String.replace("{baseline}", Path.join(root_evidence, "baseline"))))
+
+      command =
+        Enum.map(argv, &(&1 |> String.replace("{workspace}", workspace) |> String.replace("{baseline}", Path.join(root_evidence, "baseline")) |> String.replace("{evidence}", evidence)))
 
       log_path = Path.join(evidence, "check-#{index}.log")
       result = Commands.run_logged(command, workspace, settings.check_timeout_ms, log_path)
