@@ -443,20 +443,23 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "pause persists through state reload and recovery does not clear it", ctx do
+    proc_root = Path.join(ctx.root, "empty-proc")
+    File.mkdir_p!(proc_root)
+    config = Map.put(ctx.config, :proc_root, proc_root)
     File.mkdir_p!(ctx.config["state_dir"])
     File.write!(ctx.config["maintenance_file"], "external maintenance")
-    assert {:ok, externally_paused} = Watchdog.step(ctx.config, "check")
-    assert externally_paused["phase"] == "paused"
+    assert {:ok, externally_paused} = Watchdog.step(config, "check")
+    assert externally_paused["phase"] == "paused", externally_paused["last_action"]["reason"]
     assert externally_paused["versions"] == %{}
 
-    assert {:ok, paused} = Watchdog.step(ctx.config, "pause")
+    assert {:ok, paused} = Watchdog.step(config, "pause")
     assert paused["paused"]
-    assert {:ok, next} = Watchdog.step(ctx.config, "check")
-    assert next["phase"] == "paused"
+    assert {:ok, next} = Watchdog.step(config, "check")
+    assert next["phase"] == "paused", next["last_action"]["reason"]
     assert next["versions"] == %{}
-    assert {:ok, recovered} = Watchdog.step(ctx.config, "recover")
+    assert {:ok, recovered} = Watchdog.step(config, "recover")
     assert recovered["paused"]
-    assert {:ok, resumed} = Watchdog.step(ctx.config, "resume")
+    assert {:ok, resumed} = Watchdog.step(config, "resume")
     refute resumed["paused"]
     assert {:ok, started} = Watchdog.step(ctx.config, "check")
     assert started["phase"] == "running"
