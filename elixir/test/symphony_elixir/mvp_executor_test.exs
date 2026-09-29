@@ -990,11 +990,18 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
   end
 
   test "failed checks cannot rework a changed candidate baseline or Git metadata" do
-    for command <- ["echo changed >> candidate.txt", "touch {baseline}/changed.txt", "git config candidate.changed true", "git commit --allow-empty -m changed"] do
+    commands = [
+      "echo changed >> candidate.txt",
+      "touch {baseline}/changed.txt",
+      "git config candidate.changed true",
+      "git -c user.name=CheckFixture -c user.email=fixture@example.invalid commit --allow-empty -m changed"
+    ]
+
+    for command <- commands do
       context = execution_context!()
       on_exit(fn -> File.rm_rf(context.root) end)
       opts = rework_opts(context, [])
-      assert {:error, :mvp_candidate_or_baseline_changed} = execute_rework(context, 2, opts, [["sh", "-c", command <> "; exit 10"]])
+      assert {:error, :mvp_candidate_or_baseline_changed} = execute_rework(context, 2, opts, [["sh", "-c", command <> " || exit 90; exit 10"]])
       assert length(Receipt.read(context.receipt)["rounds"]) == 1
       refute_receive {:rework_call, 2, _, _, _}
       refute_receive {:comment_post, _}
