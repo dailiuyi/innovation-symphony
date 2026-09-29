@@ -551,9 +551,7 @@ defmodule SymphonyElixir.WatchdogTest do
     assert invalid =~ "invalid or unreadable watchdog config"
 
     {invalid_internal, 1} =
-      System.cmd(controller, ["--watchdog-once", "start", "missing.json"],
-        stderr_to_stdout: true
-      )
+      System.cmd(controller, ["--watchdog-once", "start", "missing.json"], stderr_to_stdout: true)
 
     assert invalid_internal =~ "invalid or unreadable watchdog config"
 
