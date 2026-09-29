@@ -74,6 +74,56 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     end
   end
 
+  test "nonempty states must select a GitHub request before preflight can pass", ctx do
+    for states <- [["ready"], ["all"], [" "], ["todo", "review"]] do
+      write_workflow(ctx, %{"tracker" => %{"active_states" => states}})
+      before = files(ctx.root)
+
+      assert {:error, :mvp_preflight_requires_github_polling_states} = Preflight.run(ctx.path)
+      assert files(ctx.root) == before
+    end
+
+    for {states, query} <- [{[" OPEN "], "open"}, {["Closed"], "closed"}, {["open", "closed"], "all"}] do
+      write_workflow(ctx, %{"tracker" => %{"active_states" => states}})
+
+      assert {:ok, %{status: "passed", issue_count: 0}} =
+               probe(ctx.path, fn "GET", "/repos/owner/repo/issues", params, nil, _ ->
+                 assert params["state"] == query
+                 send(self(), :github_polled)
+                 {:ok, %{status: 200, body: []}}
+               end)
+
+      assert_received :github_polled
+    end
+  end
+
+  test "CLI main exits nonzero and reports a preflight configuration failure in a fresh VM", ctx do
+    write_workflow(ctx, %{"mvp" => %{"enabled" => false}})
+    before = files(ctx.root)
+    code_paths = Enum.flat_map(:code.get_path(), fn path -> ["-pa", to_string(path)] end)
+
+    {output, status} =
+      System.cmd(
+        "timeout",
+        ["--signal=KILL", "15s", "elixir"] ++
+          code_paths ++
+          [
+            "-e",
+            "SymphonyElixir.CLI.main(System.argv())",
+            "--",
+            "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+            "--preflight",
+            ctx.path
+          ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1, output
+    assert output =~ "Preflight failed: :mvp_preflight_requires_enabled_workflow"
+    refute output =~ ~s("status":"passed")
+    assert files(ctx.root) == before
+  end
+
   test "the default entry point rejects disabled workflows and empty polling states without changing files or runtime", ctx do
     runtime_workflow = Workflow.workflow_file_path()
     runtime = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)

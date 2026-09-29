@@ -4,7 +4,7 @@
 
 当前阶段：基于 [官方 Symphony](https://github.com/openai/symphony) 的 Elixir 实现开发 GitHub MVP。复用其调度、工作区、GitHub Client、AppServer 和状态页面，补充评论选模型、独立 Review、检查门禁和 Draft PR 交付。人工合并与升级。
 
-GH-3 本次最小增量提供 `--preflight` 接管前只读配置及 GitHub 轮询体检；不启动调度，成功后退出。A 收尾、版本切换和自动回退仍未实现，待确认机制未定案。见 [体检边界](docs/IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
+GH-3 当前候选仅有 `--preflight` 接管前只读配置及 GitHub 轮询体检；不启动调度，成功后退出。体检拒绝不含 `open` / `closed` 的状态列表，防止未查询远端就报告通过。A 收尾、版本切换和自动回退仍未实现，待确认机制未定案，完整 GH-3 尚未通过验收。见 [体检边界](docs/IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
 
 GitHub MVP 的历史接入与授权见决策记录；本次 GH-1 增加可选的有限 Review 返工和拒绝理由回帖，默认 `max_rework=0` 保持兼容，显式 1/2 启用。当前任务结果仅在本地工作区，未发布或升级。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
 

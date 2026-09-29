@@ -6,9 +6,9 @@ GH-1 更新：默认 0 的历史合同继续兼容；显式 `max_rework=1/2` 的
 
 ## GH-3 最小增量：接管前只读体检
 
-来源：2026-09-29 GH-3 实现请求。升级流程方向已确认，Issue 中的待确认机制继续待定。本次工程切片仅新增 escript `--preflight`，不登记新的用户产品决定，也不宣称完整接棒已完成。
+来源：2026-09-29 GH-3 实现请求。升级流程方向已确认，Issue 中的待确认机制继续待定。当前候选仅有 escript `--preflight`；独立审查已因完整接棒缺失而拒绝。这是未完成的实现状态记录，不能缩减 GH-3 的验收范围，也不登记新的用户产品决定。
 
-- 直接加载指定 WORKFLOW，校验通用配置、已启用的 MVP 配置、串行本地 GitHub 执行限制和非空 active_states。使用显式配置查询 GitHub 任务列表，复用原 Client 的 GET 分页；空队列也可以通过。
+- 直接加载指定 WORKFLOW，校验通用配置、已启用的 MVP 配置、串行本地 GitHub 执行限制和 active_states。状态列表必须至少包含一个 GitHub 可查询状态 `open` / `closed`（忽略首尾空白与大小写）；只有 `ready`、`all` 等非查询状态时拒绝，防止客户端本地返回空列表造成体检假成功。使用显式配置查询 GitHub 任务列表，复用原 Client 的 GET 分页；远端空队列也可以通过。
 - 不启动 Symphony 应用、调度器、任务监督器、WorkflowStore 或 HTTP 服务，不更改当前工作流缓存。不执行 hooks、模型、检查或交付，不领取任务，不创建/释放回执，不修改工作区、evidence 或远端资源。只启动查询所需的 Req 依赖。
 - 成功向标准输出写 JSON（`mode=preflight`、`status=passed`、`issue_count`）并以 0 退出；配置/查询失败以非零状态退出。`issue_count` 是查询结果数量，不代表获准派发数量。成功也不会自动进入正常运行。
 - 沿用显式 guardrails acknowledgement 开关。体检拒绝 `--port` 和 `--logs-root`，避免把服务启动选项误作体检设置。正常启动行为保持兼容。
@@ -17,6 +17,8 @@ GH-1 更新：默认 0 的历史合同继续兼容；显式 `max_rework=1/2` 的
 此入口只证明候选能加载配置并读取队列，不验证 Codex 可执行性、模型可用性、检查命令、持久状态 schema 兼容性或完整运行健康；通过不构成接管授权。A 停止领取/收尾、互斥、超时强停、blocked 释放、ready 恢复、外部升级编排、自动回退和接管后对账均未实现；不得据此启动 A/B 同时领取。原 Issue 的待确认清单继续有效。
 
 新增测试使用临时目录和模拟 GitHub 响应，覆盖只读 GET 分页、空队列、HTTP/传输失败、无效配置提前失败、保留已有回执/evidence，以及独立 VM 中零运行监督器的 CLI 体检路径。它们不证明真实接入或完整 GH-3 验收。
+
+本轮返修补充非空但不可查询的状态回归断言，以及独立 VM 中真实 `CLI.main` 配置失败的非零退出断言；尚未覆盖打包 escript 的成功 JSON 与完整接棒。定向 `mix test test/symphony_elixir/mvp_preflight_test.exs test/symphony_elixir/cli_test.exs` 在 Mix.PubSub 启动时因本地 TCP socket `:eperm` 被沙箱阻止，测试未执行，交由控制器运行标准检查；未重试或使用替代测试入口。
 
 ## 复用与扩展
 

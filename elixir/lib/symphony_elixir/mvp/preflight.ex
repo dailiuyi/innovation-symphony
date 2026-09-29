@@ -27,7 +27,14 @@ defmodule SymphonyElixir.Mvp.Preflight do
   defp require_enabled(%{enabled: true}), do: :ok
   defp require_enabled(_), do: {:error, :mvp_preflight_requires_enabled_workflow}
 
-  # An empty state list makes the client return locally without testing connectivity.
-  defp require_active_states(%{tracker: %{active_states: [_ | _]}}), do: :ok
+  # GitHub also returns locally for nonempty lists without an open/closed state.
+  defp require_active_states(%{tracker: %{active_states: [_ | _] = states}}) do
+    if Enum.any?(states, fn state -> String.downcase(String.trim(state)) in ["open", "closed"] end) do
+      :ok
+    else
+      {:error, :mvp_preflight_requires_github_polling_states}
+    end
+  end
+
   defp require_active_states(_), do: {:error, :mvp_preflight_requires_active_states}
 end
