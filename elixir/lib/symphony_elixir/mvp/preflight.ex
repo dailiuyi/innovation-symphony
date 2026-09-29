@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Mvp.Preflight do
   @spec run(Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(path, opts \\ []) do
     path = Path.expand(path)
-    fetch_issues = Keyword.get(opts, :fetch_issues, &Client.fetch_issues_by_states/2)
+    fetch_issues = Keyword.get(opts, :fetch_issues, &Client.fetch_issues_by_states_strict/2)
 
     with {:ok, workflow} <- Workflow.load(path),
          {:ok, config} <- Schema.parse(workflow.config),

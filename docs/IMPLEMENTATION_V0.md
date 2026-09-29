@@ -16,9 +16,11 @@ GH-1 更新：默认 0 的历史合同继续兼容；显式 `max_rework=1/2` 的
 
 此入口只证明候选能加载配置并读取队列，不验证 Codex 可执行性、模型可用性、检查命令、持久状态 schema 兼容性或完整运行健康；通过不构成接管授权。A 停止领取/收尾、互斥、超时强停、blocked 释放、ready 恢复、外部升级编排、自动回退和接管后对账均未实现；不得据此启动 A/B 同时领取。原 Issue 的待确认清单继续有效。
 
-新增测试使用临时目录和模拟 GitHub 响应，覆盖只读 GET 分页、空队列、HTTP/传输失败、无效配置提前失败、保留已有回执/evidence，以及独立 VM 中零运行监督器的 CLI 体检路径。它们不证明真实接入或完整 GH-3 验收。
+新增测试使用临时目录和模拟 GitHub 响应，覆盖只读 GET 分页、空队列、HTTP/传输失败、无效配置提前失败、保留已有回执/evidence，以及独立 VM 中零运行监督器的 CLI 体检路径。体检使用 Client 的严格读取入口：任意页存在畸形记录即返回 `github_unknown_payload`，不把全部畸形记录当作空队列，也不返回已读取的部分结果；普通轮询继续保留丢弃畸形记录的兼容行为。
 
-本轮返修修正状态回归断言：通用配置校验先拒绝无效状态，`closed` 及混合有效/无效状态同样不得触发远端请求；`open` 的大小写与空白形式须实际发起 GET。移除体检中重复且不可达的状态值校验，保留空列表检查。独立 VM 中真实 `CLI.main` 配置失败的非零退出断言继续保留；打包 escript 的成功 JSON 仍待验证。定向 `mix test test/symphony_elixir/mvp_preflight_test.exs test/symphony_elixir/cli_test.exs` 在 Mix.PubSub 启动时因本地 TCP socket `:eperm` 被沙箱阻止，测试未执行，交由控制器运行标准检查；未重试或使用替代测试入口。
+返修保留状态回归断言：通用配置校验先拒绝无效状态，`closed` 及混合有效/无效状态同样不得触发远端请求；`open` 的大小写与空白形式须实际发起 GET。独立 VM 中真实 `CLI.main` 配置失败的非零退出断言继续保留。新增测试构建并执行实际 escript，通过 Req 的测试 Plug 替换传输层，解析标准输出 JSON 并断言成功退出码为 0，同时验证畸形响应退出码为 1、运行监督器未启动、测试目录内容未变；不修改打包代码或连接真实 GitHub。
+
+本次 `mix format --check-formatted` 与 `git diff --check` 通过。定向 `mix test test/symphony_elixir/mvp_preflight_test.exs test/symphony_elixir/cli_test.exs test/symphony_elixir/github_adapter_test.exs` 在 Mix.PubSub 启动时因本地 TCP socket `:eperm` 被沙箱阻止，测试未执行；未重试或使用替代测试入口。静态检查、全量测试、100% 覆盖率及打包入口回归均待控制器运行标准门禁，新增断言不代表已经通过或证明真实接入。
 
 ## 复用与扩展
 

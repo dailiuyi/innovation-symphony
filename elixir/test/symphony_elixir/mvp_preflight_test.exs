@@ -45,13 +45,44 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
           {{:ok, %{status: 403, body: %{}}}, {:error, {:github_api_status, 403}}},
           {{:ok, %{status: 503, body: %{}}}, {:error, {:github_api_status, 503}}},
           {{:error, :timeout}, {:error, :timeout}},
-          {{:ok, %{status: 200, body: %{}}}, {:error, :github_unknown_payload}}
+          {{:ok, %{status: 200, body: %{}}}, {:error, :github_unknown_payload}},
+          {{:ok, %{status: 200, body: [%{}]}}, {:error, :github_unknown_payload}},
+          {{:ok, %{status: 200, body: [issue(1), %{}]}}, {:error, :github_unknown_payload}},
+          {{:ok, %{status: 200, body: [nil, "invalid"]}}, {:error, :github_unknown_payload}}
         ] do
       assert probe(ctx.path, fn "GET", _, _, nil, _ -> response end) == result
     end
 
     refute File.exists?(Path.join(ctx.root, "state"))
     refute File.exists?(Path.join(ctx.root, "workspaces"))
+  end
+
+  test "a later page failure rejects the entire probe instead of returning partial results", ctx do
+    write_workflow(ctx)
+    before = files(ctx.root)
+
+    for {response, reason} <- [
+          {{:ok, %{status: 403, body: %{}}}, {:github_api_status, 403}},
+          {{:error, :timeout}, :timeout},
+          {{:ok, %{status: 200, body: %{}}}, :github_unknown_payload},
+          {{:ok, %{status: 200, body: [%{}]}}, :github_unknown_payload},
+          {{:ok, %{status: 200, body: [issue(101), %{}]}}, :github_unknown_payload}
+        ] do
+      request = fn "GET", "/repos/owner/repo/issues", params, nil, _ ->
+        send(self(), {:page, params["page"]})
+
+        case params["page"] do
+          1 -> {:ok, %{status: 200, body: Enum.map(1..100, &issue/1)}}
+          2 -> response
+        end
+      end
+
+      assert probe(ctx.path, request) == {:error, reason}
+      assert_received {:page, 1}
+      assert_received {:page, 2}
+      refute_received {:page, 3}
+      assert files(ctx.root) == before
+    end
   end
 
   test "invalid or disabled configurations fail before any remote call", ctx do
@@ -154,7 +185,7 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     original_path = Workflow.workflow_file_path()
     deps = %{preflight: fn path ->
       Preflight.run(path, fetch_issues: fn states, tracker ->
-        Client.fetch_issues_by_states(states, tracker, fn "GET", _, _, nil, _ ->
+        Client.fetch_issues_by_states_strict(states, tracker, fn "GET", _, _, nil, _ ->
           {:ok, %{status: 200, body: [%{"number" => 3, "title" => "ready", "state" => "open", "labels" => [%{"name" => "ready"}]}]}}
         end)
       end)
@@ -178,8 +209,68 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
     assert files(ctx.root) == before
   end
 
+  @tag timeout: 120_000
+  test "the packaged escript emits success JSON with exit zero and rejects malformed responses", ctx do
+    # Build the actual configured entry point. Only the Req transport is replaced,
+    # using an external fixture beam and VM config; the packaged code is untouched.
+    {build_output, build_status} =
+      System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"], env: [{"MIX_ENV", "test"}], stderr_to_stdout: true)
+
+    assert build_status == 0, build_output
+    fixture_dir = Path.join(ctx.root, "fixture")
+    File.mkdir_p!(fixture_dir)
+
+    for {module, beam} <- Code.compile_file("test/fixtures/preflight_github_plug.ex") do
+      File.write!(Path.join(fixture_dir, "#{module}.beam"), beam)
+    end
+
+    write_workflow(ctx)
+
+    for {pages, expected} <- [
+          {%{1 => Enum.map(1..100, &issue/1), 2 => [issue(101)]}, {:ok, 101}},
+          {%{1 => []}, {:ok, 0}},
+          {%{1 => [%{}]}, :error},
+          {%{1 => [issue(1), %{}]}, :error},
+          {%{1 => Enum.map(1..100, &issue/1), 2 => [%{}]}, :error}
+        ] do
+      config_path = Path.join(fixture_dir, "preflight.config")
+      config = [req: [default_options: [plug: {SymphonyElixir.PreflightGitHubPlug, pages}]]]
+      File.write!(config_path, :io_lib.format(~c"~tp.~n", [config]))
+      before = files(ctx.root)
+
+      {output, status} =
+        System.cmd(
+          "timeout",
+          [
+            "--signal=KILL",
+            "15s",
+            "escript",
+            "bin/symphony",
+            "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+            "--preflight",
+            ctx.path
+          ],
+          env: [{"ERL_FLAGS", "#{System.get_env("ERL_FLAGS")} -pa #{inspect(fixture_dir)} -config #{inspect(config_path)}"}],
+          stderr_to_stdout: true
+        )
+
+      case expected do
+        {:ok, count} ->
+          assert status == 0, output
+          assert Jason.decode!(output) == %{"mode" => "preflight", "status" => "passed", "issue_count" => count}
+
+        :error ->
+          assert status == 1, output
+          assert output =~ "Preflight failed: :github_unknown_payload"
+          refute output =~ ~s("status":"passed")
+      end
+
+      assert files(ctx.root) == before
+    end
+  end
+
   defp probe(path, request) do
-    Preflight.run(path, fetch_issues: fn states, tracker -> Client.fetch_issues_by_states(states, tracker, request) end)
+    Preflight.run(path, fetch_issues: fn states, tracker -> Client.fetch_issues_by_states_strict(states, tracker, request) end)
   end
 
   defp issue(number) do
