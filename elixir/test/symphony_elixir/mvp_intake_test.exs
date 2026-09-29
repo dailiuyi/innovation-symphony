@@ -440,6 +440,49 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     end
   end
 
+  test "archive runtime roots resolve the physical file before following its parent" do
+    root = unique_path("archive-runtime")
+    File.mkdir_p!(root)
+    archive = Path.join(root, "symphony")
+    {:ok, _} = :zip.create(String.to_charlist(archive), [{~c"symphony_elixir/ebin/placeholder", "archive entry"}])
+    alias_dir = unique_path("archive-alias")
+    File.mkdir_p!(alias_dir)
+    archive_alias = Path.join(alias_dir, "symphony")
+    File.ln_s!(archive, archive_alias)
+
+    try do
+      assert {:ok, ^root} = MvpConfig.runtime_root(Path.join(archive, "symphony_elixir"))
+      assert {:ok, ^root} = MvpConfig.runtime_root(Path.join(archive_alias, "symphony_elixir"))
+
+      assert {:error, :mvp_runtime_path_unavailable} =
+               MvpConfig.runtime_root(Path.join(archive, "invalid/deeper/path"))
+
+      File.rm!(archive)
+      assert {:error, :mvp_runtime_path_unavailable} = MvpConfig.runtime_root(Path.join(archive, "symphony_elixir"))
+      assert {:error, :mvp_runtime_path_unavailable} = MvpConfig.runtime_root(Path.join(archive_alias, "symphony_elixir"))
+    after
+      File.rm_rf!(root)
+      File.rm_rf!(alias_dir)
+    end
+  end
+
+  test "OTP runtime roots preserve the application directory and resolve directory aliases" do
+    root = unique_path("otp-runtime")
+    runtime_path = Path.join(root, "symphony_elixir")
+    alias_path = unique_path("otp-runtime-alias")
+    File.mkdir_p!(runtime_path)
+    File.ln_s!(runtime_path, alias_path)
+
+    try do
+      assert {:ok, ^runtime_path} = MvpConfig.runtime_root(runtime_path)
+      assert {:ok, ^runtime_path} = MvpConfig.runtime_root(alias_path)
+      assert {:error, :mvp_runtime_path_unavailable} = MvpConfig.runtime_root(Path.join(root, "missing"))
+    after
+      File.rm_rf!(root)
+      File.rm!(alias_path)
+    end
+  end
+
   test "MVP config reports meaningful errors for malformed and unsafe values" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     config_for = fn changes -> Map.merge(valid_mvp_config(unique_path("state")), changes) end
