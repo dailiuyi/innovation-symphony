@@ -20,6 +20,9 @@ defmodule SymphonyElixir.CLI do
         }
 
   @spec main([String.t()]) :: no_return()
+  def main(["--watchdog" | args]), do: SymphonyElixir.Watchdog.main(args)
+  def main(["--watchdog-once", command, path]), do: SymphonyElixir.Watchdog.once(command, path)
+
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
   end
