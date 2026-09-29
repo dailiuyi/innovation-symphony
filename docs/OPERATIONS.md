@@ -1,5 +1,11 @@
 # 原型运行与项目交付
 
+## 2026-09-29 自动恢复实测
+
+控制器 `07f74936f77e30c6337da70a1fec9476a61eac8f` 已发布、通过 CI 并安装在本地 WSL。Issue #3 保留原五次返工，通过自动诊断及两次新增编码，自动处理一次真实测试失败后通过完整检查和独立 Review，交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)。完整版本、检查数字和证据见 [验收记录](VALIDATION_AUTOMATIC_RECOVERY.md)。
+
+运行入口仍为 `runtime-v1`，状态目录仍为 `state/attempt-4`，intake 已恢复，历史证据未清空。PR 候选尚未合并或安装；按 IS-027，与 main 的冲突由人处理，停止自动集成扩展，不持续追赶主分支。下文保留此前各次启动与切换的历史记录。
+
 ## 当前状态
 
 已在官方 Elixir 源码基础上实现本地 GitHub MVP，包括确定性评论解析、检查、独立 Review 与 Draft PR 交付链；需求文档和后台 HTML 原型继续保留。私有 GitHub 仓库和真实 Issue #1 已接入；经过环境隔离与中断分支修复，PR #2 已由用户合并。2026-09-29 按 IS-019 授权切换本地 WSL 运行器，运行版本及状态见文末记录。尚未部署云服务；历史验证见 [VALIDATION_V0.md](VALIDATION_V0.md)。
