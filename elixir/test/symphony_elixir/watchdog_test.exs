@@ -347,7 +347,7 @@ defmodule SymphonyElixir.WatchdogTest do
     install2 = install!(ctx.root, "v2", "exit 0")
     pointer!(ctx.config, "v2", install2)
     other = check_after_quick_exit(ctx.config)
-    assert other["versions"]["v2"]["attempts"] == 1
+    assert other["versions"]["v2"]["attempts"] == 1, inspect(other["last_action"])
     assert other["phase"] == "backoff"
     pointer!(ctx.config, "v1", ctx.install)
     assert {:ok, old} = Watchdog.step(ctx.config, "check")
@@ -537,8 +537,13 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "launcher execution exceptions retain failure evidence and exhaust the budget", ctx do
+    empty_proc = Path.join(ctx.root, "empty-proc")
+    File.mkdir_p!(empty_proc)
+
     config =
-      Map.put(ctx.config, :spawn_command, fn _command, args, options ->
+      ctx.config
+      |> Map.put(:proc_root, empty_proc)
+      |> Map.put(:spawn_command, fn _command, args, options ->
         System.cmd(Path.join(ctx.root, "missing-shell"), args, options)
       end)
 
@@ -786,9 +791,22 @@ defmodule SymphonyElixir.WatchdogTest do
     assert Jason.decode!(restarted)["versions"]["v1"]["attempts"] == 1
 
     slow_controller = Path.join(ctx.root, "slow-controller")
-    File.write!(slow_controller, "#!/bin/sh\nsleep 0.2\nexec '#{controller}' \"$@\"\n")
+    child_started = Path.join(ctx.root, "child-started")
+    child_result = Path.join(ctx.root, "child-result")
+    child_output = Path.join(ctx.root, "child-output")
+
+    File.write!(
+      slow_controller,
+      "#!/bin/sh\nprintf started > '#{child_started}'\nsleep 0.2\n" <>
+        "'#{controller}' \"$@\" > '#{child_output}' 2>&1\nresult=$?\n" <>
+        "printf '%s\\n' \"$result\" > '#{child_result}'\n" <>
+        "cat '#{child_output}'\nexit \"$result\"\n"
+    )
+
     File.chmod!(slow_controller, 0o755)
-    timed_config = %{config | "controller" => slow_controller, "interval_ms" => 400}
+    # The 200 ms child delay is inside each check. Leave room for the packaged
+    # VM and flock startup so this test measures the loop period, not boot time.
+    timed_config = %{config | "controller" => slow_controller, "interval_ms" => 1_500}
     File.write!(config_path, Jason.encode!(timed_config))
     prior_checks = restarted |> Jason.decode!() |> Map.fetch!("history_count")
 
@@ -816,11 +834,21 @@ defmodule SymphonyElixir.WatchdogTest do
       end
     end)
 
-    wait_check(config["status_file"], prior_checks)
+    first_check =
+      wait_check(
+        timed_config,
+        prior_checks,
+        new_watchdog_pid,
+        child_started,
+        child_result,
+        child_output
+      )
+
     killed_at = System.system_time(:millisecond)
     kill_group(pid, config["workflow"])
     wait_absent(pid)
-    exit_event = wait_exit_event(config)
+    exit_event = wait_exit_event(config, prior_checks, timed_config["interval_ms"])
+    assert exit_event["at"] - first_check["at"] <= timed_config["interval_ms"] + 100
     assert exit_event["at"] - killed_at <= timed_config["interval_ms"] + 100
     replacement = wait_replacement(config["status_file"], pid)
     assert replacement["versions"]["v1"]["attempts"] == 2
@@ -945,28 +973,65 @@ defmodule SymphonyElixir.WatchdogTest do
     end
   end
 
-  defp wait_check(path, prior_count, remaining \\ 100)
-  defp wait_check(_path, _prior_count, 0), do: flunk("watchdog loop did not complete a check")
+  defp wait_check(config, prior_count, watchdog_pid, child_started, child_result, child_output) do
+    deadline = System.monotonic_time(:millisecond) + 10_000
 
-  defp wait_check(path, prior_count, remaining) do
-    state = path |> File.read!() |> Jason.decode!()
+    poll_check(
+      config,
+      prior_count,
+      watchdog_pid,
+      child_started,
+      child_result,
+      child_output,
+      deadline
+    )
+  end
 
-    if state["history_count"] > prior_count and state["last_action"]["action"] == "check" do
-      :ok
-    else
-      Process.sleep(10)
-      wait_check(path, prior_count, remaining - 1)
+  defp poll_check(config, prior_count, watchdog_pid, child_started, child_result, child_output, deadline) do
+    entries = history(config)
+    check = entries |> Enum.drop(prior_count) |> Enum.find(&(&1["action"] == "check"))
+
+    case {check, File.read(child_result)} do
+      {check, {:ok, "0\n"}} when is_map(check) ->
+        check
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          cmdline = File.read("/proc/#{watchdog_pid}/cmdline")
+          status = File.read(config["status_file"])
+
+          flunk(
+            "watchdog loop did not complete a check; pid=#{watchdog_pid} " <>
+              "cmdline=#{inspect(cmdline)} status=#{inspect(status)} " <>
+              "child_started=#{inspect(File.read(child_started))} " <>
+              "child_exit=#{inspect(File.read(child_result))} " <>
+              "child_output=#{inspect(File.read(child_output))} " <>
+              "recent_audit=#{inspect(Enum.take(entries, -5))}"
+          )
+        end
+
+        Process.sleep(20)
+        poll_check(config, prior_count, watchdog_pid, child_started, child_result, child_output, deadline)
     end
   end
 
-  defp wait_exit_event(config, remaining \\ 100)
-  defp wait_exit_event(_config, 0), do: flunk("watchdog loop did not observe runner exit")
+  defp wait_exit_event(config, prior_count, interval_ms) do
+    deadline = System.monotonic_time(:millisecond) + interval_ms + 5_000
+    poll_exit_event(config, prior_count, deadline)
+  end
 
-  defp wait_exit_event(config, remaining) do
-    case Enum.find(history(config), &(&1["action"] == "exit")) do
+  defp poll_exit_event(config, prior_count, deadline) do
+    case config |> history() |> Enum.drop(prior_count) |> Enum.find(&(&1["action"] == "exit")) do
       nil ->
-        Process.sleep(10)
-        wait_exit_event(config, remaining - 1)
+        if System.monotonic_time(:millisecond) >= deadline do
+          flunk(
+            "watchdog loop did not observe runner exit; " <>
+              "recent_audit=#{inspect(Enum.take(history(config), -5))}"
+          )
+        end
+
+        Process.sleep(20)
+        poll_exit_event(config, prior_count, deadline)
 
       event ->
         event
@@ -974,16 +1039,29 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   defp check_after_quick_exit(config) do
-    assert {:ok, state} = Watchdog.step(config, "check")
+    state = check_after_transient_scan(config)
 
     case state["process"] do
       %{"pid" => pid} ->
         wait_absent(pid)
-        assert {:ok, settled} = Watchdog.step(config, "check")
-        settled
+        check_after_transient_scan(config)
 
       nil ->
         state
+    end
+  end
+
+  defp check_after_transient_scan(config, remaining \\ 5)
+
+  defp check_after_transient_scan(config, remaining) do
+    assert {:ok, state} = Watchdog.step(config, "check")
+
+    if state["last_action"]["reason"] == "process table identity inaccessible" and remaining > 0 do
+      assert state["phase"] == "blocked"
+      Process.sleep(20)
+      check_after_transient_scan(config, remaining - 1)
+    else
+      state
     end
   end
 
