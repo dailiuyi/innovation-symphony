@@ -4,6 +4,9 @@ defmodule SymphonyElixir.Watchdog do
   Symphony application and serializes operations with a service-level `flock`.
   """
 
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Workflow
+
   @ack "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
   @spec load_config(String.t()) :: {:ok, map()} | {:error, String.t()}
   def load_config(path) do
@@ -238,8 +241,8 @@ defmodule SymphonyElixir.Watchdog do
   defp effective_port(%{"port" => port}) when is_integer(port), do: {:ok, port}
 
   defp effective_port(config) do
-    with {:ok, workflow} <- SymphonyElixir.Workflow.load(config["workflow"]),
-         {:ok, settings} <- SymphonyElixir.Config.Schema.parse(workflow.config),
+    with {:ok, workflow} <- Workflow.load(config["workflow"]),
+         {:ok, settings} <- Schema.parse(workflow.config),
          port when is_nil(port) or port in 0..65_535 <- settings.server.port do
       {:ok, port}
     else
