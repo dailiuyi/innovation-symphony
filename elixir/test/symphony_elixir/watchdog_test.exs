@@ -254,34 +254,38 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "identity conflict and missing record fail closed", ctx do
-    assert {:ok, started} = Watchdog.step(ctx.config, "start")
+    config = controlled_proc_config(ctx)
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["phase"] == "running", inspect(started["last_action"])
+    assert is_map(started["process"]), inspect(started)
+    assert Jason.decode!(File.read!(config["status_file"]))["process"] == started["process"]
     pid = started["process"]["pid"]
-    change_state(ctx.config, fn state -> put_in(state, ["process", "start_ticks"], "reused") end)
-    assert {:ok, conflict} = Watchdog.step(ctx.config, "check")
+    change_state(config, fn state -> put_in(state, ["process", "start_ticks"], "reused") end)
+    assert {:ok, conflict} = Watchdog.step(config, "check")
     assert conflict["phase"] == "blocked"
     assert conflict["last_action"]["reason"] =~ "identity conflict"
     assert conflict["process"]["pid"] == pid
     assert conflict["process"]["start_ticks"] == "reused"
     assert conflict["observed"]["pid"] == pid
     assert conflict["observed"]["start_ticks"] == started["process"]["start_ticks"]
-    assert List.last(history(ctx.config))["process"]["start_ticks"] == "reused"
+    assert List.last(history(config))["process"]["start_ticks"] == "reused"
 
-    assert List.last(history(ctx.config))["observed"]["start_ticks"] ==
+    assert List.last(history(config))["observed"]["start_ticks"] ==
              started["process"]["start_ticks"]
 
-    change_state(ctx.config, fn state ->
+    change_state(config, fn state ->
       state
       |> put_in(["process", "start_ticks"], started["process"]["start_ticks"])
       |> put_in(["process", "cmdline"], Enum.reverse(started["process"]["cmdline"]))
     end)
 
-    assert {:ok, command_conflict} = Watchdog.step(ctx.config, "check")
+    assert {:ok, command_conflict} = Watchdog.step(config, "check")
     assert command_conflict["phase"] == "blocked"
     assert command_conflict["process"]["pid"] == pid
     assert command_conflict["observed"]["cmdline"] == started["process"]["cmdline"]
 
-    change_state(ctx.config, fn state -> Map.put(state, "process", nil) end)
-    assert {:ok, unrecorded} = Watchdog.step(ctx.config, "check")
+    change_state(config, fn state -> Map.put(state, "process", nil) end)
+    assert {:ok, unrecorded} = Watchdog.step(config, "check")
     assert unrecorded["phase"] == "blocked"
     assert unrecorded["last_action"]["reason"] =~ "unrecorded runner"
     assert File.exists?("/proc/#{pid}")
@@ -289,7 +293,11 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "a recorded PID reused by an unrelated process is not treated as this runner", ctx do
-    assert {:ok, started} = Watchdog.step(ctx.config, "start")
+    config = controlled_proc_config(ctx)
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["phase"] == "running", inspect(started["last_action"])
+    assert is_binary(started["process"]["start_ticks"])
+    assert Jason.decode!(File.read!(config["status_file"]))["process"] == started["process"]
     kill_group(started["process"]["pid"], ctx.config["workflow"])
     wait_absent(started["process"]["pid"])
     {raw_pid, 0} = System.cmd("sh", ["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
@@ -306,9 +314,10 @@ defmodule SymphonyElixir.WatchdogTest do
       end
     end)
 
-    change_state(ctx.config, fn state -> put_in(state, ["process", "pid"], unrelated_pid) end)
+    File.ln_s!("/proc/#{unrelated_pid}", Path.join(config[:proc_root], Integer.to_string(unrelated_pid)))
+    change_state(config, fn state -> put_in(state, ["process", "pid"], unrelated_pid) end)
 
-    assert {:ok, blocked} = Watchdog.step(ctx.config, "check")
+    assert {:ok, blocked} = Watchdog.step(config, "check")
     assert blocked["phase"] == "blocked"
     assert blocked["versions"]["v1"]["attempts"] == 1
     assert blocked["process"]["pid"] == unrelated_pid
@@ -725,7 +734,11 @@ defmodule SymphonyElixir.WatchdogTest do
 
     on_exit(fn -> :gen_tcp.close(socket) end)
     {:ok, {_address, port}} = :inet.sockname(socket)
-    config = Map.put(ctx.config, "port", port)
+    proc_root = Path.join(ctx.root, "port-proc")
+    File.mkdir_p!(Path.join(proc_root, "net"))
+    File.ln_s!("/proc/net/tcp", Path.join(proc_root, "net/tcp"))
+    File.ln_s!("/proc/net/tcp6", Path.join(proc_root, "net/tcp6"))
+    config = ctx.config |> Map.put("port", port) |> Map.put(:proc_root, proc_root)
     assert {:ok, blocked} = Watchdog.step(config, "check")
     assert blocked["phase"] == "blocked"
     assert blocked["last_action"]["reason"] =~ "port occupied"
@@ -1047,6 +1060,32 @@ defmodule SymphonyElixir.WatchdogTest do
     File.write!(executable, "#!/bin/sh\n#{body}\n")
     File.chmod!(executable, 0o755)
     install
+  end
+
+  defp controlled_proc_config(ctx) do
+    proc_root = Path.join(ctx.root, "controlled-proc")
+    boot_file = Path.join(proc_root, "sys/kernel/random/boot_id")
+    File.mkdir_p!(Path.dirname(boot_file))
+    File.cp!("/proc/sys/kernel/random/boot_id", boot_file)
+
+    ctx.config
+    |> Map.put(:proc_root, proc_root)
+    |> Map.put(:spawn_command, fn command, args, options ->
+      spawn_with_proc_link(proc_root, command, args, options)
+    end)
+  end
+
+  defp spawn_with_proc_link(proc_root, command, args, options) do
+    result = System.cmd(command, args, options)
+    if match?({_, 0}, result), do: link_spawned_pid(proc_root, elem(result, 0))
+    result
+  end
+
+  defp link_spawned_pid(proc_root, output) do
+    case Integer.parse(String.trim(output)) do
+      {pid, ""} -> File.ln_s!("/proc/#{pid}", Path.join(proc_root, Integer.to_string(pid)))
+      _ -> :ok
+    end
   end
 
   defp pointer!(config, version, install) do
