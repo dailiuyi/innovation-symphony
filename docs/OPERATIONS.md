@@ -2,7 +2,7 @@
 
 ## 2026-10-01 当前固定安装与真实看门狗测试
 
-按 IS-042，PR #6 已由用户合并，拉取远端 main `eef3dec0d0ffba286a8e945849a57c214201b47f`。本地仍有 13 个未发布的控制器提交；为保留隔离执行、技术恢复和分阶段交付，合入最新 main，仅决策文档存在冲突并保留双方记录，形成安装提交 `d4e913ea4b8c14ee81da977fd337d584fe8035f2`。本地控制器提交未推送；合并前引用 `codex/pre-watchdog-install-20261001` 保留。
+按 IS-042，PR #6 已由用户合并，拉取远端 main `eef3dec0d0ffba286a8e945849a57c214201b47f`。安装时本地仍有 13 个未发布的控制器提交；为保留隔离执行、技术恢复和分阶段交付，合入最新 main，仅决策文档存在冲突并保留双方记录，形成安装提交 `d4e913ea4b8c14ee81da977fd337d584fe8035f2`。安装测试完成后 IS-043 授权将当前本地 main 推送远端，发布结果以 Git 远端 SHA 核验；安装仍固定于 d4e913e，后续只有文档变化。合并前引用 `codex/pre-watchdog-install-20261001` 保留。
 
 固定安装在 WSL `desktop` 的 `/var/tmp/innovation-symphony-v0-rerun1/releases/d4e913ea4b8c14ee81da977fd337d584fe8035f2`。Elixir 1.19.5/OTP 28.5、Codex 0.159.1 及原 CODEX_HOME 沿用。`bin/symphony` 为最终 dev escript 的普通文件副本，无符号链接；SHA256 为 `125fa60e81d744af1a9c537281fd9b9cdcd55a8ddc8bc1ffd9af056205833114`。安装源码工作树干净，watchdog 和 CLI 与原 PR 候选 `b465fbc` 的源码一致，其余本地控制器功能保留。
 
