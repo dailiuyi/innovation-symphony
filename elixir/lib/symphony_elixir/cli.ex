@@ -8,6 +8,7 @@ defmodule SymphonyElixir.CLI do
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, preflight: :boolean, logs_root: :string, port: :integer]
+  @watchdog_commands ~w(run start pause resume recover status)
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -20,13 +21,273 @@ defmodule SymphonyElixir.CLI do
         }
 
   @spec main([String.t()]) :: no_return()
+  def main(["--watchdog" | args]), do: System.halt(watchdog_main(args))
+  def main(["--watchdog-once", command, path]), do: System.halt(watchdog_once(command, path))
+  def main(["--watchdog-once", "block", path, reason]), do: System.halt(watchdog_block_once(path, reason))
+
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
+  end
+
+  defp watchdog_main([command, config_path]) when command in @watchdog_commands do
+    case SymphonyElixir.Watchdog.load_config(config_path) do
+      {:ok, config} when command == "run" -> watchdog_loop(config)
+      {:ok, config} -> watchdog_finish(watchdog_locked(config, command))
+      error -> watchdog_finish(error)
+    end
+  end
+
+  defp watchdog_main(_args) do
+    IO.puts(
+      :stderr,
+      "Usage: symphony --watchdog run|start|pause|resume|recover|status CONFIG.json"
+    )
+
+    1
+  end
+
+  defp watchdog_once(command, config_path) do
+    result =
+      case SymphonyElixir.Watchdog.load_config(config_path) do
+        {:ok, config} ->
+          with true <- service_lock_held?(config),
+               :ok <- SymphonyElixir.Watchdog.bind_state_dir(config) do
+            SymphonyElixir.Watchdog.step(config, command)
+          else
+            false -> {:error, "internal entrypoint requires the service lock"}
+            error -> error
+          end
+
+        error ->
+          error
+      end
+
+    watchdog_finish(result)
+  end
+
+  defp watchdog_block_once(config_path, reason) do
+    result =
+      case SymphonyElixir.Watchdog.load_config(config_path) do
+        {:ok, config} ->
+          with true <- service_lock_held?(config),
+               :ok <- SymphonyElixir.Watchdog.bind_state_dir(config) do
+            SymphonyElixir.Watchdog.record_block(config, reason)
+          else
+            false -> {:error, "internal entrypoint requires the service lock"}
+            error -> error
+          end
+
+        error ->
+          error
+      end
+
+    watchdog_finish(result)
+  end
+
+  defp watchdog_finish(result) do
+    case result do
+      {:ok, state} ->
+        IO.puts(Jason.encode!(state))
+        0
+
+      {:error, reason} ->
+        IO.puts(:stderr, "watchdog: #{reason}")
+        1
+    end
+  end
+
+  # GNU flock keeps its locked descriptor open in the command by default. A
+  # caller-supplied environment variable is not proof of ownership of that lock.
+  defp service_lock_held?(config) do
+    lock_path = SymphonyElixir.Watchdog.service_lock_path(config)
+
+    case File.ls("/proc/self/fd") do
+      {:ok, descriptors} -> Enum.any?(descriptors, &service_lock_descriptor?(&1, lock_path))
+      _ -> false
+    end
+  end
+
+  defp service_lock_descriptor?(descriptor, lock_path) do
+    fd = Path.join("/proc/self/fd", descriptor)
+
+    case File.read_link(fd) do
+      {:ok, ^lock_path} -> service_lock_info?(descriptor)
+      _ -> false
+    end
+  end
+
+  defp service_lock_info?(descriptor) do
+    case File.read(Path.join("/proc/self/fdinfo", descriptor)) do
+      {:ok, info} -> String.match?(info, ~r/^lock:\s+\d+: FLOCK\s+ADVISORY\s+WRITE\s/m)
+      _ -> false
+    end
+  end
+
+  defp watchdog_loop(config) do
+    watchdog_loop(config, System.monotonic_time(:millisecond))
+  end
+
+  defp watchdog_loop(config, due_at) do
+    case watchdog_locked(config, "check") do
+      {:ok, _} -> :ok
+      {:error, reason} -> IO.puts(:stderr, "watchdog: #{reason}")
+    end
+
+    next_at = due_at + config["interval_ms"]
+    now = System.monotonic_time(:millisecond)
+    Process.sleep(max(next_at - now, 0))
+    watchdog_loop(config, max(next_at, now))
+  end
+
+  defp watchdog_locked(config, command) do
+    result =
+      with true <- File.regular?(config["controller"]),
+           {output, 0} <-
+             System.cmd(
+               "flock",
+               [
+                 "-x",
+                 SymphonyElixir.Watchdog.service_lock_path(config),
+                 config["controller"],
+                 "--watchdog-once",
+                 command,
+                 config["config_path"]
+               ],
+               stderr_to_stdout: true
+             ),
+           {:ok, state} when is_map(state) <- Jason.decode(String.trim(output)),
+           true <- SymphonyElixir.Watchdog.valid_response?(state, config) do
+        {:ok, state}
+      else
+        false ->
+          if File.regular?(config["controller"]),
+            do: {:error, "invalid watchdog child response"},
+            else: {:error, "controller executable missing"}
+
+        {:error, %Jason.DecodeError{}} ->
+          {:error, "invalid watchdog child response"}
+
+        {:error, reason} ->
+          {:error, "watchdog lock or child failed: #{inspect(reason)}"}
+
+        {:ok, _} ->
+          {:error, "invalid watchdog child response"}
+
+        {"watchdog: workflow state directory binding conflict\n", 1} ->
+          {:error, "workflow state directory binding conflict"}
+
+        {"watchdog: workflow state directory binding unreadable\n", 1} ->
+          {:error, "workflow state directory binding unreadable"}
+
+        {output, status} ->
+          {:error, child_failure(output, status)}
+      end
+
+    case result do
+      {:error, reason} ->
+        report_block(config, reason)
+        result
+
+      _ ->
+        result
+    end
+  end
+
+  defp child_failure(output, status) do
+    # Never echo arbitrary child output, which can contain credentials.
+    case String.trim(output) do
+      "watchdog: " <> reason ->
+        if reason in [
+             "invalid watchdog state; refusing to reset budget",
+             "invalid watchdog audit; refusing to reset budget",
+             "watchdog state unreadable",
+             "watchdog audit unreadable; refusing to reset budget",
+             "maintenance lock cannot be verified",
+             "cannot restore watchdog state from audit",
+             "cannot persist watchdog evidence"
+           ],
+           do: reason,
+           else: "watchdog child failed with exit #{status}"
+
+      _ ->
+        "watchdog child failed with exit #{status}"
+    end
+  end
+
+  defp report_block(config, reason) do
+    self = :escript.script_name() |> to_string()
+
+    result =
+      if File.regular?(self) do
+        System.cmd("flock", ["-x", SymphonyElixir.Watchdog.service_lock_path(config), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
+      end
+
+    unless match?({_, 0}, result) do
+      case SymphonyElixir.Watchdog.record_fault(config, reason) do
+        :ok -> :ok
+        {:error, error} -> IO.puts(:stderr, "watchdog: #{error}")
+      end
+    end
+  end
+
+  @doc false
+  @spec with_runner_permit(map(), String.t(), (list() -> term())) :: term()
+  def with_runner_permit(config, executable, launch) do
+    binding = SymphonyElixir.Watchdog.service_lock_path(config) <> ".binding"
+
+    if File.exists?(binding) do
+      nonce = :crypto.strong_rand_bytes(32) |> Base.encode16()
+      ticket = Jason.encode!(%{"nonce" => nonce, "executable" => executable, "workflow" => config["workflow"]})
+      path = binding <> ".launch"
+      File.write!(path, ticket)
+      File.chmod!(path, 0o600)
+      launch.([{"SYMPHONY_RUNNER_PERMIT", nonce}])
+    else
+      launch.([{"SYMPHONY_RUNNER_PERMIT", nil}])
+    end
+  end
+
+  # A bound workflow only enters through a budgeted launch under the service
+  # lock. A one-use permit admits that detached child without trusting a
+  # caller-set boolean or giving the ordinary CLI its own scheduler.
+  defp authorize_start(workflow) do
+    case SymphonyElixir.PathSafety.canonicalize(workflow) do
+      {:ok, canonical} ->
+        binding = SymphonyElixir.Watchdog.service_lock_path(%{"workflow" => canonical}) <> ".binding"
+
+        case File.lstat(binding) do
+          {:error, :enoent} -> :ok
+          _ -> consume_runner_permit(binding, canonical)
+        end
+
+      _ ->
+        {:error, "Workflow path cannot be verified"}
+    end
+  end
+
+  defp consume_runner_permit(binding, workflow) do
+    path = binding <> ".launch"
+    nonce = System.get_env("SYMPHONY_RUNNER_PERMIT")
+    executable = :escript.script_name() |> to_string() |> Path.expand()
+
+    with nonce when is_binary(nonce) <- nonce,
+         {:ok, raw} <- File.read(path),
+         {:ok, %{"nonce" => ^nonce, "workflow" => ^workflow, "executable" => ^executable}} <- Jason.decode(raw),
+         :ok <- File.rm(path) do
+      System.delete_env("SYMPHONY_RUNNER_PERMIT")
+      :ok
+    else
+      _ -> {:error, "Managed workflow requires --watchdog start CONFIG.json; ordinary startup is blocked"}
+    end
   end
 
   @doc false
   @spec main([String.t()], (-> ensure_started_result())) :: no_return()
   def main(args, ensure_all_started) do
+    # Load packaged defaults before applying CLI overrides. Loading the app
+    # afterwards can replace the selected workflow with its compiled default.
+    # This loads the application description without starting any processes.
+    _ = Application.load(:symphony_elixir)
     deps = Map.put(runtime_deps(ensure_all_started), :preflight, &preflight_with_stderr_logging/1)
 
     case evaluate(args, deps) do
@@ -114,7 +375,8 @@ defmodule SymphonyElixir.CLI do
   def run(workflow_path, deps) do
     expanded_path = Path.expand(workflow_path)
 
-    if deps.file_regular?.(expanded_path) do
+    with true <- deps.file_regular?.(expanded_path),
+         :ok <- authorize_start(expanded_path) do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
       case deps.ensure_all_started.() do
@@ -125,7 +387,8 @@ defmodule SymphonyElixir.CLI do
           {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
       end
     else
-      {:error, "Workflow file not found: #{expanded_path}"}
+      false -> {:error, "Workflow file not found: #{expanded_path}"}
+      error -> error
     end
   end
 

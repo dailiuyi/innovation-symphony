@@ -138,4 +138,53 @@ timeout --signal=KILL "${PREFLIGHT_TIMEOUT:?set an explicit duration}" \
 
 检查入口在导入共享辅助模块前禁用 Python 字节码写入，防止 `__pycache__` 改变冻结基线指纹。回归测试实际执行两个归档入口，并逐文件比较执行前后的基线；完整性校验不排除缓存文件或放宽匹配。
 
+## 看门狗维护流程（待 005 交付后适用）
+
+以下是 GH-5 源码交付后的操作合同；当前运行服务尚未安装或启用看门狗。值守只处理进程退出，不作健康检查、更新、回退或任务处置。先核实固定安装、`WORKFLOW.md` 的状态目录及工作区、Elixir/OTP 和原生 Linux `codex`、Git、GNU timeout、`flock`、`setsid`、`sh` 所在的 `PATH`，再配置新入口。旧 `runtime-v1/launch.py` 是历史安装脚本，不参与新互斥；接入看门狗前须人工暂停值守、结束该旧入口启动的进程并核实退出。其一次性空队列预检不属于 ready 领取规则。
+
+看门狗配置为 JSON，以下路径和数字均是工程示例，按实际固定安装填写。`controller` 是含本代码的打包 `bin/symphony`；`state_dir`、`status_file`、`maintenance_file` 与 `pointer_file` 必须位于持久目录，不能放在临时清理目录。`workflow` 是原运行配置的**同一个绝对路径**；不复制、重建或清空其中指定的状态与工作区。值守按 CLI `--port` 优先、否则 `WORKFLOW.md` 的 `server.port` 确定实际端口；配置 `port` 时即作为 `--port` 覆盖工作流端口。值守用同一端口检查启动冲突、构造启动参数及核对进程命令；工作流端口无效时阻塞启动。运行中的进程端口没有响应不会触发另启。
+
+```json
+{
+  "controller": "/srv/symphony/watchdog/bin/symphony",
+  "pointer_file": "/srv/symphony/runtime/current.json",
+  "state_dir": "/srv/symphony/runtime/watchdog",
+  "status_file": "/srv/symphony/runtime/watchdog/status.json",
+  "maintenance_file": "/srv/symphony/runtime/watchdog/maintenance.lock",
+  "workflow": "/srv/symphony/runtime/WORKFLOW.md",
+  "credential_file": "/srv/symphony/runtime/github-token",
+  "logs_root": "/srv/symphony/runtime/logs",
+  "port": 43223,
+  "interval_ms": 1000,
+  "backoff_ms": 30000,
+  "max_attempts": 3,
+  "stable_ms": 300000
+}
+```
+
+指针只由外部操作者写入；看门狗只读。格式为 `{"version":"固定版本目录名","install":"/绝对路径/releases/固定版本目录名"}`。`install/bin/symphony` 必须存在，安装目录及可执行文件路径不能经过符号链接。指针非法、安装不存在时阻塞，不自动选择其他版本；切换指针不会停止仍在运行的旧版。外部更新器写指针和写维护锁属于后续实现。
+
+无人值守 GitHub 凭据来源是 `credential_file`：由操作者预先写入 token，文件须归值守用户所有，权限至多 `0600`，父目录限制无关用户访问。启动时看门狗读取该文件并只通过子进程环境变量 `GITHUB_TOKEN` 注入固定安装，不通过命令参数、指针、状态或审计日志传递。缺失、不可读、空文件或权限不安全时拒绝启动并留脱敏阻塞原因；不得在故障后要求人工从 `gh` 活跃账号重新输入。Codex CLI 所需的其他认证也须在值守用户的受限配置目录中提前完成，值守环境需包含可用的 `CODEX_HOME`、工具链 `PATH` 和仓库访问。验收 WD-1 时记录文件来源、owner/mode、父目录权限、`GITHUB_TOKEN` 注入路径及其他认证的非交互核验结果，不记录秘密值；必须在运行器退出后无人输入或登录仍能拉起，缺少这项实测不能判 WD-1 通过。
+
+本轮离线验收使用测试在 `symphony-watchdog-*` 临时目录预先创建的普通凭据文件，测试用户拥有该文件，文件权限为 `0600`、父目录为 `0700`；值守读取后仅通过子进程环境变量 `GITHUB_TOKEN` 注入固定安装。打包恢复回归启用 GitHub MVP，连接合法空队列的本地 HTTPS 探针，预置实际 `mvp.state_dir` 下的领取回执及证据和 `workspace.root` 下的工作文件；正常退出和强制结束后比较目录结构及文件内容，检查原配置路径、固定安装、新 PID、凭据注入及无远端写请求。探针使用独立测试 CA 签发服务端证书，保留正式 HTTPS 证书与主机名校验；每次恢复分别断言启动清理与队列轮询的请求路径及认证头，避免沿用前一进程的探针消息。模块层另断言看门狗操作不发送任何请求。以上只验证离线恢复：沙箱没有真实 GitHub 仓库凭据或 Codex 认证，因此**真实 GitHub/Codex 无人值守恢复的 WD-1 验收未执行，不能判通过**。实际验收由获授权的部署操作者在隔离环境完成，须记录真实文件来源、owner/mode、父目录权限、注入路径、固定安装、工具链和其他认证的非交互核验结果，不记录秘密值；随后分别正常结束和强制结束运行器，核对无人输入或登录的恢复、GitHub 查询及 Codex 可用性，并保存沿用原工作区、状态和证据的脱敏结果，不派发真实任务或改变生产版本。
+
+以下命令使用实际实现的打包入口。人工启动和看门狗每轮检查都由同一个 `flock` 服务锁串行复核身份、维护状态、端口、预算，并覆盖启动和身份落盘。锁及持久绑定文件位于规范化 `workflow` 的父目录，以 workflow 路径摘要命名；该目录须允许值守用户创建文件。绑定记录规范化的 workflow、状态目录、状态文件、维护锁和指针路径；同一服务使用冲突路径的配置会被拒绝，不能通过换 `state_dir` 绕开互斥或预算。绑定异常另记于同目录的 `.binding-events.jsonl`，供核对冲突配置与时间。`status` 输出 JSON；`status.json` 保存当前指针、记录的运行进程 `process`、本次核对读到的 `observed`、暂停、每版本本轮尝试数、退避时间、待人工及最近动作。正常归属时，两者均含实际版本及 PID/宿主启动 ID/进程启动时间；身份冲突时，`process` 保留旧记录，`observed` 留本次可读取的身份字段，未知字段不猜测。`history.jsonl` 追加每轮检查、退出、拉起、阻塞、放弃与人工操作，包含可恢复的完整状态快照；历史不会因稳定清零或人工恢复而删除。读取状态时核对审计末尾事件的计数及快照；审计已写而状态尚未替换时，从末尾事件恢复后重新核对进程。末尾事件损坏、计数跳跃或状态与对应事件不符时阻止启动，不重置预算。完整历史保留供离线审计。外层 CLI 的 controller 缺失、子进程失败及响应异常也保存为脱敏阻塞事件。`runner.log` 只保存子进程输出。身份冲突、记录缺失但发现疑似运行器、未知端口占用均阻塞，操作员须核对证据和进程归属，不要结束未知进程。运行器退出后的退避从首次确认退出时重新计时；启动失败则从确认失败时计时，并将截止时间写入状态。
+
+受管理工作流的普通 `symphony WORKFLOW.md` 入口拒绝启动，人工须使用 `--watchdog start CONFIG.json`，与自动检查共用暂停、退避和持久预算。值守在服务锁内签发仅供固定安装子进程消费的一次启动许可；单独设置环境标记不能绕过入口。接入的固定安装须包含该入口约束，历史启动器仍需按上述接入步骤退出。状态或审计损坏时，CLI 输出具体脱敏原因，并向 `state_dir/faults.jsonl` 独立追加阻塞证据，保留原状态和审计文件；不要删除文件来重置预算。独立证据写入失败也明确报错。
+
+```sh
+WATCHDOG=/srv/symphony/watchdog/bin/symphony
+CONFIG=/srv/symphony/runtime/watchdog.json
+"$WATCHDOG" --watchdog status "$CONFIG"
+"$WATCHDOG" --watchdog pause "$CONFIG"
+# 核对 status.json 的 paused=true 后，人工停止已确认归属的运行器。
+"$WATCHDOG" --watchdog resume "$CONFIG"
+"$WATCHDOG" --watchdog start "$CONFIG"
+# 仅同版本预算耗尽且故障已修复时，明确开启新一轮；不会解除维护暂停。
+"$WATCHDOG" --watchdog recover "$CONFIG"
+"$WATCHDOG" --watchdog run "$CONFIG"
+```
+
+`resume` 恢复值守但不绕过退避，也不清除待人工。`recover` 清零**当前指针版本**的本轮预算并保留完整历史，维护暂停仍须另行解除。正常与异常退出均按同一预算和退避处理；持续存活超过 `stable_ms` 只表示进程存在，会清零未耗尽的本轮计数，不代表业务健康。状态端口没有响应不等于进程死亡。每轮只读取审计末尾事件并与状态快照核对，避免持续增长的历史拖慢检测；完整历史仍保留于 `history.jsonl` 供离线审计。建议由 Linux/WSL 的 systemd 用户服务运行 `--watchdog run` 并设置 `Restart=always`，同时显式提供已核实的工具链环境；本次不安装服务单元，也不实测看门狗自身开机自启或宿主重启恢复。宿主停机后，恢复宿主及值守入口仍需人工处理。
+
 首轮失败候选保留在 `/var/tmp/innovation-symphony-v0/workspaces/GH-1`，回执与证据在同级 `state` 目录。经本次显式重跑授权，使用独立的运行目录、状态目录、工作区；启动前核对队列只有获准的 Issue，记录原回执和新基线 SHA。禁止通过清空原状态目录实现重试。新轮仍停在 Draft PR 或 blocked，结果单独报告。
