@@ -100,7 +100,9 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp fetch_issues_by_ids(issue_ids, tracker_settings, request_fun) do
+  @doc "Read pinned issues using explicit tracker settings without starting the workflow runtime."
+  @spec fetch_issues_by_ids([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids, tracker_settings, request_fun \\ &perform_request/5) do
     ids = Enum.uniq(issue_ids)
 
     case ids do

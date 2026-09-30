@@ -1,6 +1,10 @@
 defmodule SymphonyElixir.Mvp.Recovery do
   @moduledoc "Opt-in recovery budgets and diagnostic advice; diagnosis never grants acceptance or permissions."
 
+  alias SymphonyElixir.Mvp.Review
+
+  defguardp valid_credit?(credit) when is_integer(credit) and credit >= 0
+
   # stage_attempts includes the initial stage call. These limits are engineering defaults.
   @defaults %{
     enabled: false,
@@ -11,16 +15,29 @@ defmodule SymphonyElixir.Mvp.Recovery do
     max_agent_attempts: 64
   }
   @keys Enum.map(Map.keys(@defaults), &Atom.to_string/1)
-  @actions ~w(repair_code retry_stage stop)
+  @actions ~w(repair_code retry_stage stop await_external)
   @nonempty_string %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
+  @external_condition %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["acceptance", "kind", "reason", "required_evidence", "handoff"],
+    "properties" => %{
+      "acceptance" => @nonempty_string,
+      "kind" => %{"type" => "string", "enum" => ["external_condition"]},
+      "reason" => @nonempty_string,
+      "required_evidence" => @nonempty_string,
+      "handoff" => @nonempty_string
+    }
+  }
   @schema %{
     "type" => "object",
     "additionalProperties" => false,
-    "required" => ["action", "summary", "steps"],
+    "required" => ["action", "summary", "steps", "external_conditions"],
     "properties" => %{
       "action" => %{"type" => "string", "enum" => @actions},
       "summary" => @nonempty_string,
-      "steps" => %{"type" => "array", "minItems" => 1, "items" => @nonempty_string}
+      "steps" => %{"type" => "array", "minItems" => 1, "items" => @nonempty_string},
+      "external_conditions" => %{"type" => "array", "items" => @external_condition}
     }
   }
 
@@ -84,18 +101,22 @@ defmodule SymphonyElixir.Mvp.Recovery do
   def parse(_), do: {:error, :mvp_invalid_diagnosis}
 
   @spec within_budget?(map(), term(), integer()) :: boolean()
-  def within_budget?(policy, started_at_iso, now_unix_ms) when is_binary(started_at_iso) and is_integer(now_unix_ms) do
+  def within_budget?(policy, started_at_iso, now_unix_ms), do: within_budget?(policy, started_at_iso, now_unix_ms, 0)
+
+  @spec within_budget?(map(), term(), integer(), non_neg_integer()) :: boolean()
+  def within_budget?(policy, started_at_iso, now_unix_ms, credited_wait_ms)
+      when is_binary(started_at_iso) and is_integer(now_unix_ms) and valid_credit?(credited_wait_ms) do
     case DateTime.from_iso8601(started_at_iso) do
       {:ok, started_at, _offset} ->
         elapsed = now_unix_ms - DateTime.to_unix(started_at, :millisecond)
-        elapsed >= 0 and elapsed < policy.max_elapsed_ms
+        elapsed >= 0 and credited_wait_ms <= elapsed and elapsed - credited_wait_ms < policy.max_elapsed_ms
 
       _ ->
         false
     end
   end
 
-  def within_budget?(_policy, _started_at_iso, _now_unix_ms), do: false
+  def within_budget?(_policy, _started_at_iso, _now_unix_ms, _credited_wait_ms), do: false
 
   defp integer_in?(value, range), do: is_integer(value) and value in range
 
@@ -105,10 +126,24 @@ defmodule SymphonyElixir.Mvp.Recovery do
   defp failure_identity(feedback), do: {:review, feedback["summary"], feedback["criteria"]}
 
   defp valid_diagnosis?(%{"action" => action, "summary" => summary, "steps" => steps} = value) do
-    map_size(value) == 3 and action in @actions and nonempty?(summary) and
-      is_list(steps) and steps != [] and Enum.all?(steps, &nonempty?/1)
+    action in @actions and nonempty?(summary) and is_list(steps) and steps != [] and
+      Enum.all?(steps, &nonempty?/1) and valid_external_conditions?(value, action)
   end
 
   defp valid_diagnosis?(_), do: false
+
+  defp valid_external_conditions?(%{"external_conditions" => conditions} = value, "await_external") do
+    map_size(value) == 4 and Review.valid_external_conditions?(conditions)
+  end
+
+  defp valid_external_conditions?(value, action) when action in ["repair_code", "retry_stage", "stop"] do
+    case Map.fetch(value, "external_conditions") do
+      :error -> map_size(value) == 3
+      {:ok, []} -> map_size(value) == 4
+      _ -> false
+    end
+  end
+
+  defp valid_external_conditions?(_value, _action), do: false
   defp nonempty?(value), do: is_binary(value) and String.trim(value) != ""
 end

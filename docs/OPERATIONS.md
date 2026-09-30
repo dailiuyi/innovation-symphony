@@ -1,5 +1,11 @@
 # 原型运行与项目交付
 
+## 外部条件接手
+
+`awaiting_external` 表示控制器已保存候选和交接记录并结束本次执行。操作者先运行 `mix mvp.external status RECEIPT.json` 查看缺失条目、所需证据和接手责任，按已有权限完成外部工作，再用绑定原回执摘要的请求调用 `mix mvp.external resume WORKFLOW.md RECEIPT.json REQUEST.json`。具体字段、冻结条件、证据格式与预算规则见 [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md)。
+
+此入口不会解除维护暂停、增加预算或自动迁移旧 `blocked` 回执；实现和运行安装状态分别记录在该合同的实施状态中。
+
 ## 看门狗维护流程（待 005 交付后适用）
 
 本节对应 [005 看门狗草稿](issue-drafts/005-watchdog.md)，记录后续安装看门狗后的操作纪律；当前没有安装或验证看门狗，下面不是现有命令已可用的声明。交付时须补充实际命令及验收证据。

@@ -275,6 +275,67 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
     refute Mvp.available?(current)
   end
 
+  test "external waits survive the worker lifecycle and remain unavailable for automatic intake" do
+    root = Path.dirname(Workflow.workflow_file_path())
+    origin = Path.join(root, "external-origin")
+    File.mkdir_p!(origin)
+    Commands.git!(["init", "-b", "main"], origin)
+    File.write!(Path.join(origin, "base.txt"), "base")
+    Commands.git!(["add", "."], origin)
+    Commands.git!(["commit", "-m", "base"], origin)
+    config = valid_mvp(root) |> Map.put("recovery", %{"enabled" => true})
+    write_github_workflow!(mvp: config, before_run: "git init")
+    {:ok, settings} = Config.mvp_settings()
+    current = issue("64", 64)
+
+    review = %{
+      "approved" => false,
+      "summary" => "Device evidence is missing",
+      "criteria" => [%{"acceptance" => "real device", "tests" => [], "assertion_strength" => "unverified", "failure_sensitivity" => "unverified", "adequate" => false}],
+      "blockers" => [
+        %{"acceptance" => "real device", "kind" => "external_condition", "reason" => "device unavailable", "required_evidence" => "same candidate device log", "handoff" => "device operator"}
+      ]
+    }
+
+    agent = fn workspace, _, _, options ->
+      if options[:read_only] do
+        send(self(), :external_reviewer)
+        {:ok, %{output_text: Jason.encode!(review)}}
+      else
+        send(self(), :external_coder)
+        File.write!(Path.join(workspace, "change.txt"), "candidate")
+        {:ok, %{}}
+      end
+    end
+
+    request = fn method, path, params, body, tracker ->
+      if method == "POST" do
+        {:ok, %{status: 201, body: %{"id" => 1, "html_url" => "https://example.test/comment/1", "body" => body["body"]}}}
+      else
+        intake_success(method, path, params, body, tracker)
+      end
+    end
+
+    assert :ok =
+             Mvp.run(current, self(), settings,
+               request_fun: request,
+               repository: fn _, _ -> {:ok, %{repo: "owner/repo", base: "main", url: origin}} end,
+               agent: agent,
+               publish: fn _, _, _, _, _, _, _ -> flunk("external wait cannot publish") end
+             )
+
+    data = Receipt.read(Receipt.path(settings, current))
+    assert data["status"] == "awaiting_external"
+    assert File.regular?(data["external_handoff"]["record_path"])
+    assert_receive :external_coder
+    assert_receive :external_reviewer
+    refute_receive :external_coder
+    refute_receive :external_reviewer
+    assert_receive {:codex_worker_update, "64", %{event: :turn_input_required, message: message}}
+    assert message =~ "mvp_awaiting_external"
+    refute Mvp.available?(current)
+  end
+
   defp intake_success("GET", path, _, nil, _) do
     body = if String.ends_with?(path, "/events"), do: [ready_event(1, "alice")], else: []
     {:ok, %{status: 200, body: body}}

@@ -55,7 +55,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
     recovery = Receipt.read(context.receipt)["recovery"]
     now = Keyword.get(context.opts, :now_ms, fn -> System.system_time(:millisecond) end).()
 
-    if Recovery.within_budget?(context.settings.recovery, recovery["started_at"], now),
+    if Recovery.within_budget?(context.settings.recovery, recovery["started_at"], now, Map.get(recovery, "external_wait_ms", 0)),
       do: :ok,
       else: {:error, :mvp_recovery_resource_exhausted}
   end
@@ -100,9 +100,11 @@ defmodule SymphonyElixir.Mvp.Attempts do
   end
 
   defp remaining_ms(context) do
-    {:ok, started, _} = DateTime.from_iso8601(Receipt.read(context.receipt)["recovery"]["started_at"])
+    recovery = Receipt.read(context.receipt)["recovery"]
+    {:ok, started, _} = DateTime.from_iso8601(recovery["started_at"])
     now = Keyword.get(context.opts, :now_ms, fn -> System.system_time(:millisecond) end).()
-    max(0, context.settings.recovery.max_elapsed_ms - (now - DateTime.to_unix(started, :millisecond)))
+    elapsed = now - DateTime.to_unix(started, :millisecond) - Map.get(recovery, "external_wait_ms", 0)
+    max(0, context.settings.recovery.max_elapsed_ms - elapsed)
   end
 
   defp invoke_with_budget(_, _, _, 0), do: {:error, :wall_timeout}

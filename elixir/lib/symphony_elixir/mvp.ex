@@ -5,6 +5,8 @@ defmodule SymphonyElixir.Mvp do
   alias SymphonyElixir.{Config, Tracker, Workspace}
   alias SymphonyElixir.Mvp.{Executor, Intake, Receipt}
 
+  @preserved_failure_statuses ["publish_pending", "comment_pending", "awaiting_external"]
+
   @spec available?(map()) :: boolean()
   def available?(issue) do
     case Config.mvp_settings() do
@@ -81,12 +83,12 @@ defmodule SymphonyElixir.Mvp do
         block(issue, recipient, {:awaiting_human_merge, url})
 
       {:error, reason} ->
-        unless Receipt.read(file)["status"] in ["publish_pending", "comment_pending"], do: Receipt.update(file, "blocked", %{"reason" => inspect(reason)})
+        unless Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => inspect(reason)})
         block(issue, recipient, reason)
     end
   rescue
     exception ->
-      unless Receipt.read(file)["status"] in ["publish_pending", "comment_pending"], do: Receipt.update(file, "blocked", %{"reason" => Exception.message(exception)})
+      unless Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => Exception.message(exception)})
       block(issue, recipient, {:mvp_failed, Exception.message(exception)})
   end
 end

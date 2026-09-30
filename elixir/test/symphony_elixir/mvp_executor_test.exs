@@ -1785,7 +1785,7 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
 
         true ->
           assert prompt =~ "EVERY acceptance requirement"
-          assert opts[:output_schema]["required"] == ["approved", "summary", "criteria"]
+          assert opts[:output_schema]["required"] == ["approved", "summary", "criteria", "blockers"]
           rework_review_tamper(context, options[:tamper])
           review = rework_review(reviews, number, options[:failure])
           {:ok, %{output_text: Jason.encode!(review)}}

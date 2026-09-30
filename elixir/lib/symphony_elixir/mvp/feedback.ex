@@ -8,8 +8,9 @@ defmodule SymphonyElixir.Mvp.Feedback do
   def post(receipt, review, opts) do
     data = Receipt.read(receipt)
     round = List.last(data["rounds"])
+    external_id = Keyword.get(opts, :external_review_id)
 
-    if Map.has_key?(round, "comment") do
+    if already_attempted?(data, round, external_id) do
       {:error, :mvp_comment_already_attempted}
     else
       intent = %{
@@ -19,7 +20,9 @@ defmodule SymphonyElixir.Mvp.Feedback do
         "id" => nil
       }
 
-      Receipt.update_round(receipt, "comment_pending", %{"comment" => intent})
+      intent = external_intent(intent, round, external_id)
+
+      save_intent(receipt, "comment_pending", intent)
 
       case Client.request("POST", path(data), %{}, %{"body" => intent["body"]}, opts) do
         {:ok, %{status: 201, body: comment}} -> confirm(receipt, intent, comment)
@@ -31,7 +34,7 @@ defmodule SymphonyElixir.Mvp.Feedback do
   @spec reconcile(Path.t(), keyword()) :: {:ok, String.t()} | {:error, atom()}
   def reconcile(receipt, opts) do
     data = Receipt.read(receipt)
-    intent = (List.last(data["rounds"]) || %{}) |> Map.get("comment")
+    intent = pending_intent(data)
 
     with true <- is_map(intent),
          {:ok, comments} <- comments(path(data), 1, opts, []),
@@ -55,11 +58,36 @@ defmodule SymphonyElixir.Mvp.Feedback do
 
   defp confirm(receipt, intent, comment) do
     if matches?(comment, intent) do
-      Receipt.update_round(receipt, "blocked", %{"comment" => Map.put(intent, "id", comment["id"])})
+      save_intent(receipt, "blocked", Map.put(intent, "id", comment["id"]))
     else
       {:error, :mvp_comment_uncertain}
     end
   end
+
+  defp already_attempted?(data, _round, external_id) when is_binary(external_id),
+    do: Map.has_key?(data["external_feedback"] || %{}, external_id)
+
+  defp already_attempted?(_data, round, _external_id), do: Map.has_key?(round, "comment")
+
+  defp save_intent(receipt, status, %{"external_review_id" => external_id} = intent) do
+    data = Receipt.read(receipt)
+    feedback = Map.put(data["external_feedback"] || %{}, external_id, intent)
+    pending = if is_nil(intent["id"]), do: external_id, else: nil
+    rounds = List.update_at(data["rounds"], -1, &Map.put(&1, "comment", intent))
+    Receipt.update(receipt, status, %{"external_feedback" => feedback, "pending_external_feedback" => pending, "rounds" => rounds})
+  end
+
+  defp save_intent(receipt, status, intent), do: Receipt.update_round(receipt, status, %{"comment" => intent})
+
+  defp pending_intent(%{"pending_external_feedback" => external_id} = data) when is_binary(external_id),
+    do: (data["external_feedback"] || %{})[external_id]
+
+  defp pending_intent(data), do: (List.last(data["rounds"]) || %{})["comment"]
+
+  defp external_intent(intent, round, external_id) when is_binary(external_id),
+    do: Map.merge(intent, %{"external_review_id" => external_id, "prior_comment" => round["comment"]})
+
+  defp external_intent(intent, _round, _external_id), do: intent
 
   defp matches?(%{"id" => id, "body" => body}, intent),
     do: is_integer(id) and id > 0 and body == intent["body"] and (is_nil(intent["id"]) or intent["id"] == id)

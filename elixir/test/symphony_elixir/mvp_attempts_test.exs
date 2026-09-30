@@ -242,5 +242,30 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
     assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1
   end
 
+  test "credited external waiting preserves only the original remaining activity budget", %{context: context} do
+    recovery = Receipt.read(context.receipt)["recovery"]
+    {:ok, started, _} = DateTime.from_iso8601(recovery["started_at"])
+    started_ms = DateTime.to_unix(started, :millisecond)
+    wait_ms = context.settings.recovery.max_elapsed_ms * 2
+    elapsed_activity_ms = 25
+    now = started_ms + wait_ms + elapsed_activity_ms
+    :ok = Receipt.update(context.receipt, "coding", %{"recovery" => Map.put(recovery, "external_wait_ms", wait_ms)})
+
+    context =
+      with_agent(context, fn _, _, _, options ->
+        assert options[:wall_timeout_ms] == context.settings.recovery.max_elapsed_ms - elapsed_activity_ms
+        {:ok, %{}}
+      end)
+
+    context = %{context | opts: Keyword.put(context.opts, :now_ms, fn -> now end)}
+    assert {:ok, %{}} = Attempts.run(context, :coder, "continue", fn -> :ok end)
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1
+
+    expired = started_ms + wait_ms + context.settings.recovery.max_elapsed_ms
+    context = %{context | opts: Keyword.put(context.opts, :now_ms, fn -> expired end)}
+    assert {:error, :mvp_recovery_resource_exhausted} = Attempts.run(context, :coder, "expired", fn -> :ok end)
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1
+  end
+
   defp with_agent(context, agent), do: %{context | opts: Keyword.put(context.opts, :agent, agent)}
 end

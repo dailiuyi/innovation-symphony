@@ -88,11 +88,13 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     schema = Recovery.schema()
     assert schema["type"] == "object"
     assert schema["additionalProperties"] == false
-    assert Enum.sort(schema["required"]) == ["action", "steps", "summary"]
-    assert Enum.sort(Map.keys(schema["properties"])) == ["action", "steps", "summary"]
-    assert schema["properties"]["action"]["enum"] == ["repair_code", "retry_stage", "stop"]
+    assert Enum.sort(schema["required"]) == Enum.sort(Map.keys(schema["properties"]))
+    assert Enum.sort(Map.keys(schema["properties"])) == ["action", "external_conditions", "steps", "summary"]
+    assert schema["properties"]["action"]["enum"] == ["repair_code", "retry_stage", "stop", "await_external"]
     assert schema["properties"]["summary"]["pattern"] == "\\S"
     assert schema["properties"]["steps"]["minItems"] == 1
+    refute Map.has_key?(schema["properties"]["external_conditions"], "minItems")
+    assert schema["properties"]["external_conditions"]["items"]["additionalProperties"] == false
 
     for action <- schema["properties"]["action"]["enum"] do
       value = diagnosis(action)
@@ -133,15 +135,57 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     end
   end
 
+  test "await_external requires strict conditions while old actions accept legacy and empty-list shapes" do
+    external = %{
+      "acceptance" => "A1",
+      "kind" => "external_condition",
+      "reason" => "The provider has not returned the requested result",
+      "required_evidence" => "A successful provider response",
+      "handoff" => "Resume review after the response is available"
+    }
+
+    waiting = diagnosis("await_external")
+    assert {:ok, ^waiting} = Recovery.parse(Jason.encode!(waiting))
+    assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(Jason.encode!(Map.delete(waiting, "external_conditions")))
+
+    for invalid <- [
+          Map.put(waiting, "external_conditions", []),
+          Map.put(waiting, "external_conditions", [%{external | "kind" => "code_defect"}]),
+          Map.put(waiting, "external_conditions", [Map.put(external, "unknown", true)]),
+          Map.put(waiting, "external_conditions", [%{external | "handoff" => " "}]),
+          Map.put(diagnosis("repair_code"), "external_conditions", [external]),
+          Map.put(diagnosis("retry_stage"), "external_conditions", [external]),
+          Map.put(diagnosis("stop"), "external_conditions", [external])
+        ] do
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(Jason.encode!(invalid))
+    end
+
+    for action <- ["repair_code", "retry_stage", "stop"] do
+      old_shape = diagnosis(action)
+      assert map_size(old_shape) == 3
+      assert {:ok, ^old_shape} = Recovery.parse(Jason.encode!(old_shape))
+
+      with_empty_conditions = Map.put(old_shape, "external_conditions", [])
+      assert {:ok, ^with_empty_conditions} = Recovery.parse(Jason.encode!(with_empty_conditions))
+    end
+  end
+
   test "elapsed budget is inclusive at start, exclusive at deadline, and rejects clock reversal" do
     policy = %{max_elapsed_ms: 1_000}
     start = "2026-09-29T00:00:00.123Z"
     {:ok, timestamp, 0} = DateTime.from_iso8601(start)
     now = DateTime.to_unix(timestamp, :millisecond)
     assert Recovery.within_budget?(policy, start, now)
+    assert Recovery.within_budget?(policy, start, now, 0)
     assert Recovery.within_budget?(policy, start, now + 999)
     refute Recovery.within_budget?(policy, start, now + 1_000)
     refute Recovery.within_budget?(policy, start, now + 1_001)
+    assert Recovery.within_budget?(policy, start, now + 1_000, 1)
+    assert Recovery.within_budget?(policy, start, now + 1_500, 501)
+    refute Recovery.within_budget?(policy, start, now + 1_500, 499)
+    refute Recovery.within_budget?(policy, start, now + 999, 1_000)
+    refute Recovery.within_budget?(policy, start, now + 500, -1)
+    refute Recovery.within_budget?(policy, start, now + 500, 1.0)
     refute Recovery.within_budget?(policy, start, now - 1)
     assert Recovery.within_budget?(policy, "2026-09-29T08:00:00.123+08:00", now)
 
@@ -155,5 +199,23 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
   defp bounds, do: [{"max_rework", 1, 100}, {"diagnose_every", 1, 10}, {"stage_attempts", 1, 5}, {"max_elapsed_ms", 1, 86_400_000}, {"max_agent_attempts", 1, 500}]
 
   defp check, do: %{"kind" => "check", "index" => 1, "exit_status" => 10, "repairable" => true, "argv" => ["mix", "test"], "log_path" => "/round-1/log"}
+
+  defp diagnosis("await_external") do
+    %{
+      "action" => "await_external",
+      "summary" => "Wait for external evidence",
+      "steps" => ["Wait for the provider response"],
+      "external_conditions" => [
+        %{
+          "acceptance" => "A1",
+          "kind" => "external_condition",
+          "reason" => "The provider has not returned the requested result",
+          "required_evidence" => "A successful provider response",
+          "handoff" => "Resume review after the response is available"
+        }
+      ]
+    }
+  end
+
   defp diagnosis(action), do: %{"action" => action, "summary" => "Investigate repeated failure", "steps" => ["Read the complete check log"]}
 end
