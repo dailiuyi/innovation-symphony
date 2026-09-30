@@ -145,10 +145,16 @@ defmodule SymphonyElixir.WatchdogTest do
       put_in(state, ["process", "cmdline"], ["launcher"] ++ state["process"]["cmdline"])
     end)
 
+    assert {:ok, command_conflict} = Watchdog.step(ctx.config, "check")
+    assert command_conflict["phase"] == "blocked"
+    assert command_conflict["process"]["pid"] == pid
+
+    change_state(ctx.config, fn state ->
+      put_in(state, ["process", "cmdline"], state["observed"]["cmdline"])
+    end)
+
     assert {:ok, after_exec} = Watchdog.step(ctx.config, "check")
     assert after_exec["phase"] == "running"
-    assert after_exec["process"]["pid"] == pid
-    refute hd(after_exec["process"]["cmdline"]) == "launcher"
     assert {:ok, changed_port} = Watchdog.step(Map.put(ctx.config, "port", 1), "check")
     assert changed_port["phase"] == "blocked"
     assert changed_port["process"]["pid"] == pid
@@ -324,6 +330,27 @@ defmodule SymphonyElixir.WatchdogTest do
     assert blocked["observed"]["pid"] == unrelated_pid
     assert blocked["observed"]["cmdline"] != started["process"]["cmdline"]
     assert File.exists?("/proc/#{unrelated_pid}")
+  end
+
+  test "an unrelated executable cannot claim a runner by carrying its command in arguments", ctx do
+    assert {:ok, started} = Watchdog.step(ctx.config, "start")
+    recorded = started["process"]
+    pid = recorded["pid"]
+    fake_proc = Path.join(ctx.root, "spoofed-proc")
+    proc_dir = Path.join(fake_proc, Integer.to_string(pid))
+    File.mkdir_p!(proc_dir)
+    File.mkdir_p!(Path.join(fake_proc, "sys/kernel/random"))
+    File.write!(Path.join(fake_proc, "sys/kernel/random/boot_id"), recorded["boot_id"])
+    File.cp!("/proc/#{pid}/stat", Path.join(proc_dir, "stat"))
+    File.write!(Path.join(proc_dir, "cmdline"), Enum.join(["python3", "-c", "pass"] ++ recorded["cmdline"], <<0>>))
+    File.ln_s!("/usr/bin/python3", Path.join(proc_dir, "exe"))
+
+    assert {:ok, blocked} = Watchdog.step(Map.put(ctx.config, :proc_root, fake_proc), "check")
+    assert blocked["phase"] == "blocked"
+    assert blocked["last_action"]["reason"] == "recorded process identity conflict"
+    assert blocked["process"]["pid"] == pid
+    assert blocked["observed"]["exe"] == "/usr/bin/python3"
+    assert File.exists?("/proc/#{pid}")
   end
 
   test "failed starts back off, exhaust per-version budget and require explicit recovery", ctx do
@@ -536,6 +563,52 @@ defmodule SymphonyElixir.WatchdogTest do
     assert File.read!(ctx.config["status_file"]) |> Jason.decode!() |> Map.fetch!("paused")
   end
 
+  test "empty, torn and skipped audit records cannot silently reset state", ctx do
+    audit = Path.join(ctx.config["state_dir"], "history.jsonl")
+    File.mkdir_p!(ctx.config["state_dir"])
+    File.write!(audit, "")
+    assert {:ok, fresh} = Watchdog.step(ctx.config, "status")
+    assert fresh["history_count"] == 0
+
+    assert {:ok, _} = Watchdog.step(ctx.config, "pause")
+    complete = File.read!(audit)
+    File.write!(audit, String.trim_trailing(complete, "\n"))
+    assert {:error, reason} = Watchdog.step(ctx.config, "check")
+    assert reason =~ "invalid watchdog audit"
+
+    File.write!(audit, complete)
+    assert {:ok, _} = Watchdog.step(ctx.config, "resume")
+    state = ctx.config["status_file"] |> File.read!() |> Jason.decode!()
+    File.write!(ctx.config["status_file"], Jason.encode!(%{state | "history_count" => 0}))
+    assert {:error, reason} = Watchdog.step(ctx.config, "check")
+    assert reason =~ "refusing to reset budget"
+  end
+
+  @tag timeout: 120_000
+  test "a long retained audit does not delay each watchdog detection cycle", ctx do
+    assert {:ok, paused} = Watchdog.step(ctx.config, "pause")
+    [first] = history(ctx.config)
+    audit = Path.join(ctx.config["state_dir"], "history.jsonl")
+    count = 50_000
+
+    File.open!(audit, [:write], fn file ->
+      for index <- 1..count do
+        snapshot = %{paused | "history_count" => index}
+        entry = %{first | "state" => snapshot}
+        IO.binwrite(file, Jason.encode!(entry) <> "\n")
+      end
+    end)
+
+    File.write!(ctx.config["status_file"], Jason.encode!(%{paused | "history_count" => count}))
+    started_at = System.monotonic_time(:millisecond)
+    assert {:ok, checked} = Watchdog.step(ctx.config, "check")
+    elapsed = System.monotonic_time(:millisecond) - started_at
+    assert elapsed < 1_000, "one check took #{elapsed} ms with retained history"
+    assert checked["phase"] == "paused"
+    assert checked["history_count"] == count + 1
+    assert File.stat!(audit).size > 10_000_000
+  end
+
   test "locked CLI blockage is auditable and mismatched valid status blocks", ctx do
     assert {:ok, blocked} = Watchdog.record_block(ctx.config, "controller executable missing")
     assert Watchdog.valid_response?(blocked, ctx.config)
@@ -611,6 +684,7 @@ defmodule SymphonyElixir.WatchdogTest do
     File.mkdir_p!(Path.join(fake_proc, "sys/kernel/random"))
     File.write!(Path.join(fake_proc, "sys/kernel/random/boot_id"), "fake-boot")
     File.write!(Path.join(proc_dir, "cmdline"), Enum.join(started["process"]["cmdline"], <<0>>))
+    File.ln_s!(started["process"]["exe"], Path.join(proc_dir, "exe"))
     config = Map.put(ctx.config, :proc_root, fake_proc)
 
     for malformed <- ["not a proc stat", "#{pid} (runner) S 0", proc_stat(pid, "Z")] do
@@ -627,6 +701,10 @@ defmodule SymphonyElixir.WatchdogTest do
     end
 
     File.write!(Path.join(proc_dir, "stat"), proc_stat(pid, "S"))
+    File.rm!(Path.join(proc_dir, "exe"))
+    assert {:ok, missing_exe} = Watchdog.step(config, "check")
+    assert missing_exe["last_action"]["reason"] == "recorded process identity cannot be verified"
+    File.ln_s!(started["process"]["exe"], Path.join(proc_dir, "exe"))
     assert {:ok, wrong_boot} = Watchdog.step(config, "check")
     assert wrong_boot["last_action"]["reason"] =~ "identity conflict"
   end
@@ -702,6 +780,7 @@ defmodule SymphonyElixir.WatchdogTest do
     File.mkdir_p!(Path.join(fake_proc, "sys/kernel/random"))
     File.write!(Path.join(fake_proc, "sys/kernel/random/boot_id"), "fake-boot")
     File.write!(Path.join(proc_dir, "stat"), proc_stat(pid, "S"))
+    File.ln_s!("/bin/sh", Path.join(proc_dir, "exe"))
     command_file = Path.join(proc_dir, "cmdline")
     File.write!(command_file, "idle")
 
@@ -726,6 +805,44 @@ defmodule SymphonyElixir.WatchdogTest do
     assert blocked["phase"] == "backoff"
     assert blocked["last_action"]["reason"] =~ "exited before identity recording"
     assert blocked["process"] == nil
+  end
+
+  test "a directly executed fixed binary must occupy the program slot", ctx do
+    pid = 778_900
+    fake_proc = Path.join(ctx.root, "direct-proc")
+    proc_dir = Path.join(fake_proc, Integer.to_string(pid))
+    executable = Path.join(ctx.install, "bin/symphony")
+    File.mkdir_p!(Path.join(fake_proc, "sys/kernel/random"))
+    File.write!(Path.join(fake_proc, "sys/kernel/random/boot_id"), "fake-boot")
+
+    arguments = [
+      executable,
+      "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+      "--logs-root",
+      ctx.config["logs_root"],
+      ctx.config["workflow"]
+    ]
+
+    config =
+      ctx.config
+      |> Map.put(:proc_root, fake_proc)
+      |> Map.put(:spawn_command, fn _, _, _ ->
+        File.mkdir_p!(proc_dir)
+        File.write!(Path.join(proc_dir, "stat"), proc_stat(pid, "S"))
+        File.ln_s!(executable, Path.join(proc_dir, "exe"))
+        File.write!(Path.join(proc_dir, "cmdline"), Enum.join(arguments, <<0>>))
+        {Integer.to_string(pid), 0}
+      end)
+
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["phase"] == "running"
+    assert started["process"]["cmdline"] == arguments
+
+    File.write!(executable, "not a script\n")
+    File.write!(Path.join(proc_dir, "cmdline"), Enum.join(["/bin/sh" | arguments], <<0>>))
+    assert {:ok, conflict} = Watchdog.step(config, "check")
+    assert conflict["phase"] == "blocked"
+    assert conflict["last_action"]["reason"] == "recorded process identity conflict"
   end
 
   test "unrelated listener blocks a launch without consuming budget", ctx do

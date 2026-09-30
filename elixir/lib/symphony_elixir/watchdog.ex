@@ -95,40 +95,58 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp read_audit(config) do
-    case File.read(audit_path(config)) do
-      {:error, :enoent} -> {:ok, []}
-      {:error, _} -> {:error, "watchdog audit unreadable; refusing to reset budget"}
-      {:ok, raw} -> decode_audit(raw, config)
+    case :file.open(String.to_charlist(audit_path(config)), [:read, :binary, :raw]) do
+      {:error, :enoent} ->
+        {:ok, nil}
+
+      {:error, _} ->
+        {:error, "watchdog audit unreadable; refusing to reset budget"}
+
+      {:ok, file} ->
+        result = read_audit_tail(file, config)
+        :ok = :file.close(file)
+        result
     end
   end
 
-  defp decode_audit(raw, config) do
-    lines = if raw == "", do: [], else: raw |> String.split("\n") |> Enum.drop(-1)
-
-    snapshots =
-      Enum.with_index(lines, 1)
-      |> Enum.reduce_while([], fn {line, index}, acc ->
-        case decode_audit_line(line, config, index) do
-          {:ok, state} -> {:cont, [state | acc]}
-          :error -> {:halt, :invalid}
-        end
-      end)
-
-    if snapshots == :invalid or Enum.any?(lines, &(&1 == "")) or
-         (raw != "" and not String.ends_with?(raw, "\n")),
-       do: {:error, "invalid watchdog audit; refusing to reset budget"},
-       else: {:ok, Enum.reverse(snapshots)}
+  defp read_audit_tail(file, config) do
+    {:ok, size} = :file.position(file, :eof)
+    if size == 0, do: {:ok, nil}, else: read_last_line(file, config, size, min(size, 4096))
   end
 
-  defp decode_audit_line(line, config, index) do
+  defp read_last_line(file, config, size, span) do
+    offset = size - span
+    {:ok, raw} = :file.pread(file, offset, span)
+    decode_last_line(file, config, size, span, raw)
+  end
+
+  defp decode_last_line(file, config, size, span, raw) do
+    parts = String.split(raw, "\n")
+
+    cond do
+      not String.ends_with?(raw, "\n") ->
+        invalid_audit()
+
+      length(parts) >= 3 or (span == size and length(parts) == 2) ->
+        decode_tail_event(Enum.at(parts, -2), config)
+
+      true ->
+        read_last_line(file, config, size, min(size, span * 2))
+    end
+  end
+
+  defp decode_tail_event(line, config) do
     case Jason.decode(line) do
-      {:ok, %{"state" => state} = event} when is_map(state) ->
-        if valid_audit_event?(event, state, config, index), do: {:ok, state}, else: :error
+      {:ok, %{"state" => %{"history_count" => index} = state} = event}
+      when is_integer(index) and index > 0 ->
+        if valid_audit_event?(event, state, config, index), do: {:ok, state}, else: invalid_audit()
 
       _ ->
-        :error
+        invalid_audit()
     end
   end
+
+  defp invalid_audit, do: {:error, "invalid watchdog audit; refusing to reset budget"}
 
   defp valid_audit_event?(event, state, config, index) do
     valid_state?(state, config) and state["history_count"] == index and
@@ -144,13 +162,13 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp read_state_file(config, locked?, snapshots) do
+  defp read_state_file(config, locked?, latest) do
     case File.read(state_path(config)) do
       {:ok, raw} ->
-        decode_state(raw, config, locked?, snapshots)
+        decode_state(raw, config, locked?, latest)
 
       {:error, :enoent} ->
-        case List.last(snapshots) do
+        case latest do
           nil ->
             {:ok, default_state() |> Map.put("service", config["workflow"]) |> Map.put("paused", locked?)}
 
@@ -163,10 +181,10 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp decode_state(raw, config, locked?, snapshots) do
+  defp decode_state(raw, config, locked?, latest) do
     case Jason.decode(raw) do
       {:ok, state} when is_map(state) ->
-        if valid_state?(state, config), do: reconcile_state(config, state, locked?, snapshots), else: invalid_state()
+        if valid_state?(state, config), do: reconcile_state(config, state, locked?, latest), else: invalid_state()
 
       _ ->
         invalid_state()
@@ -175,19 +193,21 @@ defmodule SymphonyElixir.Watchdog do
 
   defp invalid_state, do: {:error, "invalid watchdog state; refusing to reset budget"}
 
-  defp reconcile_state(config, state, locked?, snapshots) do
+  defp reconcile_state(config, state, locked?, latest) do
     count = state["history_count"]
-    recorded = if count > 0, do: Enum.at(snapshots, count - 1), else: nil
+    audit_count = if latest, do: latest["history_count"], else: 0
 
-    cond do
-      count > length(snapshots) or (count > 0 and state != recorded) ->
+    case audit_count - count do
+      1 ->
+        restore_state(config, latest, locked?)
+
+      0 ->
+        if count == 0 or state == latest,
+          do: {:ok, Map.put(state, "paused", state["paused"] or locked?)},
+          else: invalid_state()
+
+      _ ->
         invalid_state()
-
-      count < length(snapshots) ->
-        restore_state(config, List.last(snapshots), locked?)
-
-      true ->
-        {:ok, Map.put(state, "paused", state["paused"] or locked?)}
     end
   end
 
@@ -274,7 +294,7 @@ defmodule SymphonyElixir.Watchdog do
 
   defp valid_record_details?(record) do
     is_list(record["cmdline"]) and Enum.all?(record["cmdline"], &is_binary/1) and
-      is_binary(record["workflow"]) and is_binary(record["install"]) and
+      is_binary(record["exe"]) and is_binary(record["workflow"]) and is_binary(record["install"]) and
       is_binary(record["version"]) and is_integer(record["seen_at"])
   end
 
@@ -565,7 +585,7 @@ defmodule SymphonyElixir.Watchdog do
 
     case process_identity(pid, config) do
       {:ok, identity} ->
-        if matching_command?(identity["cmdline"], config, executable) do
+        if matching_command?(identity, config, executable) do
           {:ok, identity}
         else
           retry_identity(pid, config, executable, remaining)
@@ -606,14 +626,15 @@ defmodule SymphonyElixir.Watchdog do
   defp same_process?(current, recorded, config) do
     current["boot_id"] == recorded["boot_id"] and
       current["start_ticks"] == recorded["start_ticks"] and
+      current["exe"] == recorded["exe"] and
       recorded["workflow"] == config["workflow"] and
       matching_command?(
-        recorded["cmdline"],
+        recorded,
         config,
         Path.join(recorded["install"], "bin/symphony")
       ) and
       matching_command?(
-        current["cmdline"],
+        current,
         config,
         Path.join(recorded["install"], "bin/symphony")
       )
@@ -663,17 +684,26 @@ defmodule SymphonyElixir.Watchdog do
          {:ok, after_read} <- File.read(Path.join(process, "stat")),
          {:ok, boot} <- File.read(Path.join([root, "sys", "kernel", "random", "boot_id"])),
          {:ok, ticks} <- stat_start_ticks(before),
-         {:ok, ^ticks} <- stat_start_ticks(after_read) do
+         {:ok, ^ticks} <- stat_start_ticks(after_read),
+         {:ok, exe} <- process_executable(process) do
       {:ok,
        %{
          "pid" => pid,
          "boot_id" => String.trim(boot),
          "start_ticks" => ticks,
+         "exe" => exe,
          "cmdline" => String.split(command, <<0>>, trim: true)
        }}
     else
       {:error, :enoent} -> {:error, :absent}
       {:error, :absent} -> {:error, :absent}
+      _ -> {:error, :unverifiable}
+    end
+  end
+
+  defp process_executable(process) do
+    case File.read_link(Path.join(process, "exe")) do
+      {:ok, exe} -> {:ok, exe}
       _ -> {:error, :unverifiable}
     end
   end
@@ -694,11 +724,38 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp matching_command?(args, config, executable) do
+  defp matching_command?(%{"cmdline" => args, "exe" => actual_exe}, config, executable) do
     expected = [executable | runner_args(config)]
 
-    is_list(args) and args != [] and Path.basename(hd(args)) != "setsid" and
-      Enum.member?(Enum.chunk_every(args, length(expected), 1, :discard), expected)
+    case args do
+      ^expected ->
+        match?({:ok, ^actual_exe}, SymphonyElixir.PathSafety.canonicalize(executable))
+
+      [interpreter | ^expected] ->
+        shebang_interpreter(executable) == interpreter and
+          match?({:ok, ^actual_exe}, SymphonyElixir.PathSafety.canonicalize(interpreter))
+
+      [^executable | _] ->
+        escript_command?(args, expected, actual_exe)
+
+      _ ->
+        false
+    end
+  end
+
+  defp escript_command?(args, expected, actual_exe) do
+    prefix = Enum.drop(args, -length(expected))
+
+    length(args) > length(expected) and Enum.take(args, -length(expected)) == expected and
+      Path.basename(actual_exe) == "beam.smp" and List.last(prefix) == "-extra" and
+      Enum.member?(Enum.chunk_every(prefix, 2, 1, :discard), ["-escript", "main"])
+  end
+
+  defp shebang_interpreter(executable) do
+    case File.open(executable, [:read], fn file -> IO.read(file, :line) end) do
+      {:ok, "#!" <> line} -> line |> String.trim() |> String.split() |> List.first()
+      _ -> nil
+    end
   end
 
   defp runner_args(config) do
