@@ -370,6 +370,45 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
     }
   end
 
+  test "a coder interrupted directly after a protocol review rejection resumes the same open round" do
+    {context, settings, before} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    original = mock_agent(context, :dirty_repair)
+
+    agent = fn workspace, prompt, issue, opts ->
+      original.(workspace, prompt, issue, opts)
+
+      case agent_role(opts) do
+        :reviewer -> {:ok, %{output_text: Jason.encode!(review(false))}}
+        :coder -> {:error, :mvp_turn_timeout}
+      end
+    end
+
+    resume = %{resume | opts: Keyword.put(resume.opts, :agent, agent)}
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = authorization("protocol-coder-timeout", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+
+    assert {:error, :mvp_recovery_resource_exhausted} =
+             Executor.resume_review(resume, digest(File.read!(context.receipt)), auth)
+
+    stopped = Receipt.read(context.receipt)
+    assert stopped["rounds"] |> Enum.at(-2) |> get_in(["review", "approved"]) == false
+    assert List.last(stopped["rounds"])["candidate_sha"] == nil
+    assert File.read!(Path.join(context.workspace, "candidate.txt")) == "partial"
+    next = resume_context(context, settings, options(context, :dirty_repair))
+    {:ok, current_workspace} = Executor.workspace_digest(context.workspace)
+    extended = authorization("protocol-coder-budget", current_workspace)
+    extended = %{extended | "predecessor" => "protocol-coder-timeout"}
+    assert {:ok, @url} = Executor.resume_recovery(next, digest(File.read!(context.receipt)), extended)
+    after_data = Receipt.read(context.receipt)
+    assert after_data["rework_count"] == stopped["rework_count"]
+    assert length(after_data["rounds"]) == length(stopped["rounds"])
+    assert after_data["recovery"]["started_at"] == before["recovery"]["started_at"]
+    assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
+    assert length(calls(context, :coder)) == 3
+    assert length(calls(context, :publish)) == 1
+  end
+
   defp protocol_blocked! do
     context = context!()
     settings = settings([["true"], ["true"]])

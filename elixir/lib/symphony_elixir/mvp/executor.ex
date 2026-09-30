@@ -751,7 +751,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     with {:ok, rejected, review} <- latest_rejected_review(data, context),
          completed = Enum.at(data["rounds"], -2),
          true <- completed["candidate_sha"] == data["candidate_sha"],
-         true <- rejected["round"] < completed["round"],
+         true <- rejected["round"] <= completed["round"],
          :ok <- rejected_review_ancestor(context, rejected, completed),
          :ok <- no_review_after_rejection(data["rounds"], rejected["round"]),
          {:ok, feedback} <- coder_resume_feedback(data["rounds"], completed, review, authorization, context) do
@@ -787,7 +787,7 @@ defmodule SymphonyElixir.Mvp.Executor do
          completed = Enum.at(data["rounds"], -2),
          true <- completed["candidate_sha"] == sha and sha == data["candidate_sha"],
          true <- List.last(data["rounds"])["candidate_sha"] == nil,
-         true <- round["round"] < completed["round"],
+         true <- round["round"] <= completed["round"],
          :ok <- rejected_review_ancestor(context, round, completed),
          :ok <- no_review_after_rejection(data["rounds"], round["round"]),
          true <- is_map(review) do
