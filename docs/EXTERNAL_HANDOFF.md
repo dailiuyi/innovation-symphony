@@ -122,4 +122,6 @@ IS-040 决策记录时仅完成合同，未修改执行代码或恢复已耗尽�
 
 北京时间 01:08:36 远端核验：PR 开放且 `draft=true`，仓库、分支、base、候选 SHA、PR 身份和描述均与发布意图一致，Issue #5 仍开放。描述明确“等待真实外部验收，最终验收尚未通过”，不自动关闭 Issue。[GitHub CI](https://github.com/dailiuyi/innovation-symphony/actions/runs/36748319794) 的 `make-all` 于 01:06:17 成功；运行的 `head_sha` 已独立核对为同一候选。完整核验结果保存在 `.local/external-draft/final-local-audit.json`、`final-remote-audit.json` 和 `final-ci-audit.json`；PR 已附加到当前聊天。
 
-当前完成的是原 GH-5 自主到 Draft PR 的交付路径；WD-1、人工验收、合并和看门狗候选安装仍未完成。控制器源码已本地提交和 WSL 安装，未推送本地 main；仅 GH-5 候选分支经控制器发布。待授权操作者补齐真实证据后，通过原审计入口重新完整检查和独立 Review，全部通过再更新同一 Draft PR。
+上述 Draft 交付时完成的是原 GH-5 自主到 PR 的路径，当时 WD-1、人工验收、合并和看门狗候选安装仍未完成。控制器源码已本地提交和 WSL 安装，未推送本地 main；仅 GH-5 候选分支经控制器发布。
+
+随后 PR #6 已由用户合并，IS-042 授权拉取、安装并测试。在保留本地控制器提交的固定合并版本 d4e913e 上，真实正常退出、强制结束及看门狗重启测试均通过；GitHub/Codex 认证无人工补输，原状态及工作区保留，完整结果见 OPERATIONS。原 b465fbc 的冻结回执、approved=false 的历史 Review 及 awaiting_external 状态没有改写；本次安装实测不等于已通过原审计入口重新完整检查和独立 Review，也不自动更新已合并 PR 或关闭 Issue。

@@ -4,7 +4,7 @@
 
 GH-3 新增 escript `--preflight`：保留 guardrails acknowledgement 参数，只读校验已启用的 GitHub MVP 配置并查询任务列表，不启动 Symphony 运行监督器，成功输出 JSON 后退出。使用方式及外部超时要求见 [OPERATIONS.md](../docs/OPERATIONS.md#gh-3-只读体检)；完整接棒、自动回退尚未实现。
 
-GH-5 的同一打包 escript 提供 `--watchdog run|start|pause|resume|recover|status CONFIG.json`。该入口不启动 Symphony 监督器；值守作为独立 OS 进程运行，以固定安装指针、持久维护锁、每版本启动预算和宿主进程身份决定是否拉起运行器。配置格式、非交互凭据来源与人工命令见 [OPERATIONS.md](../docs/OPERATIONS.md#看门狗维护流程待-005-交付后适用)。
+GH-5 的同一打包 escript 提供 `--watchdog run|start|pause|resume|recover|status CONFIG.json`。该入口不启动 Symphony 监督器；值守作为独立 OS 进程运行，以固定安装指针、持久维护锁、每版本启动预算和宿主进程身份决定是否拉起运行器。配置格式、非交互凭据来源与人工命令见 [OPERATIONS.md](../docs/OPERATIONS.md#看门狗维护流程)。
 
 体检要求 `tracker.active_states` 非空且只能包含 `open`（忽略首尾空白与大小写）。空列表以及包含 `closed`、`ready`、`all` 等其他状态的列表会失败；只有远端查询成功后的空队列才可通过。体检会拒绝任意页中的畸形任务记录，普通轮询仍沿用丢弃畸形记录的兼容行为。
 

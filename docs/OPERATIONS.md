@@ -1,14 +1,50 @@
 # 原型运行与项目交付
 
+## 2026-10-01 当前固定安装与真实看门狗测试
+
+按 IS-042，PR #6 已由用户合并，拉取远端 main `eef3dec0d0ffba286a8e945849a57c214201b47f`。本地仍有 13 个未发布的控制器提交；为保留隔离执行、技术恢复和分阶段交付，合入最新 main，仅决策文档存在冲突并保留双方记录，形成安装提交 `d4e913ea4b8c14ee81da977fd337d584fe8035f2`。本地控制器提交未推送；合并前引用 `codex/pre-watchdog-install-20261001` 保留。
+
+固定安装在 WSL `desktop` 的 `/var/tmp/innovation-symphony-v0-rerun1/releases/d4e913ea4b8c14ee81da977fd337d584fe8035f2`。Elixir 1.19.5/OTP 28.5、Codex 0.159.1 及原 CODEX_HOME 沿用。`bin/symphony` 为最终 dev escript 的普通文件副本，无符号链接；SHA256 为 `125fa60e81d744af1a9c537281fd9b9cdcd55a8ddc8bc1ffd9af056205833114`。安装源码工作树干净，watchdog 和 CLI 与原 PR 候选 `b465fbc` 的源码一致，其余本地控制器功能保留。
+
+安装前 `make all` 完整通过：652 项测试、0 失败、6 项既有真实平台 E2E 跳过、覆盖率 100%；格式、公共规格、严格 Credo、Dialyzer 和构建均通过。Python 检查为 36 项、0 失败，其中 14 项需单独开启的 Mix/sandbox 集成未运行。首次检查错误地复用服务的 GITHUB_REPO，造成缺少配置的负向用例失败与 99.97% 覆盖率；清除检查环境中的仓库及认证变量后重新完整通过。原失败日志保留，没有改源码、跳过项或阈值。
+
+真实 GitHub 只读预检核实没有可领取任务；原服务空闲、GH-5 审计操作已结束后才切换。原 `runtime-v1/WORKFLOW.md` 路径、`state/attempt-4`、`workspaces/v1`、模型、恢复策略和冻结检查路径保留；仅安装路径改指新固定版本。领取仍为 `mvp.enabled=false`，没有启动其他 Issue。
+
+无人值守 GitHub 凭据在任何退出测试前由现有获准 Windows gh 登录一次性预配置到 `runtime-v1/secrets/github-token`，uid 0、文件 `0600`、父目录 `0700`。看门狗父进程不持有 GITHUB_TOKEN，启动时读取文件并注入运行器子进程环境；Codex 使用原受限 CODEX_HOME，目录 `0700`、auth.json `0600`。记录只含来源、权限和注入方式；最终审计验证状态、审计及日志没有秘密值。
+
+实际参数为检测周期 1000 ms、退避 5000 ms、每版本最多 5 次启动、稳定时长 300000 ms。这些是本次安装参数，不是新的永久产品决定。真实测试结果：
+
+- 运行器正常 SIGTERM 退出，852 ms 内检测到退出；退避后自动恢复。真实 GitHub 查询及 Sol 6.1 只读最小调用均成功，没有人工输入或登录。
+- 运行器 SIGKILL 强制结束，880 ms 内检测到退出；退避后自动恢复。新 PID/启动身份和固定版本核实，真实 GitHub/Codex 认证再次成功。
+- 看门狗 SIGKILL 后，现存运行器及状态 API 正常；重新启动看门狗没有另起运行器或重置预算。
+- 1679 项状态/证据和 5149 项工作区条目的内容、目录结构、权限、owner 和 inode 均保留。原 GH-5 回执仍为 awaiting_external，其候选、旧 Review、预算和证据链未改变。
+
+北京时间 02:23 的最终核实：运行器 PID `1648931`、start_ticks `2207817`；看门狗 PID `1647651`、start_ticks `2205100`；cwd 均为固定 release 的 `elixir/`。各只有一个进程，状态 API HTTP 200，running/retrying/blocked 均为 0。宿主启动 ID 和完整身份留在审计文件。当前运行已安装的合并版本；此次实测不是原 b465fbc 回执的自动验收批准，不虚构已重新执行独立 Review。
+
+本机脱敏结果为 `.local/watchdog-install/final-audit.json`、`recovery-results.json` 和 `full-checks-clean-env.log`。原服务、状态、工作区及运行配置备份在 `/var/tmp/innovation-symphony-v0-rerun1/operator-watchdog-install-1790792283829787448/`，旧 `626b2c2` 固定安装保留。看门狗已在当前宿主内运行；未安装宿主开机自启或看门狗自身常驻恢复服务。
+
+实际人工维护命令如下。先暂停并核对 paused=true，再处理领取/在途工作和停止确认归属的运行器；pause 不停止运行器本身。旧 launch.py 的原文保存在操作备份，原入口已替换为迁移提示，防止启动旧版绕开新互斥；previous-release.json 记录实际前一版本 626b2c2。新固定安装的普通入口也拒绝绕过托管启动。
+
+```sh
+RUNTIME=/var/tmp/innovation-symphony-v0-rerun1/runtime-v1
+WATCHDOG=/var/tmp/innovation-symphony-v0-rerun1/releases/d4e913ea4b8c14ee81da977fd337d584fe8035f2/bin/symphony
+CONFIG="$RUNTIME/watchdog.json"
+bash "$RUNTIME/runtime-env.sh" "$WATCHDOG" --watchdog status "$CONFIG"
+bash "$RUNTIME/runtime-env.sh" "$WATCHDOG" --watchdog pause "$CONFIG"
+# 维护后明确解除；不绕过退避或清除耗尽预算。
+bash "$RUNTIME/runtime-env.sh" "$WATCHDOG" --watchdog resume "$CONFIG"
+# 同版本预算耗尽且故障已修复时，另行明确执行 recover。
+```
+
 ## 外部条件接手
 
 `awaiting_external` 表示控制器已保存候选和交接记录并结束本次执行。操作者先运行 `mix mvp.external status RECEIPT.json` 查看缺失条目、所需证据和接手责任，按已有权限完成外部工作，再用绑定原回执摘要的请求调用 `mix mvp.external resume WORKFLOW.md RECEIPT.json REQUEST.json`。具体字段、冻结条件、证据格式与预算规则见 [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md)。
 
 此入口不会解除维护暂停、增加预算或自动迁移旧 `blocked` 回执；实现和运行安装状态分别记录在该合同的实施状态中。
 
-## 看门狗维护流程（待 005 交付后适用）
+## 看门狗维护纪律
 
-本节对应 [005 看门狗草稿](issue-drafts/005-watchdog.md)，记录后续安装看门狗后的操作纪律；当前没有安装或验证看门狗，下面不是现有命令已可用的声明。交付时须补充实际命令及验收证据。
+本节对应 [005 看门狗合同](issue-drafts/005-watchdog.md)，记录维护纪律。IS-042 的实际安装与命令见文首；通用配置格式见后文看门狗维护流程。
 
 1. 首次启用前，配置无人值守启动所需凭据（部署环境变量或受限权限文件等），记录来源类别、权限和注入方式，不记录秘密值。在验收环境证明运行器退出后无需人工取 token、输入或登录就能自动拉起；没有该证据，WD-1 不能通过。
 2. 人工维护或停机前，先设置持久维护暂停，并通过状态读取确认已生效。看门狗暂停仅禁止自动拉起，不停止任务领取或在途任务；仍须按已有运行器规则处理领取及在途工作，核实允许停机后再停止运行器。不通过清空回执或证据实现停机。
@@ -34,7 +70,7 @@
 - 状态接口 `http://127.0.0.1:43223/api/v1/state` 返回 HTTP 200，running/retrying/blocked 均为 0；两份历史回执及证据所在的 576 项目录、文件、链接条目内容全部保持不变。
 - 旧 `07f7493` 安装及运行文件备份保留，`previous-release.json` 记录实际旧版本。本机证据在 `.local/main-switch-11acc1b/`，运行侧备份在 `operator-main-switch-11acc1b8b40d/runtime-before/`。未新建或重新派发 Issue，未配置云部署或开机自启动；本次人工切换不作为完整自动接棒或回退演练的验收。
 
-以下章节保留各次交付时的历史状态；当前运行版本以上述固定提交为准。
+以下章节保留各次交付时的历史状态；当前运行版本以文首最新固定安装记录为准。
 
 ## 2026-09-29 自动恢复实测
 
@@ -174,9 +210,9 @@ timeout --signal=KILL "${PREFLIGHT_TIMEOUT:?set an explicit duration}" \
 
 检查入口在导入共享辅助模块前禁用 Python 字节码写入，防止 `__pycache__` 改变冻结基线指纹。回归测试实际执行两个归档入口，并逐文件比较执行前后的基线；完整性校验不排除缓存文件或放宽匹配。
 
-## 看门狗维护流程（待 005 交付后适用）
+## 看门狗维护流程
 
-以下是 GH-5 源码交付后的操作合同；当前运行服务尚未安装或启用看门狗。值守只处理进程退出，不作健康检查、更新、回退或任务处置。先核实固定安装、`WORKFLOW.md` 的状态目录及工作区、Elixir/OTP 和原生 Linux `codex`、Git、GNU timeout、`flock`、`setsid`、`sh` 所在的 `PATH`，再配置新入口。旧 `runtime-v1/launch.py` 是历史安装脚本，不参与新互斥；接入看门狗前须人工暂停值守、结束该旧入口启动的进程并核实退出。其一次性空队列预检不属于 ready 领取规则。
+以下是 GH-5 的通用操作合同；当前 WSL 安装实测见文首。值守只处理进程退出，不作健康检查、更新、回退或任务处置。先核实固定安装、`WORKFLOW.md` 的状态目录及工作区、Elixir/OTP 和原生 Linux `codex`、Git、GNU timeout、`flock`、`setsid`、`sh` 所在的 `PATH`，再配置新入口。旧 `runtime-v1/launch.py` 是历史安装脚本，不参与新互斥；接入看门狗前须人工暂停值守、结束该旧入口启动的进程并核实退出。其一次性空队列预检不属于 ready 领取规则。
 
 看门狗配置为 JSON，以下路径和数字均是工程示例，按实际固定安装填写。`controller` 是含本代码的打包 `bin/symphony`；`state_dir`、`status_file`、`maintenance_file` 与 `pointer_file` 必须位于持久目录，不能放在临时清理目录。`workflow` 是原运行配置的**同一个绝对路径**；不复制、重建或清空其中指定的状态与工作区。值守按 CLI `--port` 优先、否则 `WORKFLOW.md` 的 `server.port` 确定实际端口；配置 `port` 时即作为 `--port` 覆盖工作流端口。值守用同一端口检查启动冲突、构造启动参数及核对进程命令；工作流端口无效时阻塞启动。运行中的进程端口没有响应不会触发另启。
 
