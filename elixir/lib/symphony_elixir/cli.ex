@@ -50,10 +50,12 @@ defmodule SymphonyElixir.CLI do
     result =
       case SymphonyElixir.Watchdog.load_config(config_path) do
         {:ok, config} ->
-          if service_lock_held?(config) do
+          with true <- service_lock_held?(config),
+               :ok <- SymphonyElixir.Watchdog.bind_state_dir(config) do
             SymphonyElixir.Watchdog.step(config, command)
           else
-            {:error, "internal entrypoint requires the service lock"}
+            false -> {:error, "internal entrypoint requires the service lock"}
+            error -> error
           end
 
         error ->
@@ -67,9 +69,13 @@ defmodule SymphonyElixir.CLI do
     result =
       case SymphonyElixir.Watchdog.load_config(config_path) do
         {:ok, config} ->
-          if service_lock_held?(config),
-            do: SymphonyElixir.Watchdog.record_block(config, reason),
-            else: {:error, "internal entrypoint requires the service lock"}
+          with true <- service_lock_held?(config),
+               :ok <- SymphonyElixir.Watchdog.bind_state_dir(config) do
+            SymphonyElixir.Watchdog.record_block(config, reason)
+          else
+            false -> {:error, "internal entrypoint requires the service lock"}
+            error -> error
+          end
 
         error ->
           error
@@ -93,7 +99,7 @@ defmodule SymphonyElixir.CLI do
   # GNU flock keeps its locked descriptor open in the command by default. A
   # caller-supplied environment variable is not proof of ownership of that lock.
   defp service_lock_held?(config) do
-    lock_path = Path.join(config["state_dir"], "start.lock")
+    lock_path = SymphonyElixir.Watchdog.service_lock_path(config)
 
     case File.ls("/proc/self/fd") do
       {:ok, descriptors} -> Enum.any?(descriptors, &service_lock_descriptor?(&1, lock_path))
@@ -135,14 +141,13 @@ defmodule SymphonyElixir.CLI do
 
   defp watchdog_locked(config, command) do
     result =
-      with :ok <- File.mkdir_p(config["state_dir"]),
-           true <- File.regular?(config["controller"]),
+      with true <- File.regular?(config["controller"]),
            {output, 0} <-
              System.cmd(
                "flock",
                [
                  "-x",
-                 Path.join(config["state_dir"], "start.lock"),
+                 SymphonyElixir.Watchdog.service_lock_path(config),
                  config["controller"],
                  "--watchdog-once",
                  command,
@@ -168,6 +173,12 @@ defmodule SymphonyElixir.CLI do
         {:ok, _} ->
           {:error, "invalid watchdog child response"}
 
+        {"watchdog: workflow state directory binding conflict\n", 1} ->
+          {:error, "workflow state directory binding conflict"}
+
+        {"watchdog: workflow state directory binding unreadable\n", 1} ->
+          {:error, "workflow state directory binding unreadable"}
+
         {_output, status} ->
           {:error, "watchdog child failed with exit #{status}"}
       end
@@ -186,7 +197,7 @@ defmodule SymphonyElixir.CLI do
     self = :escript.script_name() |> to_string()
 
     if File.regular?(self) do
-      System.cmd("flock", ["-x", Path.join(config["state_dir"], "start.lock"), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
+      System.cmd("flock", ["-x", SymphonyElixir.Watchdog.service_lock_path(config), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
     end
   end
 

@@ -13,10 +13,69 @@ defmodule SymphonyElixir.Watchdog do
     with {:ok, raw} <- File.read(path),
          {:ok, config} <- Jason.decode(raw),
          true <- is_map(config),
-         :ok <- validate_config(config) do
-      {:ok, Map.put(config, "config_path", Path.expand(path))}
+         :ok <- validate_config(config),
+         {:ok, workflow} <- SymphonyElixir.PathSafety.canonicalize(config["workflow"]),
+         {:ok, state_dir} <- SymphonyElixir.PathSafety.canonicalize(config["state_dir"]),
+         {:ok, status_file} <- SymphonyElixir.PathSafety.canonicalize(config["status_file"]),
+         {:ok, maintenance_file} <- SymphonyElixir.PathSafety.canonicalize(config["maintenance_file"]),
+         {:ok, pointer_file} <- SymphonyElixir.PathSafety.canonicalize(config["pointer_file"]) do
+      {:ok,
+       config
+       |> Map.put("workflow", workflow)
+       |> Map.put("state_dir", state_dir)
+       |> Map.put("status_file", status_file)
+       |> Map.put("maintenance_file", maintenance_file)
+       |> Map.put("pointer_file", pointer_file)
+       |> Map.put("config_path", Path.expand(path))}
     else
       _ -> {:error, "invalid or unreadable watchdog config"}
+    end
+  end
+
+  @spec service_lock_path(map()) :: String.t()
+  def service_lock_path(config) do
+    workflow = config["workflow"]
+    identity = :crypto.hash(:sha256, workflow) |> Base.encode16(case: :lower)
+    Path.join(Path.dirname(workflow), ".symphony-watchdog-#{identity}.lock")
+  end
+
+  @spec bind_state_dir(map()) :: :ok | {:error, String.t()}
+  def bind_state_dir(config) do
+    path = service_lock_path(config) <> ".binding"
+
+    expected =
+      Jason.encode!(Map.take(config, ~w(workflow state_dir status_file maintenance_file pointer_file)))
+
+    case File.read(path) do
+      {:ok, ^expected} ->
+        :ok
+
+      {:ok, _} ->
+        binding_block(config, "workflow state directory binding conflict")
+
+      {:error, :enoent} ->
+        with :ok <- File.write(path, expected), do: File.chmod(path, 0o600)
+
+      {:error, _} ->
+        binding_block(config, "workflow state directory binding unreadable")
+    end
+  end
+
+  defp binding_block(config, reason) do
+    event =
+      config
+      |> Map.take(~w(workflow state_dir status_file maintenance_file pointer_file))
+      |> Map.merge(%{"at" => System.system_time(:millisecond), "action" => "blocked", "reason" => reason})
+
+    path = service_lock_path(config) <> ".binding-events.jsonl"
+
+    case File.write(path, Jason.encode!(event) <> "\n", [:append]) do
+      :ok ->
+        :ok = File.chmod(path, 0o600)
+        {:error, reason}
+
+      _ ->
+        {:error, reason <> "; binding evidence unavailable"}
     end
   end
 
@@ -442,10 +501,15 @@ defmodule SymphonyElixir.Watchdog do
   defp record_exit(_config, %{"process" => nil} = state, _now), do: state
 
   defp record_exit(config, state, now) do
+    version = state["process"]["version"]
+    old = Map.get(state["versions"], version, budget())
+    versions = Map.put(state["versions"], version, Map.put(old, "next_at", now + config["backoff_ms"]))
+
     {:ok, updated} =
       update(config, state, now, "exit", "recorded runner no longer exists", %{
         "process" => nil,
         "observed" => state["process"],
+        "versions" => versions,
         "phase" => "exited"
       })
 
@@ -499,12 +563,17 @@ defmodule SymphonyElixir.Watchdog do
       {:error, reason} ->
         version = pointer["version"]
         old = state["versions"][version]
+        failed_at = System.system_time(:millisecond)
+        old = Map.put(old, "next_at", failed_at + config["backoff_ms"])
 
         {:ok, failed} =
-          update(config, state, now, "launch_failed", reason, %{"phase" => "backoff"})
+          update(config, state, failed_at, "launch_failed", reason, %{
+            "phase" => "backoff",
+            "versions" => Map.put(state["versions"], version, old)
+          })
 
         if old["attempts"] >= config["max_attempts"] do
-          abandon(config, failed, version, old, now)
+          abandon(config, failed, version, old, failed_at)
         else
           {:ok, failed}
         end

@@ -102,18 +102,49 @@ defmodule SymphonyElixir.WatchdogTest do
     assert unrecoverable["versions"] == %{}
   end
 
+  test "service binding rejects conflicting and unreadable state paths", ctx do
+    config_path = Path.join(ctx.root, "watchdog.json")
+    File.write!(config_path, Jason.encode!(ctx.config))
+    assert {:ok, config} = Watchdog.load_config(config_path)
+    binding = Watchdog.service_lock_path(config) <> ".binding"
+    assert :ok = Watchdog.bind_state_dir(config)
+    assert :ok = Watchdog.bind_state_dir(config)
+
+    assert {:error, "workflow state directory binding conflict"} =
+             Watchdog.bind_state_dir(Map.put(config, "status_file", Path.join(ctx.root, "other-status.json")))
+
+    events = Watchdog.service_lock_path(config) <> ".binding-events.jsonl"
+    [event] = events |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+    assert event["reason"] == "workflow state directory binding conflict"
+    assert event["status_file"] == Path.join(ctx.root, "other-status.json")
+    assert is_integer(event["at"])
+
+    File.rm!(binding)
+    File.mkdir_p!(binding)
+    assert {:error, "workflow state directory binding unreadable"} = Watchdog.bind_state_dir(config)
+
+    File.rm!(events)
+    File.mkdir_p!(events)
+
+    assert {:error, "workflow state directory binding unreadable; binding evidence unavailable"} =
+             Watchdog.bind_state_dir(config)
+  end
+
   test "missing and unsafe credential block without consuming budget or exposing a value", ctx do
+    proc_root = Path.join(ctx.root, "empty-proc")
+    File.mkdir_p!(proc_root)
+    config = Map.put(ctx.config, :proc_root, proc_root)
     File.rm!(ctx.config["credential_file"])
-    assert {:ok, missing} = Watchdog.step(ctx.config, "start")
+    assert {:ok, missing} = Watchdog.step(config, "start")
     assert missing["versions"] == %{}
     assert missing["last_action"]["reason"] =~ "credential"
 
     File.write!(ctx.config["credential_file"], "secret-marker")
     File.chmod!(ctx.config["credential_file"], 0o644)
-    assert {:ok, unsafe} = Watchdog.step(ctx.config, "check")
+    assert {:ok, unsafe} = Watchdog.step(config, "check")
     assert unsafe["versions"] == %{}
     File.chmod!(ctx.config["credential_file"], 0o000)
-    assert {:ok, unreadable} = Watchdog.step(ctx.config, "check")
+    assert {:ok, unreadable} = Watchdog.step(config, "check")
     assert unreadable["versions"] == %{}
     refute File.read!(Path.join(ctx.config["state_dir"], "status.json")) =~ "secret-marker"
     refute File.read!(Path.join(ctx.config["state_dir"], "history.jsonl")) =~ "secret-marker"
@@ -382,6 +413,9 @@ defmodule SymphonyElixir.WatchdogTest do
              "abandon"
            ]
 
+    timestamps = Enum.map(history(config), & &1["at"])
+    assert timestamps == Enum.sort(timestamps)
+
     assert {:ok, still_exhausted} = Watchdog.step(config, "check")
     assert still_exhausted["versions"]["v1"]["attempts"] == 2
     assert {:ok, _} = Watchdog.step(config, "pause")
@@ -477,6 +511,41 @@ defmodule SymphonyElixir.WatchdogTest do
     assert Enum.count(history(config), &(&1["action"] == "exit")) == 2
     assert Enum.map(Enum.filter(history(config), &(&1["action"] == "exit")), & &1["observed"]["pid"]) == [first_pid, second_pid]
     assert_audit_complete(config)
+  end
+
+  test "an exit after the launch backoff expires begins a new backoff", ctx do
+    config = %{ctx.config | "backoff_ms" => 500, "max_attempts" => 3}
+    stop_file = Path.join(ctx.root, "normal-stop")
+    install!(ctx.root, "v1", "while [ ! -e '#{stop_file}' ]; do sleep 0.02; done")
+    assert {:ok, first} = Watchdog.step(config, "start")
+    Process.sleep(550)
+    File.write!(stop_file, "stop")
+    wait_absent(first["process"]["pid"])
+    File.rm!(stop_file)
+
+    assert {:ok, normal} = Watchdog.step(config, "check")
+    assert normal["phase"] == "backoff"
+    assert normal["versions"]["v1"]["next_at"] >= normal["last_action"]["at"]
+    assert normal["versions"]["v1"]["attempts"] == 1
+    assert {:ok, waiting} = Watchdog.step(config, "check")
+    assert waiting["phase"] == "backoff"
+    assert waiting["versions"]["v1"]["attempts"] == 1
+
+    Process.sleep(max(normal["versions"]["v1"]["next_at"] - System.system_time(:millisecond), 0) + 20)
+    assert {:ok, second} = Watchdog.step(config, "check")
+    assert second["versions"]["v1"]["attempts"] == 2
+    Process.sleep(550)
+    kill_group(second["process"]["pid"], config["workflow"], "-KILL")
+    wait_absent(second["process"]["pid"])
+
+    assert {:ok, abnormal} = Watchdog.step(config, "check")
+    assert abnormal["phase"] == "backoff"
+    assert abnormal["versions"]["v1"]["next_at"] > System.system_time(:millisecond)
+    assert abnormal["versions"]["v1"]["attempts"] == 2
+    assert {:ok, after_reload} = Watchdog.step(config, "check")
+    assert after_reload["phase"] == "backoff"
+    assert after_reload["versions"]["v1"] == abnormal["versions"]["v1"]
+    assert Enum.count(history(config), &(&1["action"] == "attempt")) == 2
   end
 
   test "pause persists through state reload and recovery does not clear it", ctx do
@@ -862,6 +931,94 @@ defmodule SymphonyElixir.WatchdogTest do
     assert blocked["versions"] == %{}
   end
 
+  test "watchdog leaves task receipts and evidence untouched and makes no remote request", ctx do
+    receipts = Path.join(ctx.root, "task-receipts")
+    evidence = Path.join(ctx.root, "task-evidence")
+    File.mkdir_p!(receipts)
+    File.mkdir_p!(evidence)
+    File.write!(Path.join(receipts, "issue-5.json"), ~s({"status":"claimed"}))
+    File.write!(Path.join(evidence, "review.txt"), "existing evidence\n")
+    before = {tree_snapshot(receipts), tree_snapshot(evidence)}
+
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    on_exit(fn -> :gen_tcp.close(socket) end)
+    {:ok, {_address, port}} = :inet.sockname(socket)
+    File.write!(ctx.config["workflow"], "---\ntracker:\n  provider:\n    api_url: http://127.0.0.1:#{port}\n---\n")
+    config = Map.put(ctx.config, "port", 0)
+
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert is_map(started["process"])
+    assert {:ok, _} = Watchdog.step(config, "check")
+    assert {:ok, _} = Watchdog.step(config, "pause")
+    assert {:ok, _} = Watchdog.step(config, "resume")
+    assert {:ok, _} = Watchdog.step(config, "recover")
+    assert {:error, :timeout} = :gen_tcp.accept(socket, 100)
+    assert {tree_snapshot(receipts), tree_snapshot(evidence)} == before
+    assert File.exists?(config["status_file"])
+    assert length(history(config)) >= 5
+  end
+
+  @tag timeout: 120_000
+  test "different state directories for one canonical workflow cannot start twice", ctx do
+    {build, 0} =
+      System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"],
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert build =~ "symphony" or build == ""
+    controller = Path.expand("bin/symphony")
+    other_state = Path.join(ctx.root, "other-watchdog-state")
+    first = Map.put(ctx.config, "controller", controller)
+    second = %{first | "state_dir" => other_state, "status_file" => Path.join(other_state, "status.json"), "maintenance_file" => Path.join(other_state, "maintenance.lock")}
+    workflow_alias = Path.join(ctx.root, "workflow-alias.md")
+    File.ln_s!(ctx.config["workflow"], workflow_alias)
+    second = %{second | "workflow" => workflow_alias}
+    first_path = Path.join(ctx.root, "first-watchdog.json")
+    second_path = Path.join(ctx.root, "second-watchdog.json")
+    File.write!(first_path, Jason.encode!(first))
+    File.write!(second_path, Jason.encode!(second))
+    assert {:ok, loaded_first} = Watchdog.load_config(first_path)
+    assert {:ok, loaded_second} = Watchdog.load_config(second_path)
+    assert Watchdog.service_lock_path(loaded_first) == Watchdog.service_lock_path(loaded_second)
+
+    on_exit(fn ->
+      case File.read(second["status_file"]) do
+        {:ok, raw} ->
+          case Jason.decode(raw) do
+            {:ok, %{"process" => %{"pid" => pid}}} -> kill_group(pid, ctx.config["workflow"])
+            _ -> :ok
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+
+    tasks =
+      for path <- [first_path, second_path] do
+        Task.async(fn -> System.cmd(controller, ["--watchdog", "start", path], stderr_to_stdout: true) end)
+      end
+
+    results = Enum.map(tasks, &Task.await(&1, 30_000))
+    assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [0, 1], inspect(results)
+    assert Enum.any?(results, fn {output, _} -> output =~ "binding conflict" end)
+
+    {conflict, 1} =
+      System.cmd("flock", ["-x", Watchdog.service_lock_path(loaded_first), controller, "--watchdog-once", "start", if(File.exists?(first["status_file"]), do: second_path, else: first_path)],
+        stderr_to_stdout: true
+      )
+
+    assert conflict =~ "binding conflict"
+    statuses = Enum.filter([first["status_file"], second["status_file"]], &File.exists?/1)
+    assert length(statuses) == 1
+    [status_path] = statuses
+    state = status_path |> File.read!() |> Jason.decode!()
+    assert state["versions"]["v1"]["attempts"] == 1
+    assert is_map(state["process"])
+    assert {:ok, _} = Watchdog.load_config(if(status_path == first["status_file"], do: first_path, else: second_path))
+  end
+
   @tag timeout: 120_000
   test "a packaged fixed installation restarts without interactive credential input", ctx do
     {build, 0} =
@@ -913,7 +1070,10 @@ defmodule SymphonyElixir.WatchdogTest do
     assert File.read!("/proc/#{first_pid}/environ") =~ "GITHUB_TOKEN=test-token"
     kill_group(first_pid, config["workflow"], "-KILL")
     wait_absent(first_pid)
-    Process.sleep(60)
+    assert {:ok, exited} = Watchdog.step(config, "check")
+    assert exited["phase"] == "backoff"
+    assert exited["versions"]["packaged"]["attempts"] == 1
+    Process.sleep(max(exited["versions"]["packaged"]["next_at"] - System.system_time(:millisecond), 0) + 20)
 
     assert {:ok, second} = Watchdog.step(config, "check")
     assert second["process"]["pid"] != first_pid
@@ -1017,7 +1177,7 @@ defmodule SymphonyElixir.WatchdogTest do
 
     assert forged =~ "requires the service lock"
 
-    lock_path = Path.join(config["state_dir"], "start.lock")
+    lock_path = Watchdog.service_lock_path(config)
     unrelated_lock = Path.join(ctx.root, "unrelated.lock")
 
     {unrelated, 1} =
@@ -1218,6 +1378,16 @@ defmodule SymphonyElixir.WatchdogTest do
     |> File.read!()
     |> String.split("\n", trim: true)
     |> Enum.map(&Jason.decode!/1)
+  end
+
+  defp tree_snapshot(root) do
+    root
+    |> Path.join("**/*")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.sort()
+    |> Enum.map(fn path ->
+      {Path.relative_to(path, root), if(File.dir?(path), do: :directory, else: File.read!(path))}
+    end)
   end
 
   defp assert_audit_complete(config) do
