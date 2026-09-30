@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.Delivery do
   @moduledoc "Controller-owned GitHub draft PR delivery and read-only reconciliation."
 
   alias SymphonyElixir.GitHub.Client
-  alias SymphonyElixir.Mvp.{Commands, Feedback, Intake, Receipt}
+  alias SymphonyElixir.Mvp.{Commands, ExternalDraft, Feedback, Intake, Receipt}
 
   @spec repository(map(), keyword()) :: {:ok, map()} | {:error, term()}
   def repository(issue, opts) do
@@ -19,6 +19,20 @@ defmodule SymphonyElixir.Mvp.Delivery do
   @spec publish(Path.t(), map(), map(), String.t(), String.t(), Path.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def publish(workspace, issue, repository, branch, sha, receipt, opts) do
+    if is_map(Receipt.read(receipt)["external_delivery"]) do
+      ExternalDraft.approve(workspace, issue, repository, branch, sha, receipt, opts)
+    else
+      publish_new(workspace, issue, repository, branch, sha, receipt, opts)
+    end
+  end
+
+  @doc "Publish only a checked candidate whose independent review lacks real external verification."
+  @spec publish_external(Path.t(), map(), map(), String.t(), String.t(), Path.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def publish_external(workspace, issue, repository, branch, sha, receipt, opts),
+    do: ExternalDraft.publish(workspace, issue, repository, branch, sha, receipt, opts)
+
+  defp publish_new(workspace, issue, repository, branch, sha, receipt, opts) do
     fields = %{"branch" => branch, "base" => repository.base, "candidate_sha" => sha}
     Receipt.update(receipt, "publish_pending", fields)
 
@@ -79,10 +93,10 @@ defmodule SymphonyElixir.Mvp.Delivery do
   def reconcile(receipt, opts \\ []) do
     data = Receipt.read(receipt)
 
-    if is_list(data["rounds"]) and data["status"] in ["comment_pending", "blocked"] do
-      Feedback.reconcile(receipt, opts)
-    else
-      reconcile_pull(receipt, data, opts)
+    cond do
+      is_map(data["external_delivery"]) -> ExternalDraft.reconcile(receipt, opts)
+      is_list(data["rounds"]) and data["status"] in ["comment_pending", "blocked"] -> Feedback.reconcile(receipt, opts)
+      true -> reconcile_pull(receipt, data, opts)
     end
   end
 

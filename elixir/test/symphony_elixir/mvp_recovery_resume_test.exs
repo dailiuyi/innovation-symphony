@@ -409,6 +409,60 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
     assert length(calls(context, :publish)) == 1
   end
 
+  test "another interrupted coder preserves a review from an audited ancestor operation" do
+    for corrupt <- [false, true] do
+      {context, settings, _before} = protocol_blocked!()
+      resume = protocol_context(context, settings)
+      original = mock_agent(context, :dirty_repair)
+
+      timeout_agent = fn workspace, prompt, issue, opts ->
+        original.(workspace, prompt, issue, opts)
+
+        if agent_role(opts) == :reviewer,
+          do: {:ok, %{output_text: Jason.encode!(review(false))}},
+          else: {:error, :mvp_turn_timeout}
+      end
+
+      resume = %{resume | opts: Keyword.put(resume.opts, :agent, timeout_agent)}
+      {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+      auth = authorization("ancestor-review", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+      assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_review(resume, digest(File.read!(context.receipt)), auth)
+
+      base_now = System.system_time(:millisecond)
+      Process.put({context.key, :resume_now}, base_now + 7_500_000)
+
+      interrupted = fn workspace, prompt, issue, opts ->
+        original.(workspace, prompt, issue, opts)
+        File.write!(Path.join(workspace, "candidate.txt"), "partial again")
+        Process.put({context.key, :resume_now}, base_now + 9_000_000)
+        {:error, :mvp_turn_timeout}
+      end
+
+      opts = options(context, :dirty_repair) |> Keyword.put(:now_ms, fn -> Process.get({context.key, :resume_now}) end) |> Keyword.put(:agent, interrupted)
+      next = resume_context(context, settings, opts)
+      {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+      auth = authorization("ancestor-coder-timeout", workspace_sha) |> Map.put("predecessor", "ancestor-review")
+      assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_recovery(next, digest(File.read!(context.receipt)), auth)
+      stopped = Receipt.read(context.receipt)
+      effective = %{settings | recovery: %{settings.recovery | max_elapsed_ms: stopped["recovery"]["policy"]["max_elapsed_ms"]}}
+      opts = options(context, :dirty_repair) |> Keyword.put(:now_ms, fn -> base_now + 9_000_000 end)
+      final = resume_context(context, effective, opts)
+      {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+      auth = authorization("ancestor-final", workspace_sha) |> Map.put("predecessor", "ancestor-coder-timeout")
+
+      if corrupt do
+        path = Path.join([context.receipt <> ".evidence", "operator-rechecks", "ancestor-coder-timeout", "receipt-before.json"])
+        File.write!(path, "{}")
+        assert {:error, :mvp_recovery_resume_stage_unsupported} = Executor.resume_recovery(final, digest(File.read!(context.receipt)), auth)
+        assert File.read!(Path.join(context.workspace, "candidate.txt")) == "partial again"
+      else
+        assert {:ok, @url} = Executor.resume_recovery(final, digest(File.read!(context.receipt)), auth)
+        assert Receipt.read(context.receipt)["rework_count"] == stopped["rework_count"]
+        assert length(calls(context, :publish)) == 1
+      end
+    end
+  end
+
   defp protocol_blocked! do
     context = context!()
     settings = settings([["true"], ["true"]])

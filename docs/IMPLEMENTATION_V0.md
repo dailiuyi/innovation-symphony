@@ -4,6 +4,8 @@ IS-031/032/033 的 coder 自主测试、四条隔离底线及实施配置见 [CO
 
 GH-1 / IS-024 更新：默认 0 的历史合同继续兼容；显式 `max_rework=1..5` 的检查与 Review 共用预算返工、回帖与完整逐轮日志合同见 [REVIEW_REWORK.md](REVIEW_REWORK.md)。下文固定单轮及“多轮未实现”描述仅指 V0 基线。
 
+IS-040 已确认仅剩真实外部验收条件时可先交付待验收 Draft PR，条件和保留边界见 [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md)。IS-041 授权实施和安装此路径，源码新增 `ExternalDraft`：只有显式分类为真实外部验证的有效 Review、同一候选与完整检查证据才可提前交付；后续全部批准由 `Delivery.publish` 更新同一 Draft。源码验证、安装及真实任务结果分别记录。
+
 状态（V0 历史基线）：基于官方 Elixir 的本地开发版。GitHub 仓库未创建，未进行真实派发、模型调用、PR 创建或升级。以下运行细节是工程默认，未经逐条确认为永久产品规则。
 
 ## GH-3 最小增量：接管前只读体检

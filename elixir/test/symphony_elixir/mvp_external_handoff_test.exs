@@ -2,12 +2,345 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
   use SymphonyElixir.TestSupport
 
   alias Mix.Tasks.Mvp.External
+  alias Mix.Tasks.PrBody.Check, as: PrBodyCheck
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Mvp.{Commands, Executor, ExternalHandoff, Receipt, Recovery}
+  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, ExternalDraft, ExternalHandoff, Receipt, Recovery, Review}
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
 
   @acceptance "The candidate must load the signed company feed"
   @url "https://github.com/owner/repo/pull/42"
+
+  test "a checked external verification draft stays unaccepted and evidence later updates the same PR" do
+    context = context!()
+    Process.put({context.key, :reviews}, [verification_review(), approved_review()])
+    opts = draft_options(context)
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    before = Receipt.read(context.receipt)
+    assert before["status"] == "awaiting_external"
+    assert before["review"]["approved"] == false
+    assert before["pull_request"] == @url
+    assert before["external_delivery"]["status"] == "delivered"
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :reviewer)) == 1
+    [created] = writes(context, "POST", "/pulls")
+    assert created["draft"] == true
+    assert created["body"] =~ "等待真实外部验收，最终验收尚未通过"
+    assert created["body"] =~ "approved=false"
+    assert created["body"] =~ before["candidate_sha"]
+    refute created["body"] =~ "Closes #"
+    refute created["body"] =~ "Fixes #"
+    body_path = Path.join(context.root, "draft-body.md")
+    File.write!(body_path, created["body"])
+    PrBodyCheck.run(["--file", body_path])
+
+    evidence = evidence_file!(context, "real signed feed proof")
+    auth = authorization(context, before["external_handoff"], evidence, "draft-acceptance")
+    assert {:ok, @url} = Executor.resume_external(resume_context(context, settings(), opts), digest(File.read!(context.receipt)), auth)
+    after_data = Receipt.read(context.receipt)
+    assert after_data["status"] == "awaiting_human"
+    assert after_data["review"]["approved"] == true
+    assert after_data["candidate_sha"] == before["candidate_sha"]
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert length(writes(context, "PATCH", "/pulls/42")) == 1
+    assert after_data["external_delivery_history"] |> hd() |> get_in(["intent", "mode"]) == "external"
+    assert hd(after_data["external_review_history"])["source_data"]["approved"] == false
+    assert length(calls(context, :coder)) == 1
+    assert Process.get({context.key, :remote_pull})["draft"] == true
+  end
+
+  test "legacy and unresolved decision reviews park without permission to deliver a draft" do
+    for review <- [external_review(), verification_review("decision")] do
+      context = context!()
+      Process.put({context.key, :reviews}, [review])
+      opts = draft_options(context)
+      assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+      assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+      assert writes(context, "POST", "/pulls") == []
+      refute Review.external_draft?(review)
+      assert {:error, :mvp_external_draft_not_eligible} = publish_waiting(context, opts)
+    end
+
+    invalid = verification_review("not_applicable")
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(invalid), 1)
+    refute Review.external_draft?(invalid)
+  end
+
+  test "lost draft creation is reconciled only by exact read-only identity, state and body" do
+    context = draft_waiting!()
+    opts = draft_options(context)
+    Process.put({context.key, :lose_write}, true)
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = publish_waiting(context, opts)
+    pending = Receipt.read(context.receipt)
+    assert pending["status"] == "awaiting_external"
+    assert pending["external_delivery"]["status"] == "pending"
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = publish_waiting(context, opts)
+    original = Process.get({context.key, :remote_pull})
+
+    for changed <- [
+          Map.put(original, "draft", false),
+          Map.put(original, "state", "closed"),
+          Map.put(original, "body", "edited by a person"),
+          put_in(original, ["head", "sha"], String.duplicate("f", 40)),
+          Map.put(original, "number", 99)
+        ] do
+      Process.put({context.key, :remote_pull}, changed)
+      assert {:error, :mvp_no_unique_matching_pr} = Delivery.reconcile(context.receipt, opts)
+    end
+
+    Process.put({context.key, :remote_pull}, original)
+    Process.put({context.key, :duplicate_pulls}, true)
+    assert {:error, :mvp_no_unique_matching_pr} = Delivery.reconcile(context.receipt, opts)
+    Process.put({context.key, :duplicate_pulls}, false)
+    assert {:ok, @url} = Delivery.reconcile(context.receipt, opts)
+    assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert writes(context, "PATCH", "/pulls/42") == []
+  end
+
+  test "draft publication rejects incomplete checks, changed candidates and corrupted independent evidence" do
+    proof_mutations = [:checks_missing, :checks_empty, :check_failed, :check_missing, :review_missing, :wrong_path]
+    mutations = proof_mutations ++ [:changed_head, :dirty, :source, :binding]
+
+    for tamper <- mutations do
+      context = draft_waiting!()
+      data = Receipt.read(context.receipt)
+      round = List.last(data["rounds"])
+
+      case tamper do
+        :checks_missing ->
+          Receipt.update_round(context.receipt, "awaiting_external", %{"checks" => nil})
+
+        :checks_empty ->
+          Receipt.update_round(context.receipt, "awaiting_external", %{"checks" => []})
+
+        :check_failed ->
+          path = Path.join(Path.dirname(round["review_path"]), "check-1.json")
+          report = Jason.decode!(File.read!(path)) |> Map.put("exit_status", 10)
+          File.write!(path, Jason.encode!(report))
+
+        :check_missing ->
+          File.rm!(Path.join(Path.dirname(round["review_path"]), "check-1.json"))
+
+        :review_missing ->
+          File.rm!(round["review_path"])
+
+        :wrong_path ->
+          Receipt.update_round(context.receipt, "awaiting_external", %{"review_path" => nil})
+
+        :changed_head ->
+          Commands.git!(["commit", "--allow-empty", "-m", "another candidate"], context.workspace)
+
+        :dirty ->
+          File.write!(Path.join(context.workspace, "candidate.txt"), "unreviewed")
+
+        :source ->
+          update_handoff_record(context, &Map.put(&1, "source", "diagnosis"))
+
+        :binding ->
+          update_handoff_record(context, &Map.put(&1, "branch", "other"))
+      end
+
+      opts = draft_options(context)
+      assert {:error, :mvp_external_draft_not_eligible} = publish_waiting(context, opts)
+      assert writes(context, "POST", "/pulls") == []
+      assert {:error, :mvp_external_draft_not_eligible} = ExternalDraft.approve(context.workspace, context.issue, context.repository, data["branch"], data["candidate_sha"], context.receipt, opts)
+    end
+  end
+
+  test "a draft never overwrites an occupied remote branch and cannot ignore readiness or lookup failures" do
+    for failure <- [:branch, :ready, :lookup, :credentials, :journal, :pull_exists] do
+      context = draft_waiting!()
+      data = Receipt.read(context.receipt)
+      opts = draft_options(context)
+
+      case failure do
+        :branch ->
+          Commands.git!(["push", context.repository.url, "#{data["base_sha"]}:refs/heads/#{data["branch"]}"], context.workspace)
+
+        :ready ->
+          Process.put({context.key, :not_ready}, true)
+
+        :lookup ->
+          Process.put({context.key, :lookup_failure}, true)
+
+        :credentials ->
+          :ok
+
+        :pull_exists ->
+          Process.put({context.key, :remote_pull}, %{"number" => 99})
+
+        :journal ->
+          File.write!(Path.join(context.receipt <> ".evidence", "delivery-intents"), "occupied")
+      end
+
+      case failure do
+        :credentials ->
+          bad_opts = Keyword.put(opts, :tracker_settings, %{provider: %{"repo" => "owner/repo", "token" => "fake", "api_url" => "https://unapproved.example"}})
+          assert {:error, _} = publish_waiting(context, bad_opts)
+
+        _ ->
+          assert {:error, _} = publish_waiting(context, opts)
+      end
+
+      assert writes(context, "POST", "/pulls") == []
+      assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+    end
+  end
+
+  test "draft update uncertainty never duplicates a PR or overwrites a human edit" do
+    context = context!()
+    Process.put({context.key, :reviews}, [verification_review(), approved_review()])
+    opts = draft_options(context)
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    before = Receipt.read(context.receipt)
+    evidence = evidence_file!(context, "real external proof")
+    auth = authorization(context, before["external_handoff"], evidence, "lost-draft-update")
+    Process.put({context.key, :lose_write}, true)
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = Executor.resume_external(resume_context(context, settings(), opts), digest(File.read!(context.receipt)), auth)
+    assert Receipt.read(context.receipt)["status"] == "publish_pending"
+    assert {:ok, @url} = Delivery.reconcile(context.receipt, opts)
+    accepted = Receipt.read(context.receipt)
+    assert accepted["status"] == "awaiting_human"
+    Process.put({context.key, :lose_write}, false)
+    pull = Process.get({context.key, :remote_pull})
+    Process.put({context.key, :remote_pull}, Map.put(pull, "body", "human changes"))
+    assert {:error, :mvp_pr_identity_mismatch} = Delivery.publish(context.workspace, context.issue, context.repository, accepted["branch"], accepted["candidate_sha"], context.receipt, opts)
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert length(writes(context, "PATCH", "/pulls/42")) == 1
+  end
+
+  test "the controller preserves the external stop if the Draft creation response is lost" do
+    context = context!()
+    Process.put({context.key, :reviews}, [verification_review()])
+    Process.put({context.key, :lose_write}, true)
+    opts = draft_options(context)
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = run(context, settings(), opts)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_external"
+    assert data["review"]["approved"] == false
+    assert data["external_handoff"]["status"] == "pending"
+    assert length(calls(context, :coder)) == 1
+    assert {:ok, @url} = Delivery.reconcile(context.receipt, opts)
+    assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+  end
+
+  test "the saved delivery intent cannot be changed to reconcile a different PR or candidate" do
+    for tamper <- [:file, :shape, :candidate, :path, :dirty, :proof, :proof_missing, :mode] do
+      context = draft_waiting!()
+      opts = draft_options(context)
+      assert {:ok, @url} = publish_waiting(context, opts)
+      data = Receipt.read(context.receipt)
+
+      case tamper do
+        :file ->
+          File.write!(data["external_delivery"]["intent_path"], "{}")
+
+        :shape ->
+          Receipt.update(context.receipt, "awaiting_external", %{"external_delivery" => %{}})
+
+        :candidate ->
+          Receipt.update(context.receipt, "awaiting_external", %{"candidate_sha" => String.duplicate("e", 40)})
+
+        :path ->
+          Receipt.update(context.receipt, "awaiting_external", %{"external_delivery" => Map.put(data["external_delivery"], "intent_path", context.receipt)})
+
+        :dirty ->
+          File.write!(Path.join(context.workspace, "candidate.txt"), "not reviewed")
+
+        :proof ->
+          File.write!(hd(data["external_delivery"]["intent"]["proof"]["checks"])["log_path"], "modified check log")
+
+        :proof_missing ->
+          File.rm!(hd(data["external_delivery"]["intent"]["proof"]["checks"])["log_path"])
+
+        :mode ->
+          intent = Map.put(data["external_delivery"]["intent"], "mode", "approved")
+          raw = Jason.encode!(intent)
+          File.write!(data["external_delivery"]["intent_path"], raw)
+          delivery = Map.merge(data["external_delivery"], %{"intent" => intent, "intent_sha256" => digest(raw), "status" => "pending"})
+          Receipt.update(context.receipt, "awaiting_external", %{"external_delivery" => delivery})
+      end
+
+      assert {:error, :mvp_no_unique_matching_pr} = Delivery.reconcile(context.receipt, opts)
+      assert {:error, _} = publish_waiting(context, opts)
+      assert length(writes(context, "POST", "/pulls")) == 1
+    end
+  end
+
+  defp verification_review(kind \\ "verification") do
+    update_in(external_review(), ["blockers"], fn blockers -> Enum.map(blockers, &Map.put(&1, "external_kind", kind)) end)
+  end
+
+  defp draft_waiting! do
+    context = context!()
+    Process.put({context.key, :reviews}, [verification_review()])
+    opts = options(context) |> Keyword.put(:publish_external, fn _, _, _, _, _, _, _ -> {:ok, @url} end)
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    context
+  end
+
+  defp publish_waiting(context, opts) do
+    data = Receipt.read(context.receipt)
+    Delivery.publish_external(context.workspace, context.issue, context.repository, data["branch"], data["candidate_sha"], context.receipt, opts)
+  end
+
+  defp writes(context, method, suffix) do
+    calls(context, :draft_requests) |> Enum.filter(fn {verb, path, _body} -> verb == method and String.ends_with?(path, suffix) end) |> Enum.map(&elem(&1, 2))
+  end
+
+  defp draft_options(context) do
+    options(context) |> Keyword.put(:publish, &Delivery.publish/7) |> Keyword.put(:ready_label, "ready") |> Keyword.put(:request_fun, draft_request(context))
+  end
+
+  defp draft_request(context) do
+    fn method, path, _params, body, _settings ->
+      record(context, :draft_requests, {method, path, body})
+
+      case {method, path} do
+        {"POST", "/repos/owner/repo/issues/42/comments"} ->
+          {:ok, %{status: 201, body: %{"id" => 17, "body" => body["body"]}}}
+
+        {"GET", "/repos/owner/repo/issues/42"} ->
+          {:ok, %{status: 200, body: %{"state" => "open", "labels" => if(Process.get({context.key, :not_ready}), do: [], else: [%{"name" => "ready"}])}}}
+
+        {"GET", "/repos/owner/repo/pulls"} ->
+          draft_pulls(context)
+
+        {"POST", "/repos/owner/repo/pulls"} ->
+          draft_create(context, body)
+
+        {"PATCH", "/repos/owner/repo/pulls/42"} ->
+          draft_reply(context, Map.put(Process.get({context.key, :remote_pull}), "body", body["body"]), 200)
+      end
+    end
+  end
+
+  defp draft_pulls(context) do
+    pulls = List.wrap(Process.get({context.key, :remote_pull}))
+    pulls = if Process.get({context.key, :duplicate_pulls}), do: pulls ++ pulls, else: pulls
+    if Process.get({context.key, :lookup_failure}), do: {:error, :network}, else: {:ok, %{status: 200, body: pulls}}
+  end
+
+  defp draft_create(context, body) do
+    data = Receipt.read(context.receipt)
+
+    pull = %{
+      "number" => 42,
+      "html_url" => @url,
+      "state" => "open",
+      "draft" => true,
+      "head" => %{"repo" => %{"full_name" => "owner/repo"}, "ref" => data["branch"], "sha" => data["candidate_sha"]},
+      "base" => %{"repo" => %{"full_name" => "owner/repo"}, "ref" => "main"},
+      "body" => body["body"]
+    }
+
+    draft_reply(context, pull, 201)
+  end
+
+  defp draft_reply(context, pull, status) do
+    Process.put({context.key, :remote_pull}, pull)
+    if Process.get({context.key, :lose_write}), do: {:error, :lost_response}, else: {:ok, %{status: status, body: pull}}
+  end
 
   test "external-only review parks the candidate, then hash-verified evidence runs checks and a new independent review" do
     context = context!()

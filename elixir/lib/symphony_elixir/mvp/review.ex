@@ -23,10 +23,15 @@ defmodule SymphonyElixir.Mvp.Review do
   @blocker %{
     "type" => "object",
     "additionalProperties" => false,
-    "required" => ["acceptance", "kind", "reason", "required_evidence", "handoff"],
+    "required" => ["acceptance", "kind", "reason", "required_evidence", "handoff", "external_kind"],
     "properties" => %{
       "acceptance" => Map.put(@nonempty_string, "description", "Copy the entire acceptance string verbatim from one criteria entry with adequate=false. Never paraphrase or combine entries."),
       "kind" => %{"type" => "string", "enum" => ["code_defect", "external_condition"]},
+      "external_kind" => %{
+        "type" => "string",
+        "enum" => ["verification", "decision", "not_applicable"],
+        "description" => "verification means only real external acceptance evidence is missing; decision means unresolved requirements or scope; code_defect uses not_applicable."
+      },
       "reason" => @nonempty_string,
       "required_evidence" => %{"type" => "string"},
       "handoff" => %{"type" => "string"}
@@ -163,6 +168,13 @@ defmodule SymphonyElixir.Mvp.Review do
 
   def valid_external_conditions?(_conditions), do: false
 
+  @doc "Only an explicitly classified, valid external-verification review may deliver an unaccepted draft."
+  @spec external_draft?(map()) :: boolean()
+  def external_draft?(review) do
+    valid?(review, 1) and disposition(review) == :awaiting_external and
+      Enum.all?(review["blockers"], &(&1["external_kind"] == "verification"))
+  end
+
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
     map_size(value) == 2 and is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0
   end
@@ -204,7 +216,7 @@ defmodule SymphonyElixir.Mvp.Review do
            "handoff" => handoff
          } = blocker
        ) do
-    map_size(blocker) == 5 and nonempty?(acceptance) and nonempty?(reason) and
+    valid_blocker_shape?(blocker, kind) and nonempty?(acceptance) and nonempty?(reason) and
       kind in ["code_defect", "external_condition"] and
       if kind == "external_condition",
         do: nonempty?(required_evidence) and nonempty?(handoff),
@@ -212,6 +224,20 @@ defmodule SymphonyElixir.Mvp.Review do
   end
 
   defp valid_blocker?(_blocker), do: false
+
+  # Historical five-field reviews remain readable, but cannot authorize early delivery.
+  defp valid_blocker_shape?(blocker, kind) do
+    keys = ~w(acceptance kind reason required_evidence handoff)
+
+    case Map.fetch(blocker, "external_kind") do
+      :error ->
+        Enum.sort(Map.keys(blocker)) == Enum.sort(keys)
+
+      {:ok, value} ->
+        Enum.sort(Map.keys(blocker)) == Enum.sort(["external_kind" | keys]) and
+          if(kind == "external_condition", do: value in ["verification", "decision"], else: value == "not_applicable")
+    end
+  end
 
   defp valid_criterion?(%{"acceptance" => acceptance, "tests" => tests, "assertion_strength" => strength, "failure_sensitivity" => sensitivity, "adequate" => adequate} = value) do
     map_size(value) == 5 and nonempty?(acceptance) and nonempty?(strength) and nonempty?(sensitivity) and

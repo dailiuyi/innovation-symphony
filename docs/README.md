@@ -5,7 +5,7 @@
 | V0 实现范围与恢复边界 | [IMPLEMENTATION_V0.md](IMPLEMENTATION_V0.md) |
 | GH-1 有限返工合同与验收对应 | [REVIEW_REWORK.md](REVIEW_REWORK.md) |
 | 技术失败自动诊断、修复与验收 | [AUTOMATIC_RECOVERY.md](AUTOMATIC_RECOVERY.md) |
-| 外部条件等待与审计接手 | [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md) |
+| 外部条件等待、分阶段 Draft PR 与审计接手 | [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md) |
 | Coder 自主测试、四条隔离底线与实施配置 | [CODER_EXECUTION_RULES.md](CODER_EXECUTION_RULES.md) |
 | 隔离自主测试实测与恢复记录 | [VALIDATION_CODER_ISOLATION.md](VALIDATION_CODER_ISOLATION.md) |
 | 自动恢复实测与 Issue #3 交付记录 | [VALIDATION_AUTOMATIC_RECOVERY.md](VALIDATION_AUTOMATIC_RECOVERY.md) |
@@ -25,3 +25,5 @@
 | 可交互 HTML 原型 | [symphony-dashboard.html](../prototypes/symphony-dashboard.html) |
 
 需求与决策是当前讨论结果；提案、草案与待定项必须保持相应状态。新决定同时更新当前规格与决策历史。聊天和运行日志用于追溯，不是唯一规范来源。
+
+IS-041 进一步授权实现、验证和安装分阶段 Draft 交付，并通过控制器继续原 GH-5。当前源码、固定运行版本与真实任务结果分别记录于 [EXTERNAL_HANDOFF.md](EXTERNAL_HANDOFF.md)，不以决定条目代替实际交付证据。

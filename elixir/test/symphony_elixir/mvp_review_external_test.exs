@@ -24,7 +24,7 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert schema["properties"]["blockers"]["items"]["additionalProperties"] == false
 
     assert Enum.sort(schema["properties"]["blockers"]["items"]["required"]) ==
-             ["acceptance", "handoff", "kind", "reason", "required_evidence"]
+             ["acceptance", "external_kind", "handoff", "kind", "reason", "required_evidence"]
 
     assert schema["properties"]["blockers"]["items"]["properties"]["kind"]["enum"] ==
              ["code_defect", "external_condition"]

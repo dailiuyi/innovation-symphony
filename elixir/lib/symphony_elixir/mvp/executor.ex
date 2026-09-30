@@ -1186,11 +1186,35 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp review_path?(path, last, data, context) do
     ordinary = Path.join(last["evidence"], "review.json")
+    path == ordinary or operator_review_path?(path, last, data, context, [])
+  end
+
+  defp operator_review_path?(path, round, data, context, seen) do
     id = data["operator_recheck"]
 
-    if is_binary(id) and Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\z/, id),
-      do: path in [ordinary, Path.join([context.evidence, "operator-rechecks", id, "review.json"])],
-      else: path == ordinary
+    cond do
+      not valid_operator_id?(id) or id in seen -> false
+      path == Path.join([context.evidence, "operator-rechecks", id, "review.json"]) -> true
+      true -> ancestor_review_path?(path, round, data, context, [id | seen])
+    end
+  end
+
+  defp ancestor_review_path?(path, round, data, context, seen) do
+    directory = Path.join([context.evidence, "operator-rechecks", data["operator_recheck"]])
+    keys = ~w(round candidate_sha review review_path comment)
+
+    with {:ok, raw} <- File.read(Path.join(directory, "receipt-before.json")),
+         {:ok, before} <- Jason.decode(raw),
+         {:ok, audit_raw} <- File.read(Path.join(directory, "authorization.json")),
+         {:ok, audit} <- Jason.decode(audit_raw),
+         true <- audit["receipt_sha256"] == digest_hex(raw),
+         :ok <- external_review_predecessor(context, audit, before, raw),
+         prior when is_map(prior) <- Enum.find(before["rounds"], &(&1["round"] == round["round"])),
+         true <- Map.take(prior, keys) == Map.take(round, keys) do
+      operator_review_path?(path, prior, before, context, seen)
+    else
+      _ -> false
+    end
   end
 
   @doc "Internal, explicitly authorized recheck of a pinned blocked candidate; never called by intake."
@@ -1879,7 +1903,7 @@ defmodule SymphonyElixir.Mvp.Executor do
         })
 
       case ExternalHandoff.write(context, fields, workspace_sha) do
-        {:ok, _record, handoff} -> {:error, {:mvp_awaiting_external, handoff["id"]}}
+        {:ok, _record, handoff} -> deliver_external_draft(context, source, sha, source_fields, handoff)
         error -> error
       end
     else
@@ -1887,6 +1911,28 @@ defmodule SymphonyElixir.Mvp.Executor do
       error -> error
     end
   end
+
+  defp deliver_external_draft(context, "review", sha, %{"source_data" => review}, handoff) do
+    if Review.external_draft?(review) do
+      case Keyword.get(context.opts, :publish_external, &Delivery.publish_external/7).(
+             context.workspace,
+             context.issue,
+             context.repository,
+             context.branch,
+             sha,
+             context.receipt,
+             context.opts
+           ) do
+        {:ok, _url} -> {:error, {:mvp_awaiting_external, handoff["id"]}}
+        error -> error
+      end
+    else
+      {:error, {:mvp_awaiting_external, handoff["id"]}}
+    end
+  end
+
+  defp deliver_external_draft(_context, _source, _sha, _fields, handoff),
+    do: {:error, {:mvp_awaiting_external, handoff["id"]}}
 
   defp source_review_audit_fields(context, "review", sha, source_fields) do
     case {Map.get(context, :external_review_id), Map.get(context, :external_handoff_id)} do
@@ -2035,6 +2081,10 @@ defmodule SymphonyElixir.Mvp.Executor do
     Include blockers for every inadequate criterion. Classify each blocker as code_defect or external_condition.
     Use external_condition only when a concrete dependency or permission outside this repository prevents verification;
     set reason, required_evidence, and handoff to specific non-empty instructions. A summary alone is insufficient.
+    Set external_kind=verification ONLY when implementation and repository tests are adequate and the sole gap is
+    real external acceptance evidence (authorized credentials, environment, device or service). Unresolved requirements
+    or scope decisions use external_kind=decision. Every code_defect uses external_kind=not_applicable.
+    External verification can permit a pending Draft PR, but still requires approved=false and adequate=false.
     A mixed review that includes any code_defect requires code repair before external waiting.
     """ <> Review.protocol_instructions()
   end
