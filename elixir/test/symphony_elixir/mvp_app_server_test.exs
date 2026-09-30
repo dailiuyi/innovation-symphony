@@ -114,7 +114,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
 
   for mode <- ["startup-busy", "startup-noeol", "turn-busy", "turn-noeol"] do
     test "wall deadline bounds #{mode} and closes the port", %{test: test} do
-      {workspace, issue, _trace} = wall_test_context!(test, unquote(mode))
+      {workspace, issue, trace} = wall_test_context!(test, unquote(mode))
       ports_before = owned_ports()
       started = System.monotonic_time(:millisecond)
 
@@ -130,6 +130,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
       assert elapsed < 1_500
       assert owned_ports() == ports_before
       assert Process.get({AppServer, :wall_deadline}) == nil
+      assert_fake_app_server_stopped!(trace)
     end
   end
 
@@ -163,7 +164,10 @@ defmodule SymphonyElixir.MVPAppServerTest do
     File.mkdir_p!(workspace)
     write_fake_app_server!(binary)
 
-    environment = "env SYMP_TEST_APP_SERVER_TRACE=#{shell_quote(trace)} SYMP_TEST_APP_SERVER_MODE=#{mode}"
+    environment =
+      "env SYMP_TEST_APP_SERVER_TRACE=#{shell_quote(trace)} SYMP_TEST_APP_SERVER_MODE=#{mode} " <>
+        "SYMP_TEST_APP_SERVER_PID_FILE=#{shell_quote(trace <> ".pid")}"
+
     command = environment <> " " <> shell_quote(binary)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -190,12 +194,15 @@ defmodule SymphonyElixir.MVPAppServerTest do
       #!/bin/sh
       count=0
       trace_file="$SYMP_TEST_APP_SERVER_TRACE"
+      if [ -n "$SYMP_TEST_APP_SERVER_PID_FILE" ]; then
+        printf '%s\\n' "$$" > "$SYMP_TEST_APP_SERVER_PID_FILE"
+      fi
 
       busy_stream() {
         while :; do
           case "$SYMP_TEST_APP_SERVER_MODE" in
-            *noeol) printf '%10000s' 'x' ;;
-            *) printf '%s\\n' '{"id":999,"method":"test/progress","result":{}}' ;;
+            *noeol) printf '%10000s' 'x' || exit 0 ;;
+            *) printf '%s\\n' '{"id":999,"method":"test/progress","result":{}}' || exit 0 ;;
           esac
           sleep 0.002
         done
@@ -247,5 +254,18 @@ defmodule SymphonyElixir.MVPAppServerTest do
 
   defp shell_quote(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp assert_fake_app_server_stopped!(trace) do
+    if :os.type() == {:unix, :linux} do
+      pid = (trace <> ".pid") |> File.read!() |> String.trim()
+      assert Regex.match?(~r/^[1-9][0-9]*$/, pid)
+
+      assert Enum.any?(1..30, fn _ ->
+               Process.sleep(50)
+               not File.exists?("/proc/#{pid}")
+             end),
+             "fake app-server process #{pid} survived a closed port"
+    end
   end
 end
