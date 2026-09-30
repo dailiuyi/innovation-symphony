@@ -59,6 +59,21 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
+  @spec record_block(map(), String.t()) :: {:ok, map()} | {:error, String.t()}
+  def record_block(config, reason) do
+    with :ok <- File.mkdir_p(config["state_dir"]),
+         :ok <- File.mkdir_p(Path.dirname(config["status_file"])),
+         {:ok, state} <- read_state(config),
+         {:ok, pointer} <- read_pointer(config) do
+      update(config, Map.put(state, "pointer", pointer), System.system_time(:millisecond), "blocked", reason, %{
+        "phase" => "blocked"
+      })
+    end
+  end
+
+  @spec valid_response?(map(), map()) :: boolean()
+  def valid_response?(state, config), do: valid_state?(state, config)
+
   defp default_state do
     %{
       "paused" => false,
@@ -73,9 +88,52 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp read_state(config) do
-    with {:ok, locked?} <- maintenance_state(config) do
-      read_state_file(config, locked?)
+    with {:ok, locked?} <- maintenance_state(config),
+         {:ok, snapshots} <- read_audit(config) do
+      read_state_file(config, locked?, snapshots)
     end
+  end
+
+  defp read_audit(config) do
+    case File.read(audit_path(config)) do
+      {:error, :enoent} -> {:ok, []}
+      {:error, _} -> {:error, "watchdog audit unreadable; refusing to reset budget"}
+      {:ok, raw} -> decode_audit(raw, config)
+    end
+  end
+
+  defp decode_audit(raw, config) do
+    lines = if raw == "", do: [], else: raw |> String.split("\n") |> Enum.drop(-1)
+
+    snapshots =
+      Enum.with_index(lines, 1)
+      |> Enum.reduce_while([], fn {line, index}, acc ->
+        case decode_audit_line(line, config, index) do
+          {:ok, state} -> {:cont, [state | acc]}
+          :error -> {:halt, :invalid}
+        end
+      end)
+
+    if snapshots == :invalid or Enum.any?(lines, &(&1 == "")) or
+         (raw != "" and not String.ends_with?(raw, "\n")),
+       do: {:error, "invalid watchdog audit; refusing to reset budget"},
+       else: {:ok, Enum.reverse(snapshots)}
+  end
+
+  defp decode_audit_line(line, config, index) do
+    case Jason.decode(line) do
+      {:ok, %{"state" => state} = event} when is_map(state) ->
+        if valid_audit_event?(event, state, config, index), do: {:ok, state}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp valid_audit_event?(event, state, config, index) do
+    valid_state?(state, config) and state["history_count"] == index and
+      state["last_action"] == Map.take(event, ["at", "action", "reason"]) and
+      Enum.all?(~w(pointer process observed phase), fn key -> state[key] == event[key] end)
   end
 
   defp maintenance_state(config) do
@@ -86,25 +144,29 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
-  defp read_state_file(config, locked?) do
+  defp read_state_file(config, locked?, snapshots) do
     case File.read(state_path(config)) do
       {:ok, raw} ->
-        decode_state(raw, config, locked?)
+        decode_state(raw, config, locked?, snapshots)
 
       {:error, :enoent} ->
-        {:ok, default_state() |> Map.put("service", config["workflow"]) |> Map.put("paused", locked?)}
+        case List.last(snapshots) do
+          nil ->
+            {:ok, default_state() |> Map.put("service", config["workflow"]) |> Map.put("paused", locked?)}
+
+          latest ->
+            restore_state(config, latest, locked?)
+        end
 
       {:error, _} ->
         {:error, "watchdog state unreadable"}
     end
   end
 
-  defp decode_state(raw, config, locked?) do
+  defp decode_state(raw, config, locked?, snapshots) do
     case Jason.decode(raw) do
       {:ok, state} when is_map(state) ->
-        if valid_state?(state, config),
-          do: {:ok, Map.put(state, "paused", state["paused"] or locked?)},
-          else: invalid_state()
+        if valid_state?(state, config), do: reconcile_state(config, state, locked?, snapshots), else: invalid_state()
 
       _ ->
         invalid_state()
@@ -112,6 +174,34 @@ defmodule SymphonyElixir.Watchdog do
   end
 
   defp invalid_state, do: {:error, "invalid watchdog state; refusing to reset budget"}
+
+  defp reconcile_state(config, state, locked?, snapshots) do
+    count = state["history_count"]
+    recorded = if count > 0, do: Enum.at(snapshots, count - 1), else: nil
+
+    cond do
+      count > length(snapshots) or (count > 0 and state != recorded) ->
+        invalid_state()
+
+      count < length(snapshots) ->
+        restore_state(config, List.last(snapshots), locked?)
+
+      true ->
+        {:ok, Map.put(state, "paused", state["paused"] or locked?)}
+    end
+  end
+
+  defp restore_state(config, state, locked?) do
+    tmp = state_path(config) <> ".recovery.#{System.unique_integer([:positive])}"
+
+    with :ok <- File.write(tmp, Jason.encode!(state)),
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- File.rename(tmp, state_path(config)) do
+      {:ok, Map.put(state, "paused", state["paused"] or locked?)}
+    else
+      _ -> {:error, "cannot restore watchdog state from audit"}
+    end
+  end
 
   defp maintenance(config, state, now, paused) do
     file = config["maintenance_file"]
@@ -147,7 +237,21 @@ defmodule SymphonyElixir.Watchdog do
 
   defp valid_state_shape?(state) do
     is_boolean(state["paused"]) and is_map(state["versions"]) and
-      is_integer(state["history_count"]) and state["history_count"] >= 0
+      is_integer(state["history_count"]) and state["history_count"] >= 0 and
+      valid_state_display?(state) and
+      (is_nil(state["last_action"]) or valid_action?(state["last_action"]))
+  end
+
+  defp valid_state_display?(state) do
+    is_binary(state["phase"]) and Map.has_key?(state, "process") and
+      Map.has_key?(state, "observed") and Map.has_key?(state, "pointer") and
+      (is_nil(state["pointer"]) or is_map(state["pointer"])) and
+      (is_nil(state["observed"]) or is_map(state["observed"]))
+  end
+
+  defp valid_action?(action) do
+    is_map(action) and is_integer(action["at"]) and is_binary(action["action"]) and
+      is_binary(action["reason"])
   end
 
   defp valid_state_contents?(state) do
@@ -638,16 +742,25 @@ defmodule SymphonyElixir.Watchdog do
     }
 
     state = Map.update(state, "history_count", 1, &(&1 + 1))
+    evidence = Map.put(evidence, "state", state)
     tmp = state_path(config) <> ".tmp.#{System.unique_integer([:positive])}"
 
     with :ok <- File.write(audit_path(config), Jason.encode!(evidence) <> "\n", [:append]),
          :ok <- File.chmod(audit_path(config), 0o600),
+         :ok <- after_audit(config),
          :ok <- File.write(tmp, Jason.encode!(state)),
          :ok <- File.chmod(tmp, 0o600),
          :ok <- File.rename(tmp, state_path(config)) do
       {:ok, state}
     else
       _ -> {:error, "cannot persist watchdog evidence"}
+    end
+  end
+
+  defp after_audit(config) do
+    case Map.get(config, :after_audit) do
+      nil -> :ok
+      hook -> hook.()
     end
   end
 

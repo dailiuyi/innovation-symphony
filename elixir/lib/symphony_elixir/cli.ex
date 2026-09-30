@@ -23,6 +23,7 @@ defmodule SymphonyElixir.CLI do
   @spec main([String.t()]) :: no_return()
   def main(["--watchdog" | args]), do: System.halt(watchdog_main(args))
   def main(["--watchdog-once", command, path]), do: System.halt(watchdog_once(command, path))
+  def main(["--watchdog-once", "block", path, reason]), do: System.halt(watchdog_block_once(path, reason))
 
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
@@ -54,6 +55,21 @@ defmodule SymphonyElixir.CLI do
           else
             {:error, "internal entrypoint requires the service lock"}
           end
+
+        error ->
+          error
+      end
+
+    watchdog_finish(result)
+  end
+
+  defp watchdog_block_once(config_path, reason) do
+    result =
+      case SymphonyElixir.Watchdog.load_config(config_path) do
+        {:ok, config} ->
+          if service_lock_held?(config),
+            do: SymphonyElixir.Watchdog.record_block(config, reason),
+            else: {:error, "internal entrypoint requires the service lock"}
 
         error ->
           error
@@ -118,29 +134,59 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp watchdog_locked(config, command) do
-    with :ok <- File.mkdir_p(config["state_dir"]),
-         true <- File.regular?(config["controller"]),
-         {output, 0} <-
-           System.cmd(
-             "flock",
-             [
-               "-x",
-               Path.join(config["state_dir"], "start.lock"),
-               config["controller"],
-               "--watchdog-once",
-               command,
-               config["config_path"]
-             ],
-             stderr_to_stdout: true
-           ),
-         {:ok, state} when is_map(state) <- Jason.decode(String.trim(output)) do
-      {:ok, state}
-    else
-      false -> {:error, "controller executable missing"}
-      {:error, %Jason.DecodeError{}} -> {:error, "invalid watchdog child response"}
-      {:error, reason} -> {:error, reason}
-      {:ok, _} -> {:error, "invalid watchdog child response"}
-      {output, _} -> {:error, String.trim(output)}
+    result =
+      with :ok <- File.mkdir_p(config["state_dir"]),
+           true <- File.regular?(config["controller"]),
+           {output, 0} <-
+             System.cmd(
+               "flock",
+               [
+                 "-x",
+                 Path.join(config["state_dir"], "start.lock"),
+                 config["controller"],
+                 "--watchdog-once",
+                 command,
+                 config["config_path"]
+               ],
+               stderr_to_stdout: true
+             ),
+           {:ok, state} when is_map(state) <- Jason.decode(String.trim(output)),
+           true <- SymphonyElixir.Watchdog.valid_response?(state, config) do
+        {:ok, state}
+      else
+        false ->
+          if File.regular?(config["controller"]),
+            do: {:error, "invalid watchdog child response"},
+            else: {:error, "controller executable missing"}
+
+        {:error, %Jason.DecodeError{}} ->
+          {:error, "invalid watchdog child response"}
+
+        {:error, reason} ->
+          {:error, "watchdog lock or child failed: #{inspect(reason)}"}
+
+        {:ok, _} ->
+          {:error, "invalid watchdog child response"}
+
+        {_output, status} ->
+          {:error, "watchdog child failed with exit #{status}"}
+      end
+
+    case result do
+      {:error, reason} ->
+        report_block(config, reason)
+        result
+
+      _ ->
+        result
+    end
+  end
+
+  defp report_block(config, reason) do
+    self = :escript.script_name() |> to_string()
+
+    if File.regular?(self) do
+      System.cmd("flock", ["-x", Path.join(config["state_dir"], "start.lock"), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
     end
   end
 

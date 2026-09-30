@@ -6,6 +6,7 @@ defmodule SymphonyElixir.WatchdogTest do
   setup do
     root = Path.join(System.tmp_dir!(), "symphony-watchdog-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
+    File.chmod!(root, 0o700)
     state_dir = Path.join(root, "watchdog-state")
     workflow = Path.join(root, "WORKFLOW.md")
     pointer = Path.join(root, "current.json")
@@ -486,6 +487,59 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:error, ^reason} = Watchdog.step(ctx.config, "check")
   end
 
+  test "audit restores a launch recorded just before status replacement", ctx do
+    counter = :atomics.new(1, [])
+
+    crashing =
+      Map.put(ctx.config, :after_audit, fn ->
+        if :atomics.add_get(counter, 1, 1) == 2, do: raise("crash after audit")
+        :ok
+      end)
+
+    assert_raise RuntimeError, "crash after audit", fn -> Watchdog.step(crashing, "start") end
+
+    stale = ctx.config["status_file"] |> File.read!() |> Jason.decode!()
+    assert stale["history_count"] == 1
+    assert stale["versions"]["v1"]["attempts"] == 1
+    assert length(history(ctx.config)) == 2
+
+    assert {:ok, restored} = Watchdog.step(ctx.config, "status")
+    assert restored["history_count"] == 2
+    assert restored["process"]["pid"] > 0
+    assert File.exists?("/proc/#{restored["process"]["pid"]}")
+    assert {:ok, checked} = Watchdog.step(ctx.config, "check")
+    assert checked["process"]["pid"] == restored["process"]["pid"]
+    assert checked["versions"]["v1"]["attempts"] == 1
+    assert_audit_complete(ctx.config)
+  end
+
+  test "missing status recovers from audit, while malformed audit blocks", ctx do
+    assert {:ok, paused} = Watchdog.step(ctx.config, "pause")
+    File.rm!(ctx.config["status_file"])
+    assert {:ok, restored} = Watchdog.step(ctx.config, "status")
+    assert restored["history_count"] == paused["history_count"]
+    assert restored["paused"]
+
+    audit = Path.join(ctx.config["state_dir"], "history.jsonl")
+    File.write!(audit, "not json\n", [:append])
+    assert {:error, reason} = Watchdog.step(ctx.config, "check")
+    assert reason =~ "invalid watchdog audit"
+    assert File.read!(ctx.config["status_file"]) |> Jason.decode!() |> Map.fetch!("paused")
+  end
+
+  test "locked CLI blockage is auditable and mismatched valid status blocks", ctx do
+    assert {:ok, blocked} = Watchdog.record_block(ctx.config, "controller executable missing")
+    assert Watchdog.valid_response?(blocked, ctx.config)
+    refute Watchdog.valid_response?(%{}, ctx.config)
+    assert blocked["history_count"] == 1
+    assert List.last(history(ctx.config))["reason"] == "controller executable missing"
+
+    File.write!(ctx.config["status_file"], Jason.encode!(%{blocked | "phase" => "running"}))
+    assert {:error, reason} = Watchdog.step(ctx.config, "start")
+    assert reason =~ "refusing to reset budget"
+    assert length(history(ctx.config)) == 1
+  end
+
   test "unreadable state and unverifiable maintenance lock fail closed", ctx do
     File.mkdir_p!(ctx.config["state_dir"])
     File.mkdir_p!(ctx.config["status_file"])
@@ -505,7 +559,9 @@ defmodule SymphonyElixir.WatchdogTest do
     File.rmdir!(ctx.config["maintenance_file"])
 
     File.mkdir_p!(Path.join(ctx.config["state_dir"], "history.jsonl"))
-    assert {:error, "cannot persist watchdog evidence"} = Watchdog.step(ctx.config, "pause")
+
+    assert {:error, "watchdog audit unreadable; refusing to reset budget"} =
+             Watchdog.step(ctx.config, "pause")
   end
 
   test "a stored budget survives a missing maintenance file and explicit resume", ctx do
@@ -677,6 +733,67 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   @tag timeout: 120_000
+  test "a packaged fixed installation restarts without interactive credential input", ctx do
+    {build, 0} =
+      System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"],
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert build =~ "symphony" or build == ""
+    controller = Path.expand("bin/symphony")
+    install = Path.join([ctx.root, "releases", "packaged"])
+    File.mkdir_p!(Path.join(install, "bin"))
+    executable = Path.join(install, "bin/symphony")
+    File.cp!(controller, executable)
+    File.chmod!(executable, 0o755)
+
+    File.write!(
+      ctx.config["workflow"],
+      """
+      ---
+      tracker:
+        kind: github
+        provider:
+          repo: example/example
+          token: $GITHUB_TOKEN
+        required_labels: [ready]
+        active_states: [open]
+        terminal_states: [closed]
+      polling:
+        interval_ms: 600000
+      workspace:
+        root: #{Path.join(ctx.root, "workspaces")}
+      mvp:
+        enabled: false
+      ---
+      Offline packaged runner probe.
+      """
+    )
+
+    config = %{ctx.config | "controller" => controller, "backoff_ms" => 50}
+    credential_info = File.stat!(config["credential_file"])
+    assert credential_info.uid == File.stat!("/proc/self").uid
+    assert Bitwise.band(credential_info.mode, 0o077) == 0
+    assert Bitwise.band(File.stat!(ctx.root).mode, 0o077) == 0
+    pointer!(config, "packaged", install)
+    assert {:ok, first} = Watchdog.step(config, "start")
+    assert first["process"]["install"] == install
+    first_pid = first["process"]["pid"]
+    assert File.read!("/proc/#{first_pid}/environ") =~ "GITHUB_TOKEN=test-token"
+    kill_group(first_pid, config["workflow"], "-KILL")
+    wait_absent(first_pid)
+    Process.sleep(60)
+
+    assert {:ok, second} = Watchdog.step(config, "check")
+    assert second["process"]["pid"] != first_pid
+    assert second["versions"]["packaged"]["attempts"] == 2
+    assert File.read!("/proc/#{second["process"]["pid"]}/environ") =~ "GITHUB_TOKEN=test-token"
+    refute File.read!(config["status_file"]) =~ "test-token"
+    refute File.read!(Path.join(config["state_dir"], "history.jsonl")) =~ "test-token"
+  end
+
+  @tag timeout: 120_000
   test "packaged manual starts share a lock; killing the watchdog leaves its runner alive", ctx do
     {output, status} =
       System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"],
@@ -700,6 +817,9 @@ defmodule SymphonyElixir.WatchdogTest do
       System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
 
     assert missing =~ "controller executable missing"
+    missing_state = config["status_file"] |> File.read!() |> Jason.decode!()
+    assert missing_state["last_action"]["reason"] == "controller executable missing"
+    assert List.last(history(config))["reason"] == "controller executable missing"
 
     child = Path.join(ctx.root, "child-controller")
     File.write!(child, "#!/bin/sh\nprintf '%s\\n' 'child failed'\nexit 7\n")
@@ -709,7 +829,10 @@ defmodule SymphonyElixir.WatchdogTest do
     {failed, 1} =
       System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
 
-    assert failed =~ "child failed"
+    assert failed =~ "watchdog child failed with exit 7"
+
+    assert Jason.decode!(File.read!(config["status_file"]))["last_action"]["reason"] ==
+             "watchdog child failed with exit 7"
 
     File.write!(child, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n")
 
@@ -717,6 +840,7 @@ defmodule SymphonyElixir.WatchdogTest do
       System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
 
     assert malformed =~ "watchdog: invalid watchdog child response"
+    assert List.last(history(config))["reason"] == "invalid watchdog child response"
 
     File.write!(child, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
 
@@ -724,6 +848,14 @@ defmodule SymphonyElixir.WatchdogTest do
       System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
 
     assert wrong_shape =~ "watchdog: invalid watchdog child response"
+
+    File.write!(child, "#!/bin/sh\nprintf '%s\\n' '{}'\n")
+
+    {empty_object, 1} =
+      System.cmd(controller, ["--watchdog", "status", config_path], stderr_to_stdout: true)
+
+    assert empty_object =~ "watchdog: invalid watchdog child response"
+    assert List.last(history(config))["reason"] == "invalid watchdog child response"
     File.write!(config_path, Jason.encode!(config))
 
     {usage, 1} = System.cmd(controller, ["--watchdog"], stderr_to_stdout: true)
@@ -791,8 +923,8 @@ defmodule SymphonyElixir.WatchdogTest do
         ["-x", lock_path, controller, "--watchdog-once", "status", config_path]
       )
 
-    assert Jason.decode!(locked)["phase"] == "new"
-    refute File.exists?(config["status_file"])
+    assert Jason.decode!(locked)["phase"] == "blocked"
+    assert File.exists?(config["status_file"])
 
     tasks =
       for _ <- 1..2,
@@ -961,13 +1093,14 @@ defmodule SymphonyElixir.WatchdogTest do
 
   defp change_state(config, fun) do
     path = Path.join(config["state_dir"], "status.json")
-
-    path
-    |> File.read!()
-    |> Jason.decode!()
-    |> fun.()
-    |> Jason.encode!()
-    |> then(&File.write!(path, &1))
+    state = path |> File.read!() |> Jason.decode!() |> fun.()
+    File.write!(path, Jason.encode!(state))
+    audit = Path.join(config["state_dir"], "history.jsonl")
+    entries = audit |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+    [last | earlier] = Enum.reverse(entries)
+    last = last |> Map.merge(Map.take(state, ~w(pointer process observed phase))) |> Map.put("state", state)
+    updated = Enum.reverse([last | earlier])
+    File.write!(audit, Enum.map_join(updated, "", &(Jason.encode!(&1) <> "\n")))
   end
 
   defp kill_group(pid, workflow, signal \\ "-TERM") do
@@ -988,6 +1121,9 @@ defmodule SymphonyElixir.WatchdogTest do
   defp wait_absent(pid, remaining) do
     case File.read("/proc/#{pid}/stat") do
       {:error, :enoent} ->
+        :ok
+
+      {:error, :esrch} ->
         :ok
 
       {:ok, stat} ->
