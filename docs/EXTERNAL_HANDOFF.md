@@ -105,3 +105,21 @@ IS-040 决策记录时仅完成合同，未修改执行代码或恢复已耗尽�
 有效拒绝来自前序审计操作且中间 coder 再次中断时，续跑核对完整前序授权、原回执摘要、完成链与保留的候选／Review／确认评论，才能复用原拒绝作为修复反馈。此路径不允许同一被拒候选空证据重审。
 
 2026-09-30 安装前源码门禁 `make all` 全部通过：611 项测试、0 失败、6 项既有真实平台 E2E 未启用，原覆盖率 100%，构建、格式、公开规格、严格 Credo 与 Dialyzer 通过，类型分析 0 错误。没有新增 skip、排除模块或下调阈值；依赖安装打印的既有安全公告不表示本轮完成依赖升级。按用户本轮不用团队模式的要求，由主助手完成源码简化和逐路径核验，未启动团队审查；真实 GH-5 仍由新的独立 Sol 6.1 Review 判定。完整日志 `.local/external-handoff/full.log`。
+
+北京时间 2026-09-30 23:35，固定控制器 `626b2c2fc7b28d91883527b0fce55e0e5a4322f2` 已并列编译安装并切换运行，escript SHA256 为 `885f2b501a54d76b93ce3e5cd856cf6c3a9f17d6e54cb53fe15b675e499f7f81`。旧服务在空闲且身份核验后优雅停止；新主服务 PID `1145833`、start_ticks `1218135`、cwd 为该 release 的 `elixir/`，状态 API HTTP 200。切换前后 1618 项状态和证据指纹一致，主入口仍暂停新领取，真实预检无其他可领取 Issue。
+
+原 GH-5 于北京时间 23:36:07 通过审计操作 `gh5-draft-130` 续跑，第 47 次实际 Sol 6.1 coder 于 23:36:08 开始；恢复 supervisor PID `1145995`、start_ticks `1226463`。两小时活动窗口实际截止北京时间 2026-10-01 01:36:07，追加值在派发时核算并保存在 `dispatch-budget.json` 和控制器授权中，原开始时间与其他计数上限不变。操作目录 `/var/tmp/innovation-symphony-v0-rerun1/operator-external-gh5-1790782447305090100` 保存原回执、工作区、基线、运行配置快照和模型执行记录；旧候选 `d6e051c88472035944fc82eb78d1a13cf3350fb0` 的四个未提交文件完整保留。本条只确认安装和真实启动，尚不宣告 PR 已创建或 WD-1 通过。
+
+### 原 GH-5 自动 Draft 交付结果
+
+北京时间 2026-10-01 01:00:25，控制器自动创建 [Draft PR #6](https://github.com/dailiuyi/innovation-symphony/pull/6)，候选为 `b465fbc84c9a2c19356d979e2df0913fe88ec364`，冻结 base 仍为 `11acc1b8b40d471247b60b55d92239ea6ae81a1d`。本次从已授权续跑开始，候选修改、提交、正式检查、独立 Review 和 PR 发布均由控制器及其角色完成；操作者没有手工修补 GH-5 候选或代替控制器创建 PR。
+
+第 47 次 coder 在同一隔离会话内完成修复和自检。它纠正了打包应用加载覆盖工作流、测试 HTTPS 证书链和进程退出时 `/proc` 返回 `ESRCH` 的竞态，保留全部失败日志；并行检查造成的临时 Git 目录碰撞和资源错误改由串行、独立临时目录及重编译解决，没有改变冻结门禁。控制器随后对同一提交正式运行两组检查：候选 519 项、基线 478 项，均 0 失败、6 项既有跳过、0 排除；候选覆盖率 100%，格式、公开规格、严格 Credo、Dialyzer 和打包均通过。Coder 的便利命令 `make all` 曾在离线 Hex 注册缓存缺失时停止于 setup；这项失败如实保留，正式门禁使用预置依赖并全部通过，不将该命令声称为通过。
+
+北京时间 00:50:11，新的只读 Sol 6.1 reviewer 开始独立评审，第 48 次实际模型调用使用当前六字段阻塞 schema。最终 WD-2 至 WD-7 均 `adequate=true`；WD-1 为唯一阻塞，明确分类为 `external_condition / verification`，没有代码缺陷或待决范围。整体 `approved=false` 保留，真实 GitHub/Codex 无人值守认证恢复没有执行、没有判通过。不可变交接记录 `external-1790787621719-2NHignSjG-EN` 保存接手责任、凭据来源与权限、注入和固定安装、正常及强制退出恢复、真实认证可用性及持久数据保留的脱敏证据要求。
+
+原回执停在 `awaiting_external / :mvp_awaiting_external`，`external_delivery.status=delivered`，累计返工仍 19、实际模型尝试 48，20 轮及前 19 轮历史保留。发布意图在远端写入前持久化；候选、完整检查报告及日志、严格 Review 和交接记录摘要均已核验。统一操作完成链与最终回执摘要匹配，执行锁释放，恢复 supervisor 已退出，原工作区干净；主服务仍为固定 `626b2c2`，进程身份和状态 API 正常，新领取保持暂停。
+
+北京时间 01:08:36 远端核验：PR 开放且 `draft=true`，仓库、分支、base、候选 SHA、PR 身份和描述均与发布意图一致，Issue #5 仍开放。描述明确“等待真实外部验收，最终验收尚未通过”，不自动关闭 Issue。[GitHub CI](https://github.com/dailiuyi/innovation-symphony/actions/runs/36748319794) 的 `make-all` 于 01:06:17 成功；运行的 `head_sha` 已独立核对为同一候选。完整核验结果保存在 `.local/external-draft/final-local-audit.json`、`final-remote-audit.json` 和 `final-ci-audit.json`；PR 已附加到当前聊天。
+
+当前完成的是原 GH-5 自主到 Draft PR 的交付路径；WD-1、人工验收、合并和看门狗候选安装仍未完成。控制器源码已本地提交和 WSL 安装，未推送本地 main；仅 GH-5 候选分支经控制器发布。待授权操作者补齐真实证据后，通过原审计入口重新完整检查和独立 Review，全部通过再更新同一 Draft PR。
