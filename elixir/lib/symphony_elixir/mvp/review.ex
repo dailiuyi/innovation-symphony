@@ -12,7 +12,7 @@ defmodule SymphonyElixir.Mvp.Review do
     "additionalProperties" => false,
     "required" => ["acceptance", "tests", "assertion_strength", "failure_sensitivity", "adequate"],
     "properties" => %{
-      "acceptance" => %{"type" => "string"},
+      "acceptance" => %{"type" => "string", "description" => "Full acceptance ID and behavior. Every related blocker must copy this exact string verbatim."},
       "tests" => %{"type" => "array", "items" => %{"type" => "string"}},
       "assertion_strength" => %{"type" => "string"},
       "failure_sensitivity" => %{"type" => "string"},
@@ -25,7 +25,7 @@ defmodule SymphonyElixir.Mvp.Review do
     "additionalProperties" => false,
     "required" => ["acceptance", "kind", "reason", "required_evidence", "handoff"],
     "properties" => %{
-      "acceptance" => @nonempty_string,
+      "acceptance" => Map.put(@nonempty_string, "description", "Copy the entire acceptance string verbatim from one criteria entry with adequate=false. Never paraphrase or combine entries."),
       "kind" => %{"type" => "string", "enum" => ["code_defect", "external_condition"]},
       "reason" => @nonempty_string,
       "required_evidence" => %{"type" => "string"},
@@ -59,6 +59,81 @@ defmodule SymphonyElixir.Mvp.Review do
       _ -> {:error, :mvp_invalid_review}
     end
   end
+
+  @doc "Instructions for the semantic constraints that JSON Schema alone cannot express."
+  @spec protocol_instructions() :: String.t()
+  def protocol_instructions do
+    "Every blockers[i].acceptance must copy the ENTIRE criteria[j].acceptance string verbatim, " <>
+      "including its ID, behavior, punctuation and whitespace, from one entry with adequate=false. " <>
+      "Do not paraphrase, shorten, or combine multiple acceptance entries into a blocker title. " <>
+      "When one defect affects multiple criteria, emit a separate blocker for each criterion using its exact acceptance string. " <>
+      "Every inadequate criterion must have at least one matching blocker; adequate criteria must have none. " <>
+      "Keep the defect explanation in reason. An approved review requires every criterion adequate=true and blockers=[]."
+  end
+
+  @doc "Explain an invalid full review without repairing, extracting, or accepting any part of it."
+  @spec validation_errors(String.t(), non_neg_integer()) :: [map()]
+  def validation_errors(text, limit) do
+    case Jason.decode(text) do
+      {:ok, value} -> review_errors(value, limit)
+      {:error, _} -> [%{"path" => "$", "code" => "invalid_json", "message" => "Return exactly one JSON object, without prose, fences or trailing content."}]
+    end
+  end
+
+  defp review_errors(value, limit) do
+    cond do
+      valid?(value, limit) -> []
+      limit > 0 and linkage_fields?(value) -> linkage_errors(value)
+      true -> schema_errors()
+    end
+  end
+
+  defp linkage_fields?(value) when is_map(value) do
+    is_list(value["criteria"]) and value["criteria"] != [] and Enum.all?(value["criteria"], &valid_criterion?/1) and
+      is_list(value["blockers"]) and Enum.all?(value["blockers"], &valid_blocker?/1)
+  end
+
+  defp linkage_fields?(_), do: false
+
+  defp linkage_errors(value) do
+    inadequate = Enum.reject(value["criteria"], & &1["adequate"]) |> Enum.map(& &1["acceptance"])
+    references = Enum.map(value["blockers"], & &1["acceptance"])
+
+    unmatched =
+      value["blockers"]
+      |> Enum.with_index()
+      |> Enum.reject(fn {blocker, _} -> blocker["acceptance"] in inadequate end)
+      |> Enum.map(fn {blocker, index} ->
+        %{
+          "path" => "blockers[#{index}].acceptance",
+          "code" => "unmatched_acceptance",
+          "actual" => blocker["acceptance"],
+          "expected" => inadequate,
+          "message" => "Copy one inadequate criterion's full acceptance string verbatim; do not combine or paraphrase criteria."
+        }
+      end)
+
+    missing =
+      value["criteria"]
+      |> Enum.with_index()
+      |> Enum.filter(fn {criterion, _} -> not criterion["adequate"] and criterion["acceptance"] not in references end)
+      |> Enum.map(fn {criterion, index} ->
+        %{
+          "path" => "criteria[#{index}].acceptance",
+          "code" => "missing_blocker",
+          "expected" => criterion["acceptance"],
+          "message" => "Add a blocker whose acceptance exactly equals this inadequate criterion's acceptance."
+        }
+      end)
+
+    case unmatched ++ missing do
+      [] -> schema_errors()
+      errors -> errors
+    end
+  end
+
+  defp schema_errors,
+    do: [%{"path" => "$", "code" => "invalid_review_schema", "message" => "Match the required schema and approval rules exactly; a valid JSON document alone is insufficient."}]
 
   @doc "Returns the conservative next step for a parsed review. Missing classification means code repair."
   @spec disposition(map()) :: :approved | :repair_code | :awaiting_external

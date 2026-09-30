@@ -77,6 +77,43 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
     assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1
   end
 
+  test "review retries report exact linkage errors and preserve the invalid raw output", %{context: context} do
+    criterion = %{
+      "acceptance" => "WD-3: prevent duplicate starts",
+      "tests" => [],
+      "assertion_strength" => "Missing ordinary CLI assertion",
+      "failure_sensitivity" => "Duplicate start could pass",
+      "adequate" => false
+    }
+
+    blocker = %{"acceptance" => "WD-3, WD-7: concurrency", "kind" => "code_defect", "reason" => "Ordinary CLI bypasses the lock", "required_evidence" => "", "handoff" => "coder"}
+    invalid = Jason.encode!(%{"approved" => false, "summary" => "Repair code", "criteria" => [criterion], "blockers" => [blocker]})
+    valid = Jason.encode!(%{"approved" => false, "summary" => "Repair code", "criteria" => [criterion], "blockers" => [%{blocker | "acceptance" => criterion["acceptance"]}]})
+
+    agent = fn _, prompt, _, _ ->
+      count = Receipt.read(context.receipt)["recovery"]["agent_attempts"]
+
+      if count == 2 do
+        assert prompt =~ "blockers[0].acceptance"
+        assert prompt =~ "unmatched_acceptance"
+        assert prompt =~ "missing_blocker"
+        assert prompt =~ "WD-3: prevent duplicate starts"
+        assert prompt =~ "ENTIRE"
+        assert prompt =~ invalid
+      end
+
+      {:ok, %{output_text: if(count == 1, do: invalid, else: valid)}}
+    end
+
+    context = %{context | limit: 20, opts: [agent: agent]}
+    assert {:ok, %{output_text: ^valid}} = Attempts.run(context, :reviewer, "review", fn -> :ok end)
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 2
+    assert File.read!(Path.join(context.workspace, "agent-attempt-1/output.txt")) == invalid
+    errors = Path.join(context.workspace, "agent-attempt-1/validation-errors.json") |> File.read!() |> Jason.decode!()
+    assert hd(errors)["code"] == "unmatched_acceptance"
+    assert File.read!(Path.join(context.workspace, "agent-attempt-2/validation-errors.json")) == "[]"
+  end
+
   test "transient coder retries preserve partial work and raw protocol messages", %{context: context} do
     file = Path.join(context.workspace, "partial.txt")
 

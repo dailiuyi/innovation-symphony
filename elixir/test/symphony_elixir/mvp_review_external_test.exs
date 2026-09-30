@@ -107,6 +107,39 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert Review.valid_external_conditions?([external])
   end
 
+  test "diagnostics identify paraphrased and combined blocker references without accepting the review" do
+    criteria = [criterion("WD-3: prevent duplicate starts", false), criterion("WD-7: effective assertions", false)]
+    invalid = review(criteria, [blocker("WD-3, WD-7: concurrency", "code_defect")])
+    raw = Jason.encode!(invalid)
+    assert {:error, :mvp_invalid_review} = Review.parse(raw, 20)
+    errors = Review.validation_errors(raw, 20)
+    assert Enum.map(errors, & &1["code"]) == ["unmatched_acceptance", "missing_blocker", "missing_blocker"]
+    assert hd(errors)["path"] == "blockers[0].acceptance"
+    assert hd(errors)["actual"] == "WD-3, WD-7: concurrency"
+    assert hd(errors)["expected"] == Enum.map(criteria, & &1["acceptance"])
+    assert List.last(errors)["path"] == "criteria[1].acceptance"
+    corrected = review(criteria, Enum.map(criteria, &blocker(&1["acceptance"], "code_defect")))
+    assert {:ok, ^corrected} = Review.parse(Jason.encode!(corrected), 20)
+    assert Review.validation_errors(Jason.encode!(corrected), 20) == []
+    assert Review.protocol_instructions() =~ "ENTIRE"
+    assert Review.protocol_instructions() =~ "separate blocker for each criterion"
+  end
+
+  test "protocol diagnostics remain total for malformed JSON, schema shapes and contradictory approvals" do
+    assert [%{"code" => "invalid_json"}] = Review.validation_errors("prose {\"approved\":true}", 0)
+
+    for raw <- ["null", "[]", ~s({"criteria":null}), ~s({"criteria":[],"blockers":[]}), ~s({"criteria":[{}],"blockers":[]})] do
+      assert [%{"code" => "invalid_review_schema"}] = Review.validation_errors(raw, 2)
+    end
+
+    contradictory = review([criterion("A1", false)], [blocker("A1", "code_defect")], true)
+    assert [%{"code" => "invalid_review_schema"}] = Review.validation_errors(Jason.encode!(contradictory), 2)
+    malformed = review([criterion("A1", false)], [blocker("A1", "external_condition", %{"handoff" => ""})])
+    assert [%{"code" => "invalid_review_schema"}] = Review.validation_errors(Jason.encode!(malformed), 2)
+    legacy = ~s({"approved":true,"summary":"passed"})
+    assert Review.validation_errors(legacy, 0) == []
+  end
+
   defp review(criteria, blockers, approved \\ false) do
     %{"approved" => approved, "summary" => "Review result", "criteria" => criteria, "blockers" => blockers}
   end

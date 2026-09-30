@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Mvp.{Commands, ExecutionSandbox, Executor, Receipt, Recovery}
+  alias SymphonyElixir.Mvp.{Commands, ExecutionSandbox, Executor, Receipt, Recovery, ReviewProtocol}
 
   @url "https://github.com/owner/repo/pull/42"
 
@@ -186,6 +186,212 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
     assert {:error, :mvp_recovery_not_enabled} =
              Executor.resume_recovery(context, "unused", %{})
   end
+
+  test "audited protocol resume reruns full checks and a fresh review without resetting or extending resources" do
+    {context, settings, before} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = authorization("protocol-resume", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+    raw = File.read!(context.receipt)
+    old_output = File.read!(Path.join(List.last(before["rounds"])["evidence"], "agent-attempt-4/output.txt"))
+    assert {:ok, @url} = Executor.resume_review(resume, digest(raw), auth)
+    after_data = Receipt.read(context.receipt)
+    assert after_data["recovery"]["policy"] == before["recovery"]["policy"]
+    assert after_data["recovery"]["started_at"] == before["recovery"]["started_at"]
+    assert after_data["recovery"]["agent_attempts"] == before["recovery"]["agent_attempts"] + 1
+    assert after_data["rework_count"] == before["rework_count"]
+    assert after_data["candidate_sha"] == before["candidate_sha"]
+    assert length(calls(context, :coder)) == 1
+    reviewer = List.last(calls(context, :reviewer))
+    assert reviewer.prompt =~ "ENTIRE"
+    assert reviewer.prompt =~ "unmatched_acceptance"
+    assert reviewer.prompt =~ old_output
+    directory = operation_dir(context, "protocol-resume")
+    audit = Path.join(directory, "authorization.json") |> File.read!() |> Jason.decode!()
+    assert audit["original_recovery_policy"] == audit["effective_recovery_policy"]
+    assert audit["receipt_sha256"] == digest(raw)
+    assert length(audit["review_protocol_evidence"]["attempts"]) == 3
+    assert length(audit["review_protocol_evidence"]["checks"]) == length(settings.checks)
+    assert Enum.all?(1..length(settings.checks), &File.exists?(Path.join(directory, "check-#{&1}.json")))
+    assert File.read!(Path.join(List.last(before["rounds"])["evidence"], "agent-attempt-4/output.txt")) == old_output
+    assert length(calls(context, :publish)) == 1
+    assert File.exists?(Path.join(directory, "completion.json"))
+  end
+
+  test "protocol resume rejects disabled recovery, changed binding, extra time and exhausted budgets" do
+    disabled = %{settings: %{recovery: %{enabled: false}}}
+    assert {:error, :mvp_recovery_not_enabled} = Executor.resume_review(disabled, "unused", %{})
+    {context, settings, before} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = authorization("protocol-denied", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+    raw = File.read!(context.receipt)
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_review(resume, String.duplicate("0", 64), auth)
+    extended = Map.put(auth, "wall_budget_extension_ms", 1)
+    assert {:error, :mvp_review_protocol_budget_change} = Executor.resume_review(resume, digest(raw), extended)
+    wrong_workspace = %{auth | "workspace_digest" => "wrong"}
+    workspace_result = Executor.resume_review(resume, digest(raw), wrong_workspace)
+    assert {:error, :mvp_recovery_workspace_digest_mismatch} = workspace_result
+    changed = put_in(resume.settings.checks, [["false"]])
+    assert {:error, :mvp_resume_binding_mismatch} = Executor.resume_review(changed, digest(raw), auth)
+
+    {:ok, started, _} = DateTime.from_iso8601(before["recovery"]["started_at"])
+    expired = DateTime.to_unix(started, :millisecond) + settings.recovery.max_elapsed_ms
+    timed_out = %{resume | opts: Keyword.put(resume.opts, :now_ms, fn -> expired end)}
+    assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_review(timed_out, digest(raw), auth)
+    exhausted = put_in(before, ["recovery", "agent_attempts"], before["recovery"]["policy"]["max_agent_attempts"])
+    write_receipt!(context, exhausted)
+    exhausted_raw = File.read!(context.receipt)
+    assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_review(resume, digest(exhausted_raw), auth)
+    assert File.read!(context.receipt) == exhausted_raw
+    refute File.exists?(Path.join(context.receipt <> ".evidence", "operator-rechecks"))
+    assert length(calls(context, :reviewer)) == 3
+  end
+
+  test "protocol evidence refuses missing, tampered and valid prior outputs instead of rewriting them" do
+    {context, settings, data} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    assert {:ok, _} = ReviewProtocol.evidence(resume, data)
+    missing_events = put_in(data, ["recovery", "events"], [])
+    assert {:error, :mvp_review_protocol_evidence_mismatch} = ReviewProtocol.evidence(resume, missing_events)
+    rejected = List.update_at(data["rounds"], 0, &Map.put(&1, "review", %{"approved" => false}))
+    assert {:error, :mvp_review_already_rejected} = ReviewProtocol.evidence(resume, %{data | "rounds" => rejected})
+    directory = List.last(data["rounds"])["evidence"]
+
+    for {relative, replacement} <- [
+          {"agent-attempt-4/output.txt", Jason.encode!(review(true))},
+          {"agent-attempt-4/outcome.json", "{}"},
+          {"agent-attempt-4/prompt.txt", :missing},
+          {"check-1.json", "{}"},
+          {"check-1.log", :missing}
+        ] do
+      path = Path.join(directory, relative)
+      raw = File.read!(path)
+      if replacement == :missing, do: File.rm!(path), else: File.write!(path, replacement)
+      assert {:error, :mvp_review_protocol_evidence_mismatch} = ReviewProtocol.evidence(resume, data)
+      File.write!(path, raw)
+    end
+
+    assert {:ok, _} = ReviewProtocol.evidence(resume, data)
+  end
+
+  test "a repeated protocol failure resumes from completed operator checks and retains the audit chain" do
+    {context, settings, before} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    original = mock_agent(context, :protocol)
+    invalid = Jason.encode!(%{"approved" => false, "summary" => "Still invalid", "criteria" => []})
+
+    agent = fn workspace, prompt, issue, opts ->
+      original.(workspace, prompt, issue, opts)
+      {:ok, %{output_text: invalid}}
+    end
+
+    first = %{resume | opts: Keyword.put(resume.opts, :agent, agent)}
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = authorization("protocol-first", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+    assert {:error, :mvp_invalid_review} = Executor.resume_review(first, digest(File.read!(context.receipt)), auth)
+    stopped = Receipt.read(context.receipt)
+    assert {:ok, evidence} = ReviewProtocol.evidence(resume, stopped)
+    assert hd(evidence["checks"])["path"] == Path.join(operation_dir(context, "protocol-first"), "check-1.json")
+
+    second_auth = %{auth | "id" => "protocol-second", "predecessor" => "protocol-first"}
+    assert {:ok, @url} = Executor.resume_review(resume, digest(File.read!(context.receipt)), second_auth)
+    after_data = Receipt.read(context.receipt)
+    assert after_data["recovery"]["policy"] == before["recovery"]["policy"]
+    assert after_data["recovery"]["agent_attempts"] == before["recovery"]["agent_attempts"] + 4
+    assert length(calls(context, :coder)) == 1
+    head = Path.join(context.receipt <> ".evidence", "operator-rechecks/head.json") |> File.read!() |> Jason.decode!()
+    assert head["id"] == "protocol-second"
+    assert head["final_receipt_sha256"] == digest(File.read!(context.receipt))
+  end
+
+  test "protocol resume repairs code first then parks a genuine external condition with a concrete handoff" do
+    {context, settings, before} = protocol_blocked!()
+    resume = protocol_context(context, settings)
+    original = mock_agent(context, :protocol)
+
+    agent = fn workspace, prompt, issue, opts ->
+      result = original.(workspace, prompt, issue, opts)
+
+      case agent_role(opts) do
+        :coder ->
+          File.write!(Path.join(workspace, "candidate.txt"), "repaired assertion")
+          result
+
+        :reviewer ->
+          repaired = length(calls(context, :reviewer)) > 4
+          {:ok, %{output_text: Jason.encode!(mixed_protocol_review(repaired))}}
+      end
+    end
+
+    resume = %{resume | opts: Keyword.put(resume.opts, :agent, agent)}
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = authorization("protocol-code-first", workspace_sha) |> Map.delete("wall_budget_extension_ms")
+
+    assert {:error, {:mvp_awaiting_external, handoff_id}} =
+             Executor.resume_review(resume, digest(File.read!(context.receipt)), auth)
+
+    after_data = Receipt.read(context.receipt)
+    assert after_data["status"] == "awaiting_external"
+    assert after_data["external_handoff"]["id"] == handoff_id
+    assert File.exists?(after_data["external_handoff"]["record_path"])
+    assert after_data["recovery"]["policy"] == before["recovery"]["policy"]
+    assert after_data["rework_count"] == before["rework_count"] + 1
+    refute after_data["candidate_sha"] == before["candidate_sha"]
+    assert length(calls(context, :coder)) == 2
+    assert length(calls(context, :reviewer)) == 5
+    refute List.last(calls(context, :reviewer)).prompt =~ "Previous protocol-invalid review"
+    assert calls(context, :publish) == []
+    assert File.exists?(Path.join(operation_dir(context, "protocol-code-first"), "completion.json"))
+  end
+
+  defp mixed_protocol_review(repaired) do
+    acceptance = hd(review(false)["criteria"])["acceptance"]
+    external_acceptance = "Unattended startup with authorized credentials on the real host"
+    criterion = hd(review(repaired)["criteria"])
+    external_criterion = %{criterion | "acceptance" => external_acceptance, "adequate" => false}
+
+    external = %{
+      "acceptance" => external_acceptance,
+      "kind" => "external_condition",
+      "reason" => "The target host credential has not been provided",
+      "required_evidence" => "A real unattended start log using the authorized target account",
+      "handoff" => "Host operator provides credentials and records the start log"
+    }
+
+    code = %{"acceptance" => acceptance, "kind" => "code_defect", "reason" => "Repair the assertion", "required_evidence" => "", "handoff" => "coder"}
+    blockers = if repaired, do: [external], else: [code, external]
+
+    %{
+      "approved" => false,
+      "summary" => "Code repair precedes host evidence",
+      "criteria" => [criterion, external_criterion],
+      "blockers" => blockers
+    }
+  end
+
+  defp protocol_blocked! do
+    context = context!()
+    settings = settings([["true"], ["true"]])
+    original = mock_agent(context, :protocol)
+
+    invalid =
+      review(false)
+      |> Map.put("blockers", [%{"acceptance" => "combined title", "kind" => "code_defect", "reason" => "Repair an assertion", "required_evidence" => "", "handoff" => "coder"}])
+      |> Jason.encode!()
+
+    agent = fn workspace, prompt, issue, opts ->
+      result = original.(workspace, prompt, issue, opts)
+      if agent_role(opts) == :reviewer, do: {:ok, %{output_text: invalid}}, else: result
+    end
+
+    opts = options(context, :protocol) |> Keyword.put(:agent, agent) |> Keyword.put(:on_message, fn _ -> :ok end)
+    assert {:error, :mvp_invalid_review} = run(context, settings, opts)
+    {context, settings, Receipt.read(context.receipt)}
+  end
+
+  defp protocol_context(context, settings),
+    do: resume_context(context, settings, options(context, :protocol) |> Keyword.put(:on_message, fn _ -> :ok end))
 
   test "resume rejects an open coder round when no persisted rejected review remains" do
     context = context!()
