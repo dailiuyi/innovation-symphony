@@ -179,8 +179,8 @@ defmodule SymphonyElixir.CLI do
         {"watchdog: workflow state directory binding unreadable\n", 1} ->
           {:error, "workflow state directory binding unreadable"}
 
-        {_output, status} ->
-          {:error, "watchdog child failed with exit #{status}"}
+        {output, status} ->
+          {:error, child_failure(output, status)}
       end
 
     case result do
@@ -193,17 +193,101 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp child_failure(output, status) do
+    # Never echo arbitrary child output, which can contain credentials.
+    case String.trim(output) do
+      "watchdog: " <> reason ->
+        if reason in [
+             "invalid watchdog state; refusing to reset budget",
+             "invalid watchdog audit; refusing to reset budget",
+             "watchdog state unreadable",
+             "watchdog audit unreadable; refusing to reset budget",
+             "maintenance lock cannot be verified",
+             "cannot restore watchdog state from audit",
+             "cannot persist watchdog evidence"
+           ],
+           do: reason,
+           else: "watchdog child failed with exit #{status}"
+
+      _ ->
+        "watchdog child failed with exit #{status}"
+    end
+  end
+
   defp report_block(config, reason) do
     self = :escript.script_name() |> to_string()
 
-    if File.regular?(self) do
-      System.cmd("flock", ["-x", SymphonyElixir.Watchdog.service_lock_path(config), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
+    result =
+      if File.regular?(self) do
+        System.cmd("flock", ["-x", SymphonyElixir.Watchdog.service_lock_path(config), self, "--watchdog-once", "block", config["config_path"], reason], stderr_to_stdout: true)
+      end
+
+    unless match?({_, 0}, result) do
+      case SymphonyElixir.Watchdog.record_fault(config, reason) do
+        :ok -> :ok
+        {:error, error} -> IO.puts(:stderr, "watchdog: #{error}")
+      end
+    end
+  end
+
+  @doc false
+  @spec with_runner_permit(map(), String.t(), (list() -> term())) :: term()
+  def with_runner_permit(config, executable, launch) do
+    binding = SymphonyElixir.Watchdog.service_lock_path(config) <> ".binding"
+
+    if File.exists?(binding) do
+      nonce = :crypto.strong_rand_bytes(32) |> Base.encode16()
+      ticket = Jason.encode!(%{"nonce" => nonce, "executable" => executable, "workflow" => config["workflow"]})
+      path = binding <> ".launch"
+      File.write!(path, ticket)
+      File.chmod!(path, 0o600)
+      launch.([{"SYMPHONY_RUNNER_PERMIT", nonce}])
+    else
+      launch.([{"SYMPHONY_RUNNER_PERMIT", nil}])
+    end
+  end
+
+  # A bound workflow only enters through a budgeted launch under the service
+  # lock. A one-use permit admits that detached child without trusting a
+  # caller-set boolean or giving the ordinary CLI its own scheduler.
+  defp authorize_start(workflow) do
+    case SymphonyElixir.PathSafety.canonicalize(workflow) do
+      {:ok, canonical} ->
+        binding = SymphonyElixir.Watchdog.service_lock_path(%{"workflow" => canonical}) <> ".binding"
+
+        case File.lstat(binding) do
+          {:error, :enoent} -> :ok
+          _ -> consume_runner_permit(binding, canonical)
+        end
+
+      _ ->
+        {:error, "Workflow path cannot be verified"}
+    end
+  end
+
+  defp consume_runner_permit(binding, workflow) do
+    path = binding <> ".launch"
+    nonce = System.get_env("SYMPHONY_RUNNER_PERMIT")
+    executable = :escript.script_name() |> to_string() |> Path.expand()
+
+    with nonce when is_binary(nonce) <- nonce,
+         {:ok, raw} <- File.read(path),
+         {:ok, %{"nonce" => ^nonce, "workflow" => ^workflow, "executable" => ^executable}} <- Jason.decode(raw),
+         :ok <- File.rm(path) do
+      System.delete_env("SYMPHONY_RUNNER_PERMIT")
+      :ok
+    else
+      _ -> {:error, "Managed workflow requires --watchdog start CONFIG.json; ordinary startup is blocked"}
     end
   end
 
   @doc false
   @spec main([String.t()], (-> ensure_started_result())) :: no_return()
   def main(args, ensure_all_started) do
+    # Load packaged defaults before applying CLI overrides. Loading the app
+    # afterwards can replace the selected workflow with its compiled default.
+    # This loads the application description without starting any processes.
+    _ = Application.load(:symphony_elixir)
     deps = Map.put(runtime_deps(ensure_all_started), :preflight, &preflight_with_stderr_logging/1)
 
     case evaluate(args, deps) do
@@ -291,7 +375,8 @@ defmodule SymphonyElixir.CLI do
   def run(workflow_path, deps) do
     expanded_path = Path.expand(workflow_path)
 
-    if deps.file_regular?.(expanded_path) do
+    with true <- deps.file_regular?.(expanded_path),
+         :ok <- authorize_start(expanded_path) do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
       case deps.ensure_all_started.() do
@@ -302,7 +387,8 @@ defmodule SymphonyElixir.CLI do
           {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
       end
     else
-      {:error, "Workflow file not found: #{expanded_path}"}
+      false -> {:error, "Workflow file not found: #{expanded_path}"}
+      error -> error
     end
   end
 

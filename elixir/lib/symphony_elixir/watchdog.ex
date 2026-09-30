@@ -130,6 +130,39 @@ defmodule SymphonyElixir.Watchdog do
     end
   end
 
+  @doc "Append independent evidence without trusting or replacing damaged budget files."
+  @spec record_fault(map(), String.t()) :: :ok | {:error, String.t()}
+  def record_fault(config, reason) do
+    {:ok, pointer} = read_pointer(config)
+
+    observed =
+      case scan_unrecorded(config) do
+        {:blocked, _reason, process} -> process
+        :absent -> nil
+      end
+
+    evidence = %{
+      "at" => System.system_time(:millisecond),
+      "action" => "blocked",
+      "reason" => reason,
+      "pointer" => pointer,
+      "process" => nil,
+      "observed" => observed,
+      "verification" => "state unavailable; preserved for investigation",
+      "service" => config["workflow"]
+    }
+
+    path = Path.join(config["state_dir"], "faults.jsonl")
+
+    with :ok <- File.mkdir_p(config["state_dir"]),
+         :ok <- File.write(path, Jason.encode!(evidence) <> "\n", [:append]),
+         :ok <- File.chmod(path, 0o600) do
+      :ok
+    else
+      _ -> {:error, "cannot persist independent watchdog fault evidence"}
+    end
+  end
+
   @spec valid_response?(map(), map()) :: boolean()
   def valid_response?(state, config), do: valid_state?(state, config)
 
@@ -610,10 +643,15 @@ defmodule SymphonyElixir.Watchdog do
     command = Map.get(config, :spawn_command, &System.cmd/3)
 
     try do
-      case command.("sh", ["-c", script],
-             env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}],
-             stderr_to_stdout: true
-           ) do
+      result =
+        SymphonyElixir.CLI.with_runner_permit(config, executable, fn permit ->
+          command.("sh", ["-c", script],
+            env: [{"GITHUB_TOKEN", token}, {"SYMPHONY_WATCHDOG_INTERNAL", nil}] ++ permit,
+            stderr_to_stdout: true
+          )
+        end)
+
+      case result do
         {output, 0} ->
           record_spawned_runner(output, config, pointer, executable, now)
 
@@ -736,7 +774,9 @@ defmodule SymphonyElixir.Watchdog do
           {:cont, previous}
         end
 
-      {:error, reason} when reason != :enoent ->
+      # Linux can return ESRCH when a process exits between enumeration and
+      # reading cmdline. It is absent, unlike an unreadable existing process.
+      {:error, reason} when reason not in [:enoent, :esrch] ->
         {:cont, {:blocked, "process table identity inaccessible", %{"pid" => pid}}}
 
       _ ->

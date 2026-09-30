@@ -1,10 +1,17 @@
 defmodule SymphonyElixir.WatchdogTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.GitHub.Client
+  alias SymphonyElixir.Mvp.Config, as: MvpConfig
+  alias SymphonyElixir.Mvp.Receipt
   alias SymphonyElixir.Watchdog
 
   setup do
-    root = Path.join(System.tmp_dir!(), "symphony-watchdog-#{System.unique_integer([:positive])}")
+    # Packaged entrypoints run in separate VMs, whose unique integers can
+    # repeat. A retained detached runner must never match another test's path.
+    identity = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+    root = Path.join(System.tmp_dir!(), "symphony-watchdog-#{identity}")
     File.mkdir_p!(root)
     File.chmod!(root, 0o700)
     state_dir = Path.join(root, "watchdog-state")
@@ -506,7 +513,7 @@ defmodule SymphonyElixir.WatchdogTest do
     kill_group(second_pid, config["workflow"], "-KILL")
     wait_absent(second_pid)
     assert {:ok, after_abnormal_exit} = Watchdog.step(config, "check")
-    assert after_abnormal_exit["phase"] == "awaiting_human"
+    assert after_abnormal_exit["phase"] == "awaiting_human", inspect(after_abnormal_exit)
     assert after_abnormal_exit["versions"]["v1"]["awaiting_human"]
     assert Enum.count(history(config), &(&1["action"] == "exit")) == 2
     assert Enum.map(Enum.filter(history(config), &(&1["action"] == "exit")), & &1["observed"]["pid"]) == [first_pid, second_pid]
@@ -691,6 +698,28 @@ defmodule SymphonyElixir.WatchdogTest do
     assert length(history(ctx.config)) == 1
   end
 
+  test "a large final audit record restores the exhausted budget without truncating evidence", ctx do
+    assert {:ok, _} = Watchdog.step(ctx.config, "pause")
+
+    change_state(ctx.config, fn state ->
+      Map.put(state, "versions", %{"v1" => %{"attempts" => 2, "next_at" => 0, "awaiting_human" => true}})
+    end)
+
+    reason = String.duplicate("retained failure evidence; ", 500)
+    assert {:ok, blocked} = Watchdog.record_block(ctx.config, reason)
+    retained_audit = File.read!(Path.join(ctx.config["state_dir"], "history.jsonl"))
+    File.rm!(ctx.config["status_file"])
+    assert {:ok, restored} = Watchdog.step(ctx.config, "status")
+    assert restored == blocked
+    assert restored["last_action"]["reason"] == reason
+    assert File.read!(Path.join(ctx.config["state_dir"], "history.jsonl")) == retained_audit
+    assert {:ok, _} = Watchdog.step(ctx.config, "resume")
+    assert {:ok, exhausted} = Watchdog.step(ctx.config, "start")
+    assert exhausted["phase"] == "awaiting_human"
+    assert exhausted["versions"]["v1"]["attempts"] == 2
+    assert exhausted["process"] == nil
+  end
+
   test "unreadable state and unverifiable maintenance lock fail closed", ctx do
     File.mkdir_p!(ctx.config["state_dir"])
     File.mkdir_p!(ctx.config["status_file"])
@@ -742,6 +771,39 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:ok, port_blocked} = Watchdog.step(Map.put(config, "port", 43_210), "check")
     assert port_blocked["last_action"]["reason"] =~ "port occupied"
     assert port_blocked["versions"] == %{}
+  end
+
+  test "a process disappearing during a proc scan does not block recovery", ctx do
+    config = controlled_proc_config(ctx)
+
+    script = """
+    import json, os, subprocess, sys
+    child = subprocess.Popen(["sleep", "60"])
+    fd = os.open(f"/proc/{child.pid}/cmdline", os.O_RDONLY)
+    child.kill()
+    child.wait()
+    print(json.dumps({"owner": os.getpid(), "pid": child.pid, "fd": fd}), flush=True)
+    sys.stdin.buffer.read(1)
+    """
+
+    port = Port.open({:spawn_executable, System.find_executable("python3")}, [:binary, :exit_status, args: ["-u", "-c", script]])
+    on_exit(fn -> if Port.info(port), do: Port.close(port) end)
+    assert_receive {^port, {:data, raw}}, 5_000
+    process = Jason.decode!(raw)
+    stale_entry = Path.join(config[:proc_root], Integer.to_string(process["pid"]))
+    File.mkdir_p!(stale_entry)
+    command = Path.join(stale_entry, "cmdline")
+    File.ln_s!("/proc/#{process["owner"]}/fd/#{process["fd"]}", command)
+    # A retained /proc descriptor reproduces Linux ESRCH deterministically,
+    # rather than depending on another process exiting between ls and read.
+    assert {:error, :esrch} = File.read(command)
+    assert {:ok, started} = Watchdog.step(config, "start")
+    assert started["phase"] == "running", inspect(started["last_action"])
+    assert started["versions"]["v1"]["attempts"] == 1
+    assert {:ok, alive} = Watchdog.step(config, "check")
+    assert alive["process"]["pid"] == started["process"]["pid"]
+    Port.command(port, "x")
+    assert_receive {^port, {:exit_status, 0}}, 5_000
   end
 
   test "malformed proc identity is never accepted as a running service", ctx do
@@ -932,18 +994,16 @@ defmodule SymphonyElixir.WatchdogTest do
   end
 
   test "watchdog leaves task receipts and evidence untouched and makes no remote request", ctx do
-    receipts = Path.join(ctx.root, "task-receipts")
-    evidence = Path.join(ctx.root, "task-evidence")
-    File.mkdir_p!(receipts)
-    File.mkdir_p!(evidence)
-    File.write!(Path.join(receipts, "issue-5.json"), ~s({"status":"claimed"}))
-    File.write!(Path.join(evidence, "review.txt"), "existing evidence\n")
-    before = {tree_snapshot(receipts), tree_snapshot(evidence)}
+    previous_token = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "test-token")
+    on_exit(fn -> if previous_token, do: System.put_env("GITHUB_TOKEN", previous_token), else: System.delete_env("GITHUB_TOKEN") end)
+    {_socket, port} = remote_probe!(ctx.root)
+    persistent = persistent_workflow!(ctx, port)
+    assert {:ok, workflow} = SymphonyElixir.Workflow.load(ctx.config["workflow"])
+    assert {:ok, parsed} = Schema.parse(workflow.config)
+    assert :ok = Client.validate_settings(parsed.tracker)
+    before = persistent_snapshot(persistent)
 
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
-    on_exit(fn -> :gen_tcp.close(socket) end)
-    {:ok, {_address, port}} = :inet.sockname(socket)
-    File.write!(ctx.config["workflow"], "---\ntracker:\n  provider:\n    api_url: http://127.0.0.1:#{port}\n---\n")
     config = Map.put(ctx.config, "port", 0)
 
     assert {:ok, started} = Watchdog.step(config, "start")
@@ -952,8 +1012,9 @@ defmodule SymphonyElixir.WatchdogTest do
     assert {:ok, _} = Watchdog.step(config, "pause")
     assert {:ok, _} = Watchdog.step(config, "resume")
     assert {:ok, _} = Watchdog.step(config, "recover")
-    assert {:error, :timeout} = :gen_tcp.accept(socket, 100)
-    assert {tree_snapshot(receipts), tree_snapshot(evidence)} == before
+    refute_receive :probe_connection, 100
+    refute_receive {:remote_probe, _, _}, 100
+    assert persistent_snapshot(persistent) == before
     assert File.exists?(config["status_file"])
     assert length(history(config)) >= 5
   end
@@ -1035,50 +1096,53 @@ defmodule SymphonyElixir.WatchdogTest do
     File.cp!(controller, executable)
     File.chmod!(executable, 0o755)
 
-    File.write!(
-      ctx.config["workflow"],
-      """
-      ---
-      tracker:
-        kind: github
-        provider:
-          repo: example/example
-          token: $GITHUB_TOKEN
-        required_labels: [ready]
-        active_states: [open]
-        terminal_states: [closed]
-      polling:
-        interval_ms: 600000
-      workspace:
-        root: #{Path.join(ctx.root, "workspaces")}
-      mvp:
-        enabled: false
-      ---
-      Offline packaged runner probe.
-      """
-    )
+    {_socket, port} = remote_probe!(ctx.root)
+    persistent = persistent_workflow!(ctx, port)
+    before = persistent_snapshot(persistent)
+    workflow_before = File.read!(ctx.config["workflow"])
 
-    config = %{ctx.config | "controller" => controller, "backoff_ms" => 50}
+    config = %{ctx.config | "controller" => controller, "backoff_ms" => 50, "max_attempts" => 4}
     credential_info = File.stat!(config["credential_file"])
     assert credential_info.uid == File.stat!("/proc/self").uid
     assert Bitwise.band(credential_info.mode, 0o077) == 0
     assert Bitwise.band(File.stat!(ctx.root).mode, 0o077) == 0
     pointer!(config, "packaged", install)
-    assert {:ok, first} = Watchdog.step(config, "start")
+    config_path = Path.join(ctx.root, "watchdog.json")
+    File.write!(config_path, Jason.encode!(config))
+    {first_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+    first = Jason.decode!(first_json)
     assert first["process"]["install"] == install
-    first_pid = first["process"]["pid"]
-    assert File.read!("/proc/#{first_pid}/environ") =~ "GITHUB_TOKEN=test-token"
-    kill_group(first_pid, config["workflow"], "-KILL")
-    wait_absent(first_pid)
-    assert {:ok, exited} = Watchdog.step(config, "check")
-    assert exited["phase"] == "backoff"
-    assert exited["versions"]["packaged"]["attempts"] == 1
-    Process.sleep(max(exited["versions"]["packaged"]["next_at"] - System.system_time(:millisecond), 0) + 20)
+    assert {:ok, observed} = Watchdog.step(config, "check")
+    assert observed["phase"] == "running"
+    assert observed["process"] == first["process"]
+    assert observed["versions"]["packaged"]["attempts"] == 1
 
-    assert {:ok, second} = Watchdog.step(config, "check")
-    assert second["process"]["pid"] != first_pid
-    assert second["versions"]["packaged"]["attempts"] == 2
-    assert File.read!("/proc/#{second["process"]["pid"]}/environ") =~ "GITHUB_TOKEN=test-token"
+    Enum.reduce(["-TERM", "-KILL"], first, fn signal, previous ->
+      previous_pid = previous["process"]["pid"]
+      assert_runner_probe(config)
+      assert File.read!("/proc/#{previous_pid}/environ") =~ "GITHUB_TOKEN=test-token"
+      assert persistent_snapshot(persistent) == before
+      kill_group(previous_pid, config["workflow"], signal)
+      wait_absent(previous_pid)
+      {exited_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      exited = Jason.decode!(exited_json)
+      assert exited["phase"] == "backoff"
+      assert exited["versions"]["packaged"]["attempts"] == previous["versions"]["packaged"]["attempts"]
+      Process.sleep(max(exited["versions"]["packaged"]["next_at"] - System.system_time(:millisecond), 0) + 20)
+      {second_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      second = Jason.decode!(second_json)
+      assert second["process"]["pid"] != previous_pid
+      assert second["process"]["install"] == install
+      assert second["versions"]["packaged"]["attempts"] == previous["versions"]["packaged"]["attempts"] + 1
+      assert second["process"]["workflow"] == config["workflow"]
+      assert File.read!(config["workflow"]) == workflow_before
+      assert persistent_snapshot(persistent) == before
+      second
+    end)
+
+    assert_runner_probe(config)
+    assert persistent_snapshot(persistent) == before
+    refute_receive {:remote_write, _, _}, 100
     refute File.read!(config["status_file"]) =~ "test-token"
     refute File.read!(Path.join(config["state_dir"], "history.jsonl")) =~ "test-token"
   end
@@ -1330,6 +1394,373 @@ defmodule SymphonyElixir.WatchdogTest do
     assert replacement["process"]["pid"] != pid
   end
 
+  for port <- [nil, 0] do
+    @tag timeout: 120_000
+    test "ordinary packaged startup cannot bypass managed lifecycle with port #{inspect(port)}", ctx do
+      controller = build_controller!()
+      {_socket, probe_port} = remote_probe!(ctx.root)
+      persistent_workflow!(ctx, probe_port)
+      install = Path.join([ctx.root, "releases", "managed"])
+      File.mkdir_p!(Path.join(install, "bin"))
+      executable = Path.join(install, "bin/symphony")
+      File.cp!(controller, executable)
+      File.chmod!(executable, 0o755)
+      config = %{ctx.config | "controller" => controller, "port" => unquote(port), "backoff_ms" => 10_000}
+      pointer!(config, "managed", install)
+      config_path = Path.join(ctx.root, "watchdog.json")
+      File.write!(config_path, Jason.encode!(config))
+      {_, 0} = System.cmd(controller, ["--watchdog", "status", config_path])
+
+      ordinary_args =
+        ["--i-understand-that-this-will-be-running-without-the-usual-guardrails"] ++
+          if(unquote(port) == 0, do: ["--port", "0"], else: []) ++ [config["workflow"]]
+
+      assert_ordinary_blocked(executable, ordinary_args, config)
+      permit_path = Watchdog.service_lock_path(config) <> ".binding.launch"
+
+      for invalid <- [
+            "not json",
+            Jason.encode!([]),
+            Jason.encode!(%{"nonce" => "forged", "executable" => controller, "workflow" => config["workflow"]}),
+            Jason.encode!(%{"nonce" => "forged", "executable" => executable, "workflow" => config["workflow"] <> ".other"})
+          ] do
+        File.write!(permit_path, invalid)
+        assert_ordinary_blocked(executable, ordinary_args, config)
+        assert File.read!(permit_path) == invalid
+      end
+
+      File.rm!(permit_path)
+      {_, 0} = System.cmd(controller, ["--watchdog", "pause", config_path])
+      assert_ordinary_blocked(executable, ordinary_args, config)
+      {paused, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      assert Jason.decode!(paused)["phase"] == "paused"
+      {_, 0} = System.cmd(controller, ["--watchdog", "resume", config_path])
+
+      tasks = [
+        Task.async(fn -> System.cmd(executable, ordinary_args, stderr_to_stdout: true) end),
+        Task.async(fn -> System.cmd(controller, ["--watchdog", "start", config_path], stderr_to_stdout: true) end)
+      ]
+
+      [{blocked, 1}, {started, 0}] = Enum.map(tasks, &Task.await(&1, 30_000))
+      assert blocked =~ "ordinary startup is blocked"
+      first = Jason.decode!(started)
+      assert_runner_probe(config)
+      pid = first["process"]["pid"]
+      assert first["versions"]["managed"]["attempts"] == 1
+      refute File.exists?(permit_path)
+      assert runner_pids(config) == [pid]
+      assert_ordinary_blocked(executable, ordinary_args, config)
+
+      {raw_pid, 0} = System.cmd("sh", ["-c", "\"$@\" >/dev/null 2>&1 & echo $!", "probe", controller, "--watchdog", "run", config_path])
+      watchdog_pid = raw_pid |> String.trim() |> String.to_integer()
+      on_exit(fn -> System.cmd("kill", ["-KILL", Integer.to_string(watchdog_pid)], stderr_to_stdout: true) end)
+      Process.sleep(1_000)
+      {normal_output, 1} = System.cmd(executable, ordinary_args, stderr_to_stdout: true)
+      assert normal_output =~ "ordinary startup is blocked"
+      assert runner_pids(config) == [pid]
+      System.cmd("kill", ["-KILL", Integer.to_string(watchdog_pid)])
+      assert runner_pids(config) == [pid]
+
+      kill_group(pid, config["workflow"], "-KILL")
+      wait_absent(pid)
+      {backoff, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      assert Jason.decode!(backoff)["phase"] == "backoff"
+      assert_ordinary_blocked(executable, ordinary_args, config)
+      assert runner_pids(config) == []
+      change_state(config, fn state -> put_in(state, ["versions", "managed", "next_at"], 0) end)
+      {second_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      second = Jason.decode!(second_json)
+      assert_runner_probe(config)
+      assert second["versions"]["managed"]["attempts"] == 2
+      second_pid = second["process"]["pid"]
+      kill_group(second_pid, config["workflow"], "-KILL")
+      wait_absent(second_pid)
+      {exhausted_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      exhausted = Jason.decode!(exhausted_json)
+      assert exhausted["phase"] == "awaiting_human"
+      assert_ordinary_blocked(executable, ordinary_args, config)
+      assert runner_pids(config) == []
+      old_history = history(config)
+      {_, 0} = System.cmd(controller, ["--watchdog", "recover", config_path])
+      {recovered_json, 0} = System.cmd(controller, ["--watchdog", "start", config_path])
+      recovered = Jason.decode!(recovered_json)
+      assert_runner_probe(config)
+      assert recovered["versions"]["managed"]["attempts"] == 1
+      refute recovered["versions"]["managed"]["awaiting_human"]
+      assert Enum.take(history(config), length(old_history)) == old_history
+      assert runner_pids(config) == [recovered["process"]["pid"]]
+    end
+  end
+
+  @tag timeout: 120_000
+  test "packaged CLI preserves corrupt budgets and reports independent fault evidence", ctx do
+    controller = build_controller!()
+    config = %{ctx.config | "controller" => controller, "port" => 0}
+    config_path = Path.join(ctx.root, "watchdog.json")
+    File.write!(config_path, Jason.encode!(config))
+    assert {:ok, _} = Watchdog.step(config, "pause")
+    change_state(config, fn state -> Map.put(state, "versions", %{"v1" => %{"attempts" => 2, "next_at" => 9_999_999_999_999, "awaiting_human" => true}}) end)
+    audit_path = Path.join(config["state_dir"], "history.jsonl")
+    original_status = File.read!(config["status_file"])
+    original_audit = File.read!(audit_path)
+    conflict = original_status |> Jason.decode!() |> Map.put("phase", "different") |> Jason.encode!()
+
+    for {status, audit, reason} <- [
+          {"broken test-token", original_audit, "invalid watchdog state"},
+          {original_status, "broken test-token\n", "invalid watchdog audit"},
+          {conflict, original_audit, "invalid watchdog state"}
+        ] do
+      File.write!(config["status_file"], status)
+      File.write!(audit_path, audit)
+      {output, 1} = System.cmd(controller, ["--watchdog", "start", config_path], stderr_to_stdout: true)
+      assert output =~ reason
+      refute output =~ "test-token"
+      assert File.read!(config["status_file"]) == status
+      assert File.read!(audit_path) == audit
+      assert runner_pids(config) == []
+      faults = Path.join(config["state_dir"], "faults.jsonl") |> File.read!()
+      refute faults =~ "test-token"
+      last = faults |> String.split("\n", trim: true) |> List.last() |> Jason.decode!()
+      assert last["reason"] =~ reason
+      assert last["pointer"]["version"] == "v1"
+      assert last["service"] == config["workflow"]
+      assert is_integer(last["at"])
+      assert last["action"] == "blocked"
+    end
+
+    File.write!(config["status_file"], original_status)
+    File.write!(audit_path, original_audit)
+    assert {:ok, restored} = Watchdog.step(config, "status")
+    assert restored["versions"]["v1"]["awaiting_human"]
+    assert restored["versions"]["v1"]["attempts"] == 2
+  end
+
+  test "independent fault evidence survives damaged state and fails explicitly when unwritable", ctx do
+    config = controlled_proc_config(ctx)
+    assert {:ok, started} = Watchdog.step(config, "start")
+    pid = started["process"]["pid"]
+    File.mkdir_p!(ctx.config["state_dir"])
+    File.write!(ctx.config["status_file"], "broken test-token")
+    assert :ok = Watchdog.record_fault(config, "invalid watchdog state")
+    assert File.read!(ctx.config["status_file"]) == "broken test-token"
+    faults = Path.join(ctx.config["state_dir"], "faults.jsonl")
+    refute File.read!(faults) =~ "test-token"
+    evidence = faults |> File.read!() |> String.trim() |> Jason.decode!()
+    assert evidence["observed"]["pid"] == pid
+    assert config["workflow"] in evidence["observed"]["cmdline"]
+    assert File.exists?("/proc/#{pid}")
+    kill_group(pid, config["workflow"])
+    wait_absent(pid)
+    File.rm!(faults)
+    File.mkdir!(faults)
+    assert {:error, "cannot persist independent watchdog fault evidence"} = Watchdog.record_fault(ctx.config, "blocked")
+  end
+
+  defp assert_runner_probe(config) do
+    # Consume both startup requests so an earlier runner's queued response
+    # cannot make a later recovery appear to have queried GitHub successfully.
+    for expected_state <- ["closed", "open"] do
+      assert_runner_request(config, expected_state)
+    end
+  end
+
+  defp assert_runner_request(config, expected_state) do
+    result =
+      receive do
+        {:remote_probe, "GET", path} -> {:ok, path}
+        {:probe_failure, reason} -> {:error, reason}
+      after
+        5_000 -> {:error, :timeout}
+      end
+
+    case result do
+      {:ok, path} ->
+        uri = URI.parse(path)
+        assert uri.path == "/repos/example/example/issues"
+        assert URI.decode_query(uri.query)["state"] == expected_state
+        assert_receive {:probe_auth, ^path, true}
+
+      {:error, reason} ->
+        Process.sleep(100)
+        state = config["status_file"] |> File.read!() |> Jason.decode!()
+        pid = state["process"]["pid"]
+
+        diagnostics = %{
+          process: File.read("/proc/#{pid}/stat"),
+          runner_log: File.read(Path.join(config["state_dir"], "runner.log")),
+          service_logs: Path.wildcard(Path.join(config["logs_root"], "**/*")) |> Enum.filter(&File.regular?/1) |> Enum.map(&{&1, File.read(&1)})
+        }
+
+        flunk("packaged runner made no GitHub GET (#{inspect(reason)}): #{inspect(diagnostics, limit: :infinity)}")
+    end
+  end
+
+  defp assert_ordinary_blocked(executable, args, config) do
+    before = {File.read(config["status_file"]), File.read(Path.join(config["state_dir"], "history.jsonl"))}
+    {output, 1} = System.cmd(executable, args, stderr_to_stdout: true, env: [{"SYMPHONY_RUNNER_PERMIT", "forged"}])
+    assert output =~ "ordinary startup is blocked"
+    assert {File.read(config["status_file"]), File.read(Path.join(config["state_dir"], "history.jsonl"))} == before
+  end
+
+  defp runner_pids(config) do
+    Path.wildcard("/proc/[0-9]*/cmdline")
+    |> Enum.filter(fn path ->
+      case File.read(path) do
+        {:ok, command} -> String.contains?(command, config["workflow"]) and String.contains?(command, "/bin/symphony")
+        _ -> false
+      end
+    end)
+    |> Enum.map(fn path -> path |> Path.dirname() |> Path.basename() |> String.to_integer() end)
+    |> Enum.sort()
+  end
+
+  defp build_controller! do
+    {output, status} = System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"], env: [{"MIX_ENV", "test"}], stderr_to_stdout: true)
+    assert status == 0, output
+    Path.expand("bin/symphony")
+  end
+
+  defp persistent_workflow!(ctx, port) do
+    state = Path.join(ctx.root, "task-state")
+    workspace = Path.join(ctx.root, "workspaces")
+
+    File.write!(ctx.config["workflow"], """
+    ---
+    tracker:
+      kind: github
+      provider:
+        repo: example/example
+        api_url: https://127.0.0.1:#{port}
+        token: $GITHUB_TOKEN
+      required_labels: [ready]
+      active_states: [open]
+      terminal_states: [closed]
+    polling:
+      interval_ms: 600000
+    workspace:
+      root: #{workspace}
+    agent:
+      max_concurrent_agents: 1
+    mvp:
+      enabled: true
+      state_dir: #{state}
+      coder_model: offline-probe
+      reviewer_model: offline-probe
+      allowed_models: [offline-probe]
+      allowed_actors: [operator]
+      checks: [["true"]]
+    ---
+    Offline persistent recovery probe.
+    """)
+
+    assert {:ok, workflow} = SymphonyElixir.Workflow.load(ctx.config["workflow"])
+    assert {:ok, parsed} = Schema.parse(workflow.config)
+    assert {:ok, settings} = MvpConfig.settings(workflow, ctx.root)
+    assert settings.enabled
+    assert settings.state_dir == state
+    assert parsed.workspace.root == workspace
+    tracker = %{parsed.tracker | provider: Map.put(parsed.tracker.provider, "token", "test-token")}
+    assert :ok = Client.validate_settings(tracker)
+    issue = %{id: "5", native_ref: %{"repo" => "example/example"}}
+    assert {:ok, receipt} = Receipt.claim(settings, issue)
+    evidence = receipt <> ".evidence"
+    File.mkdir_p!(Path.join(evidence, "round-1"))
+    File.write!(Path.join(evidence, "round-1/review.json"), ~s({"approved":false}))
+    File.mkdir_p!(Path.join(workspace, "GH-5/.keep"))
+    File.write!(Path.join(workspace, "GH-5/.keep/task.txt"), "existing workspace\n")
+    %{state: state, workspace: workspace, evidence: evidence}
+  end
+
+  defp persistent_snapshot(paths) do
+    Map.new(paths, fn {key, path} ->
+      {key, {File.stat!(path).inode, tree_snapshot(path)}}
+    end)
+  end
+
+  defp remote_probe!(root) do
+    ca = Path.join(root, "probe-ca.pem")
+    ca_key = Path.join(root, "probe-ca-key.pem")
+    cert = Path.join(root, "probe-cert.pem")
+    key = Path.join(root, "probe-key.pem")
+    csr = Path.join(root, "probe.csr")
+    extensions = Path.join(root, "probe-extensions.cnf")
+    File.write!(extensions, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n")
+
+    for args <- [
+          [
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=Watchdog test CA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout",
+            ca_key,
+            "-out",
+            ca
+          ],
+          ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", csr],
+          ["x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial", "-days", "1", "-extfile", extensions, "-out", cert]
+        ] do
+      {output, status} = System.cmd("openssl", args, stderr_to_stdout: true)
+      assert status == 0, output
+    end
+
+    File.chmod!(key, 0o600)
+    File.chmod!(ca_key, 0o600)
+    # Keep production HTTPS verification: child VMs trust only this test CA,
+    # and the server presents a distinct certificate signed by that CA.
+    prior_flags = System.get_env("ERL_FLAGS")
+    System.put_env("ERL_FLAGS", (prior_flags || "") <> " -public_key cacerts_path '\"#{ca}\"'")
+    on_exit(fn -> if prior_flags, do: System.put_env("ERL_FLAGS", prior_flags), else: System.delete_env("ERL_FLAGS") end)
+    {:ok, _} = Application.ensure_all_started(:ssl)
+    {:ok, socket} = :ssl.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, certfile: String.to_charlist(cert), keyfile: String.to_charlist(key)])
+    {:ok, {_, port}} = :ssl.sockname(socket)
+    owner = self()
+    server = spawn_link(fn -> serve_probe(socket, owner) end)
+
+    on_exit(fn ->
+      :ssl.close(socket)
+      Process.exit(server, :kill)
+    end)
+
+    {socket, port}
+  end
+
+  defp serve_probe(socket, owner) do
+    case :ssl.transport_accept(socket) do
+      {:ok, connection} ->
+        send(owner, :probe_connection)
+
+        case :ssl.handshake(connection, 5_000) do
+          {:ok, connection} -> serve_probe_request(connection, owner)
+          {:error, reason} -> send(owner, {:probe_failure, reason})
+        end
+
+        :ssl.close(connection)
+        serve_probe(socket, owner)
+
+      {:error, :closed} ->
+        :ok
+    end
+  end
+
+  defp serve_probe_request(connection, owner) do
+    {:ok, request} = :ssl.recv(connection, 0, 5_000)
+    [method, path | _] = String.split(request)
+    send(owner, {:remote_probe, method, path})
+    send(owner, {:probe_auth, path, Regex.match?(~r/^authorization: Bearer test-token\r?$/mi, request)})
+    if method != "GET", do: send(owner, {:remote_write, method, path})
+    :ok = :ssl.send(connection, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+  end
+
   defp install!(root, version, body) do
     install = Path.join([root, "releases", version])
     File.mkdir_p!(Path.join(install, "bin"))
@@ -1386,7 +1817,7 @@ defmodule SymphonyElixir.WatchdogTest do
     |> Path.wildcard(match_dot: true)
     |> Enum.sort()
     |> Enum.map(fn path ->
-      {Path.relative_to(path, root), if(File.dir?(path), do: :directory, else: File.read!(path))}
+      {Path.relative_to(path, root), File.stat!(path).inode, if(File.dir?(path), do: :directory, else: File.read!(path))}
     end)
   end
 
