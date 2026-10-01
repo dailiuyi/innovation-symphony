@@ -1,3 +1,8 @@
 * text=auto
 *.md text eol=lf
 *.html text eol=lf
+
+# Keep Issue #7 source packaging and frozen validation inputs byte-stable.
+scripts/prepare_view_source.py text eol=lf
+scripts/tests/test_view_preparation.py text eol=lf
+scripts/view_validation/** text eol=lf

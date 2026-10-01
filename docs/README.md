@@ -2,6 +2,7 @@
 
 | 内容 | 文档 |
 | --- | --- |
+| Issue #7 固定来源、独立 View 检查与待外部验收准备 | [VIEW_PREPARATION.md](VIEW_PREPARATION.md) |
 | V0 实现范围与恢复边界 | [IMPLEMENTATION_V0.md](IMPLEMENTATION_V0.md) |
 | GH-1 有限返工合同与验收对应 | [REVIEW_REWORK.md](REVIEW_REWORK.md) |
 | 技术失败自动诊断、修复与验收 | [AUTOMATIC_RECOVERY.md](AUTOMATIC_RECOVERY.md) |

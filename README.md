@@ -12,6 +12,8 @@ GH-5 新增独立于运行器的本地进程看门狗入口，按固定版本指
 
 GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复检查失败与 Review 拒绝共用预算，完整保存检查日志，Review 拒绝理由仍回帖。默认 `max_rework=0` 保持兼容，显式 1..5 启用，最多五次返工加初始一轮。固定检查 runner 使用结构化 ExUnit 结果识别普通及自定义断言，核对完整报告与退出码；缺失或矛盾报告不能通过。显式复检绑定原候选、基线、模型和预算，保留历史操作及终态审计，已用次数不重置；不会因修改配置而自动重启所有 blocked 任务。源码发布与实际运行版本须分别核实。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
 
+Issue #7 的无人值守前置准备位于 [VIEW_PREPARATION](docs/VIEW_PREPARATION.md)：固定私有 View 来源包、独立检查候选代码和脱敏夹具。当前尚未导入 `view/`、安装新的可信门禁或启动真实采集；准备结果不代替最终合仓候选的实机验收。
+
 ## 已确认的使用方式
 
 本轮按 IS-026 完善显式启用的自动恢复：可由模型解决的技术失败交回编码或新的只读诊断，普通修复窗口无需逐次人工批准，同时保留严格检查、独立 Review、资源熔断与完整证据。未启用策略的任务继续遵守上面的 0..5 兼容合同；旧回执只通过明确审计迁移，不批量重启。工程默认见 [自动恢复合同](docs/AUTOMATIC_RECOVERY.md)。控制器 `07f7493` 已发布并在本地运行，真实 Issue #3 经自动诊断、检查失败返工、完整检查和独立 Review 交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)，证据见 [验收记录](docs/VALIDATION_AUTOMATIC_RECOVERY.md)。按 IS-027，合并、合并冲突和升级交给人处理，系统不持续追赶 main。
