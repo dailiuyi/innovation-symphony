@@ -100,3 +100,36 @@ Windows 监听表查询时 43191、5187、8765 未见监听，这只是瞬时快
 - 控制器全量回归为 653 项、0 失败、6 项既有跳过、覆盖率 100%；格式、公共规格、Credo、Dialyzer 和 escript 构建通过。最终脚本与 View 流程使用已预置依赖运行，必测项不跳过。独立复审已用同一伪造输入确认 worker 从虚假通过变为明确拒绝。
 
 上述 Windows、浏览器证据位于本机 Codex 制品目录 `C:/Users/emla/.codex/visualizations/2026/10/01/01a0f7e7-9589-7590-b992-9120f50f53d9/`。工具报告始终保留准备阶段标记，不把环境成功当作最终迁移候选验收。固定安装、实际进程与原状态保留结果在安装完成后追加。
+
+### 固定安装与最后核对（2026-10-02，北京时间）
+
+准备代码已本地提交为 `a63d3fd09e4ce02b8a72eef7179cd8bde5118e0d`，安装到 `/var/tmp/innovation-symphony-v0-rerun1/releases/a63d3fd09e4ce02b8a72eef7179cd8bde5118e0d`。`runtime-v1/current.json` 指向该版本，可信源码包在此安装的忽略目录 `scripts/view_validation/source/` 中预置；安装前已认证摘要。原固定安装保留，运行配置、指针及入口备份在 `/var/tmp/issue7-runtime-install-1790871031954408253/`。本次本地提交没有推送或合并。
+
+通过受管 `--watchdog start` 启动后重新设置维护暂停。实际控制器 PID `40124`，cwd 为该固定安装的 `elixir/`，启动 ticks `283400`，宿主 boot ID `def38c35-e337-4164-b29e-3f4ed7417337`；这些字段与 `/proc` 中的进程命令、可执行文件逐项相符。状态 API `127.0.0.1:43223/api/v1/state` 返回 200。`mvp.enabled=false`，watchdog `paused=true`，没有启动自动值守循环；不会仅因标签变化自动开始领取。
+
+运行 WORKFLOW 保留原候选和基线 Elixir 检查，追加固定安装下的两参数 View 标记。关闭领取的配置本身返回空 checks，因此另外在独立的**只读 workflow 副本**里解析 `enabled=true` 来认证完整三条 checks、串行 GitHub 与隔离路径，再调用打包 `--preflight`。真实 GitHub GET 预检通过，两个 OPEN Issue 均读取成功；程序实际 `Receipt.exists?`/`Mvp.available?` 计算确认 GH-5 虽 ready 但有回执、GH-7 尚无 ready 且无回执，可领取数为 0。没有修改持久领取开关或调用 claim。
+
+从新固定安装加载的 `ExecutionSandbox.check` 在独立伪候选 `9e7a764e2f4f43410184ff2663da75fe3bb51853` 上返回 `{:ok, 0}`，真实 bubblewrap 内使用安装中的只读净化源码包，实际执行冻结与候选 Python 各 16 项、JS 各 10 项、self_check 及六页 HTML，导出绑定候选、来源、工具链、脚本和夹具的结果。证据目录为 `/var/tmp/issue7-controller-view-probe-1790871181005609838/`；调用属于**使用已安装控制器的独立检查进程**。主服务没有领取 #7、没有运行其编码或 Review，不能登记为主服务已完成 #7 的自动验收。
+
+最终补测：sandbox 模块 22 项；Python 脚本 68 项；View 验证器 24 项；浏览器绑定 16 项，均 0 失败、0 跳过。真实 sandbox 的清理／超时／进程／内存／磁盘限制也已执行通过。独立 Review 复核了同形态篡改从假通过变为失败，以及只清理私有注入依赖的边界。实际 Codex 0.159.1 只查询 `model/list`，返回当前模型目录，配置默认 `gpt-6-astra` 在列表内；没有 thread/turn 或编码调用。
+
+原 `state/attempt-4` 与 `workspaces/v1` 的 6830 个条目，文件内容摘要、类型、mode、uid/gid、inode、链接目标在操作前后完全相同，清单 SHA256 均为 `cd03b42d40980bd4c2bdd14d9a6a138bc22e6146a2bf25c30ab6b01441e46610`。没有向生产 receipt 写入本轮证明。归档 `issue7-ready-preparation/summary.json` 包含实际身份、状态 API、预检、模型目录、控制器调用与原状态保留结果，原始日志和渲染结果同目录保留。
+
+结论：**ready 的执行前准备门槛已经满足，可以由所有者给 #7 添加 ready。** 本轮不添加该标签，也不打开领取。首次运行、唯一临时文件及异常清理、配置／参数／cwd 兼容性、准确最终候选的 Windows＋WSL 与浏览器验收，仍在 #7 的执行范围内；它们不是准备阶段已经验收的迁移功能。后续标签操作、开启领取及最终人工合并分别由用户授权，任何代码／来源／检查变化都需要重取对应证据。
+
+### 最终候选的实机执行方式
+
+项目所有者负责批准领取与人工合并，获其授权的本机 Codex 负责复跑。先冻结最终候选完整 SHA，在新独立目录认证 HEAD/index/源码，使用固定可信 runner 取得新的 View 代码检查和 browser 输入。示例参数是执行安排，不能把准备伪候选或旧报告替换成最终候选证据。
+
+Windows＋WSL：以最终候选的独立净化副本及专用 TOML/JSON/default 夹具配置，运行 `python -B <副本>/view/app/run.py once --config <夹具配置> --out <新证据>/snapshot.json`。`runtime_glob` 只指向独立 WSL 合成 runtime；首次运行不得预建 `build/rollouts`，必须确认修复后自然成功。继续实际调用 `wslpull.pull_snapshot`、`collector.load_sessions`、`pagegen.viewer_pages`，核验一个任务、19 轮、Review 41–44 与六页真实 HTML；检查并发唯一临时脚本及失败清理。不要把 once 的退出码当成完整 HTML 或浏览器验收。
+
+浏览器：在正常桌面用户上下文使用以下入口，保留 `chromiumSandbox:true`、私有 profile 和随机 loopback 端口。`<新验证证据>` 必须来自准确最终候选的当前成功报告；脚本会认证输入完整清单和摘要。输出目录必须不存在。
+
+```powershell
+node E:/code/innovation-symphony/scripts/view_validation/browser_fixture.cjs `
+  --validation-root <新验证证据> --output <新浏览器证据目录> `
+  --chrome 'C:/Program Files/Google/Chrome/Application/chrome.exe' `
+  --playwright-root 'C:/Users/emla/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'
+```
+
+本轮准确命令在 `.local/issue7-browser-command.txt`，实机采集脚本在 `.local/issue7-windows-wsl-probe.py`，只作为脱敏夹具流程参考。最终复跑需移除该脚本对“已知首次运行失败”的历史预期及缓存绕行，改为断言修复后成功，并增加迁移兼容性、唯一临时文件和异常清理检查。若最终环境、权限或证据仍有缺口，保留 `awaiting_external`，不批准合并或把未执行项记为通过。
