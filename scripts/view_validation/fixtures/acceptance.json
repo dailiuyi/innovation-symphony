@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "repository": "fixture/project",
+  "issue": 7,
+  "runtimeRoot": "/var/tmp/innovation-symphony-v0-fixture",
+  "workspace": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+  "candidateSha": "1111111111111111111111111111111111111111",
+  "sessions": [
+    {"id": "00000007-0000-4000-8000-000000000040", "role": "coder", "attempt": 40, "stageAttempt": 1, "outcome": "completed", "text": "FIXTURE_CODER_40"},
+    {"id": "00000007-0000-4000-8000-000000000041", "role": "reviewer", "attempt": 41, "stageAttempt": 1, "outcome": "invalid_review", "text": "FIXTURE_REVIEWER_41"},
+    {"id": "00000007-0000-4000-8000-000000000042", "role": "reviewer", "attempt": 42, "stageAttempt": 2, "outcome": "invalid_review", "text": "FIXTURE_REVIEWER_42"},
+    {"id": "00000007-0000-4000-8000-000000000043", "role": "reviewer", "attempt": 43, "stageAttempt": 3, "outcome": "invalid_review", "text": "FIXTURE_REVIEWER_43"},
+    {"id": "00000007-0000-4000-8000-000000000044", "role": "reviewer", "attempt": 44, "stageAttempt": 1, "outcome": "completed", "text": "FIXTURE_REVIEWER_44"},
+    {"id": "00000007-0000-4000-8000-000000000049", "role": "reviewer", "attempt": null, "stageAttempt": null, "outcome": "unknown", "text": "FIXTURE_UNASSIGNED_49"}
+  ],
+  "encryptedMarker": "FIXTURE_ENCRYPTED_REASONING_MUST_NOT_LEAK",
+  "outcomeProseMarker": "FIXTURE_OUTCOME_PROSE_MUST_NOT_LEAK",
+  "issuedInstruction": "Implement only this repository's issue: GH-7 synthetic validation.\nPreserve this fixture instruction.",
+  "timestamp": "2026-09-30T01:02:03Z"
+}

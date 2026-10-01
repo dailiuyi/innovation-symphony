@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "path": "tests/test_context_api.py",
+      "sha256": "094fcbf5f279b41565af43284688bdd16aba3ce405e238af083a3c01a1de227c",
+      "source_path": "tests/test_context_api.py"
+    },
+    {
+      "path": "tests/test_round_mapping.py",
+      "sha256": "98aa84526425008cc1158a13d973b6f1f1dfec3cee73565cc03141a875f8c112",
+      "source_path": "tests/test_round_mapping.py"
+    },
+    {
+      "path": "tests/rounds.test.mjs",
+      "sha256": "d922ca6fd966772c34c1b11601f6717294eeb64ed06f4b545a9aa9699f1a301a",
+      "source_path": "tests/rounds.test.mjs"
+    }
+  ],
+  "javascript_baseline_count": 10,
+  "python_baseline_count": 16,
+  "python_identities": [
+    "test_context_api.ContextApiTests.test_board_server_rejects_duplicate_bind_and_first_server_stays_live",
+    "test_context_api.ContextApiTests.test_context_endpoint_reports_missing_and_serves_context",
+    "test_context_api.ContextApiTests.test_context_model_prefers_full_collector_value_and_matching_evidence",
+    "test_context_api.ContextApiTests.test_context_response_sanitizes_paths_and_reasoning",
+    "test_context_api.ContextApiTests.test_event_user_message_precedes_response_item_fallback",
+    "test_context_api.ContextApiTests.test_injected_agents_message_does_not_replace_real_task_prompt",
+    "test_context_api.ContextApiTests.test_large_context_page_is_bounded_and_cursor_moves_older",
+    "test_context_api.ContextApiTests.test_prompt_fallback_skips_injected_user_context",
+    "test_context_api.ContextApiTests.test_same_basename_from_different_runtime_roots_stays_distinct",
+    "test_context_api.ContextApiTests.test_search_matches_text_beyond_entry_preview",
+    "test_context_api.ContextApiTests.test_session_id_prompt_model_and_output_are_extracted",
+    "test_round_mapping.RoundMappingTests.test_current_review_does_not_repeat_previous_check_failure",
+    "test_round_mapping.RoundMappingTests.test_diagnosis_attempt_is_preserved_as_its_own_role",
+    "test_round_mapping.RoundMappingTests.test_event_limit_keeps_both_records_for_500_attempts",
+    "test_round_mapping.RoundMappingTests.test_reviewer_retries_keep_receipt_round_and_sanitize_outcomes",
+    "test_round_mapping.RoundMappingTests.test_unmatched_session_is_unassigned_for_controller_rounds"
+  ],
+  "source_commit": "d734a087d83243530bd79f40dfbaedaabf8fe677"
+}
