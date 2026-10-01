@@ -407,11 +407,52 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     end
   end
 
+  test "View marker routes to the fixed trusted runner without forwarding marker arguments" do
+    context = git_context!()
+    log = Path.join(context.root, "view.log")
+
+    command = fn argv, cwd, timeout, output ->
+      assert cwd == context.workspace and output == log
+      assert timeout > 100
+      assert "/opt/toolchain/view-validation/python/bin/python" in argv
+      assert "/opt/symphony/scripts/check_view_isolated.py" in argv
+      refute "/baseline/scripts/check_view.py" in argv
+      assert "-I" in argv and "-B" in argv
+      assert "--candidate-sha" in argv
+      sha = argv_value(argv, "--candidate-sha")
+      assert String.length(sha) == 40
+      scratch = argv_value(argv, "--scratch-root")
+      export!(scratch, %{".check-evidence/view-report/gate-report.json" => "complete View gate report"})
+      result!(scratch, 0)
+      File.write!(output, "View gate output")
+      {:ok, 0}
+    end
+
+    context = put_in(context.opts, sandbox_command_run: command, sandbox_cleanup_timeout_ms: 1)
+
+    assert {:ok, 0} =
+             ExecutionSandbox.check(
+               context,
+               ["python3", "/baseline/scripts/check_view.py"],
+               100,
+               log
+             )
+
+    assert File.read!(Path.rootname(log) <> "-details/view-report/gate-report.json") ==
+             "complete View gate report"
+
+    assert File.read!(log) == "View gate output"
+  end
+
   test "unsupported checks never fall back to a host command" do
     context = context!()
     context = put_in(context.opts, sandbox_command_run: fn _, _, _, _ -> flunk("must not run") end)
 
-    for command <- [["mix", "test"], ["python3", "/trusted/other.py"]] do
+    for command <- [
+          ["mix", "test"],
+          ["python3", "/trusted/other.py"],
+          ["python3", "/baseline/scripts/check_view.py", "--candidate-sha", "attacker-chosen"]
+        ] do
       assert {:error, :unsupported_isolated_check} = ExecutionSandbox.check(context, command, 100, Path.join(context.root, "check.log"))
     end
   end

@@ -112,8 +112,12 @@ const verifyOnly = args.includes('--verify-only');
     report.fixture_origin = origin;
     const privateHome = path.join(out, 'private-home');
     await fs.mkdir(privateHome);
+    const privateRoaming = path.join(privateHome, 'AppData', 'Roaming');
+    const privateLocal = path.join(privateHome, 'AppData', 'Local');
+    const privateTemp = path.join(privateHome, 'Temp');
+    await Promise.all([privateRoaming, privateLocal, privateTemp].map(directory => fs.mkdir(directory, {recursive:true})));
     const env = Object.fromEntries(['PATH','SystemRoot','WINDIR','COMSPEC','PATHEXT'].filter(key => process.env[key]).map(key => [key,process.env[key]]));
-    Object.assign(env, {HOME:privateHome,USERPROFILE:privateHome,TEMP:privateHome,TMP:privateHome,APPDATA:privateHome,LOCALAPPDATA:privateHome});
+    Object.assign(env, {HOME:privateHome,USERPROFILE:privateHome,TEMP:privateTemp,TMP:privateTemp,APPDATA:privateRoaming,LOCALAPPDATA:privateLocal});
     context = await chromium.launchPersistentContext(path.join(out, 'private-profile'), {
       executablePath:chrome, headless:true, chromiumSandbox:true, env,
       viewport:{width:1440,height:960}, reducedMotion:'reduce'});
@@ -141,14 +145,31 @@ const verifyOnly = args.includes('--verify-only');
     await visible('.context-entry');
     await page.locator('#context-type').selectOption('tool');
     await visible('.context-entry');
+    const filteredResponse = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname.endsWith('/context') && url.searchParams.get('q') === 'FIXTURE_TOOL';
+    });
     await page.locator('#context-search').fill('FIXTURE_TOOL');
+    await filteredResponse;
     await visible('.context-entry');
+    const rereadResponse = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname.endsWith('/context') && url.searchParams.get('q') === 'FIXTURE_TOOL';
+    });
+    await page.locator('[data-context-refresh]').click();
+    await rereadResponse;
+    await visible('.context-entry');
+    assert.equal(await page.locator('#context-type').inputValue(), 'tool');
+    assert.equal(await page.locator('#context-search').inputValue(), 'FIXTURE_TOOL');
+    checks.push('visible session reread preserves transcript reading filters');
     const refreshBefore = await page.evaluate(() => globalThis.__viewFixtureRefreshObserver.sequence);
-    await page.locator('#refresh-now').click();
+    // The app is inert behind the open session. Exercise its background refresh
+    // handler without claiming that its covered toolbar is pointer-accessible.
+    await page.locator('#refresh-now').dispatchEvent('click');
     await page.waitForFunction(refreshCompletion, refreshBefore, {timeout:10000});
     assert.equal(await page.locator('#context-type').inputValue(), 'tool');
     assert.equal(await page.locator('#context-search').inputValue(), 'FIXTURE_TOOL');
-    checks.push('refresh preserves transcript reading filters');
+    checks.push('background snapshot refresh preserves transcript reading filters');
     await page.keyboard.press('Escape');
     await page.locator('#session-overlay').waitFor({state:'hidden'});
     await page.locator('#agent-search').fill(coder.id);

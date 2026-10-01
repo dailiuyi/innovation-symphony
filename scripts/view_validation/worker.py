@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import importlib.metadata
 import json
 import os
 from pathlib import Path
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,9 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+WORKER_PATH = Path(__file__).resolve()
+_WORKER_MODULE = sys.modules[__name__]
 
 
 def require(condition, message):
@@ -43,10 +48,220 @@ def flattened(suite):
             yield test
 
 
-def run_tests(stage):
-    suite = unittest.defaultTestLoader.discover(str(stage / 'tests'), pattern='test_*.py')
-    identities = [test.id() for test in flattened(suite)]
-    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def function_code(value):
+    function = getattr(value, '__func__', value)
+    return getattr(function, '__code__', None)
+
+
+def file_digest(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+        raise RuntimeError('trusted worker input is missing, linked, special, or oversized')
+    return sha256(path.read_bytes())
+
+
+def stage_test_inventory(stage):
+    """Bind just test inputs; generated build/_tmp/fixture-runtime files are allowed."""
+    root = Path(stage) / 'tests'
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError('Python test input directory is missing or linked')
+    rows = {}
+    for base, directories, files in os.walk(root, followlinks=False):
+        base_path = Path(base)
+        for name in list(directories):
+            path = base_path / name
+            if path.is_symlink():
+                raise RuntimeError('Python test input contains a symlink')
+            if name == '__pycache__':
+                directories.remove(name)
+        for name in files:
+            path = base_path / name
+            if '__pycache__' in path.parts or path.suffix == '.pyc':
+                continue
+            mode = path.lstat().st_mode
+            if not stat.S_ISREG(mode) or path.stat().st_size > 16 * 1024 * 1024:
+                raise RuntimeError('Python test input contains a special or oversized file')
+            rows[path.relative_to(root).as_posix()] = file_digest(path)
+    return dict(sorted(rows.items()))
+
+
+def frozen_input_inventory():
+    baseline_path = HERE / 'frozen' / 'baseline.json'
+    baseline_data = baseline_path.read_bytes()
+    baseline = json.loads(baseline_data)
+    files = {}
+    for row in baseline['files']:
+        path = HERE / 'frozen' / row['path']
+        actual = file_digest(path)
+        if actual != row['sha256']:
+            raise RuntimeError('trusted frozen test differs from its baseline digest')
+        files[row['path']] = actual
+    return {'baseline.json': sha256(baseline_data), 'files': dict(sorted(files.items()))}
+
+
+def test_runner_hooks():
+    loader = unittest.defaultTestLoader
+    runner = unittest.TextTestRunner
+    suite = unittest.TestSuite
+    result = unittest.TestResult
+    text_result = unittest.TextTestResult
+    methods = {
+        'loader_discover': unittest.TestLoader.discover,
+        'runner_init': runner.__init__,
+        'runner_run': runner.run,
+        'runner_make_result': runner._makeResult,
+        'suite_iter': suite.__iter__,
+        'suite_run': suite.run,
+        'case_run': unittest.TestCase.run,
+        'result_was_successful': result.wasSuccessful,
+        'text_result_add_success': text_result.addSuccess,
+        'text_result_add_failure': text_result.addFailure,
+        'text_result_add_error': text_result.addError,
+        'text_result_add_skip': text_result.addSkip,
+    }
+    return {'loader': loader, 'runner_class': runner, 'suite_class': suite,
+            'result_class': result, 'text_result_class': text_result, 'methods': methods,
+            'method_codes': {name: function_code(value) for name, value in methods.items()},
+            'loader_discover_bound': loader.discover}
+
+
+def capture_worker_integrity(stage, trusted_functions):
+    module_globals = _WORKER_MODULE.__dict__
+    function_names = ('require', 'deny_process', 'loopback_connect', 'flattened', 'sha256',
+                      'function_code', 'file_digest', 'stage_test_inventory', 'frozen_input_inventory',
+                      'test_runner_hooks', 'capture_worker_integrity', 'activate_sandbox_hooks', 'assert_worker_integrity',
+                      'run_tests', 'render_fixture')
+    function_refs = {name: module_globals[name] for name in function_names}
+    module_names = ('argparse', 'ast', 'hashlib', 'importlib', 'json', 'os', 'Path',
+                    're', 'socket', 'stat', 'subprocess', 'sys', 'tempfile', 'unittest', 'patch')
+    module_refs = {name: module_globals[name] for name in module_names}
+    constant_names = ('HERE', 'WORKER_PATH', '_WORKER_MODULE')
+    constant_refs = {name: module_globals[name] for name in constant_names}
+    trusted_services = {'metadata_version': importlib.metadata.version}
+    return {
+        'module': _WORKER_MODULE,
+        'module_name': module_globals['__name__'],
+        'module_globals': module_globals,
+        'function_refs': function_refs,
+        'function_codes': {name: function_code(value) for name, value in function_refs.items()},
+        'module_refs': module_refs,
+        'constant_refs': constant_refs,
+        'trusted_services': trusted_services,
+        'framework': test_runner_hooks(),
+        'worker_sha256': file_digest(WORKER_PATH),
+        'frozen_inputs': frozen_input_inventory(),
+        'stage_test_inputs': stage_test_inventory(stage),
+        'sys_path': tuple(sys.path),
+        'expected_sys_path': tuple(sys.path),
+        'runtime_hooks': None,
+        'trusted_run_tests': trusted_functions['run_tests'],
+        'trusted_render_fixture': trusted_functions['render_fixture'],
+        'trusted_guard': trusted_functions['guard'],
+    }
+
+
+def activate_sandbox_hooks(integrity, guarded_connect):
+    integrity['runtime_hooks'] = {
+        'subprocess_run': deny_process,
+        'subprocess_popen': deny_process,
+        'socket_connect': guarded_connect,
+    }
+
+
+def assert_worker_integrity(integrity, stage, phase):
+    """Reject changes to the trusted runner or the exact test inputs it executes."""
+    changed = []
+    module_globals = integrity['module_globals']
+    if sys.modules.get(integrity['module_name']) is not integrity['module']:
+        changed.append('worker module identity')
+    if module_globals.get('__file__') != str(integrity['constant_refs']['WORKER_PATH']):
+        changed.append('worker source path')
+    for name, expected in integrity['constant_refs'].items():
+        if module_globals.get(name) is not expected:
+            changed.append(name + ' constant')
+    for name, expected in integrity['function_refs'].items():
+        actual = module_globals.get(name)
+        if actual is not expected:
+            changed.append(name + ' reference')
+        elif function_code(actual) is not integrity['function_codes'][name]:
+            changed.append(name + ' code')
+    for name, expected in integrity['module_refs'].items():
+        if module_globals.get(name) is not expected:
+            changed.append(name + ' module reference')
+    if importlib.metadata.version is not integrity['trusted_services']['metadata_version']:
+        changed.append('package version reader')
+    framework = integrity['framework']
+    if (unittest.defaultTestLoader is not framework['loader']
+            or unittest.TextTestRunner is not framework['runner_class']
+            or unittest.TestSuite is not framework['suite_class']
+            or unittest.TestResult is not framework['result_class']
+            or unittest.TextTestResult is not framework['text_result_class']):
+        changed.append('unittest runner object')
+    for name, expected in framework['methods'].items():
+        owner, attribute = {
+            'loader_discover': (unittest.TestLoader, 'discover'),
+            'runner_init': (unittest.TextTestRunner, '__init__'),
+            'runner_run': (unittest.TextTestRunner, 'run'),
+            'runner_make_result': (unittest.TextTestRunner, '_makeResult'),
+            'suite_iter': (unittest.TestSuite, '__iter__'),
+            'suite_run': (unittest.TestSuite, 'run'),
+            'case_run': (unittest.TestCase, 'run'),
+            'result_was_successful': (unittest.TestResult, 'wasSuccessful'),
+            'text_result_add_success': (unittest.TextTestResult, 'addSuccess'),
+            'text_result_add_failure': (unittest.TextTestResult, 'addFailure'),
+            'text_result_add_error': (unittest.TextTestResult, 'addError'),
+            'text_result_add_skip': (unittest.TextTestResult, 'addSkip'),
+        }[name]
+        actual = getattr(owner, attribute)
+        if actual is not expected or function_code(actual) is not framework['method_codes'][name]:
+            changed.append('unittest.' + name)
+    if framework['loader'].discover.__func__ is not framework['methods']['loader_discover']:
+        changed.append('unittest default loader binding')
+    if file_digest(integrity['constant_refs']['WORKER_PATH']) != integrity['worker_sha256']:
+        changed.append('worker source bytes')
+    if frozen_input_inventory() != integrity['frozen_inputs']:
+        changed.append('trusted frozen test inputs')
+    if stage_test_inventory(stage) != integrity['stage_test_inputs']:
+        changed.append('stage test inputs')
+    if tuple(sys.path) != integrity['expected_sys_path']:
+        changed.append('module search path')
+    runtime = integrity['runtime_hooks']
+    if runtime is not None and (subprocess.run is not runtime['subprocess_run']
+                                or subprocess.Popen is not runtime['subprocess_popen']
+                                or socket.socket.connect is not runtime['socket_connect']):
+        changed.append('process/network isolation hook')
+    if changed:
+        raise RuntimeError('worker integrity changed ' + phase + ': ' + ', '.join(sorted(set(changed))))
+
+
+def run_tests(stage, integrity, guard):
+    guard(integrity, stage, 'before test discovery')
+    stage_tests = str((stage / 'tests').resolve())
+    expected_after_discovery = integrity['sys_path']
+    if stage_tests not in expected_after_discovery:
+        expected_after_discovery = (stage_tests,) + expected_after_discovery
+    suite = integrity['framework']['loader_discover_bound'](
+        str(stage / 'tests'), pattern='test_*.py')
+    # unittest.TestLoader.discover legitimately prepends its top-level test
+    # directory to sys.path. Permit only that exact standard-library change;
+    # candidate imports cannot add, remove, or reorder any other entries.
+    if tuple(sys.path) != expected_after_discovery:
+        raise RuntimeError('worker integrity changed after candidate test import: module search path')
+    integrity['expected_sys_path'] = expected_after_discovery
+    # Importing test modules is candidate code execution; validate before any
+    # discovered TestCase or reporting function is called.
+    guard(integrity, stage, 'after candidate test import')
+    identities = [test.id() for test in integrity['function_refs']['flattened'](suite)]
+    guard(integrity, stage, 'after test identity collection')
+    runner = integrity['framework']['runner_class'](stream=sys.stderr, verbosity=2)
+    result = runner.run(suite)
+    guard(integrity, stage, 'after candidate test execution')
+    if not isinstance(result, integrity['framework']['text_result_class']) or result.testsRun != len(identities):
+        raise RuntimeError('captured unittest runner returned an incomplete result')
     return {'tests': result.testsRun, 'identities': identities,
             'failures': [test.id() for test, _ in result.failures],
             'errors': [test.id() for test, _ in result.errors],
@@ -56,14 +271,17 @@ def run_tests(stage):
             'passed': result.wasSuccessful() and result.testsRun > 0 and not result.skipped}
 
 
-def render_fixture(stage, fixture_path, evidence):
+def render_fixture(stage, fixture_path, evidence, integrity, guard):
+    guard(integrity, stage, 'before fixture imports')
     from symphony_board import collector, context, pagegen, wslpull
     from symphony_board.derive import build_stories, build_tasks
     from symphony_board.selfcheck import self_check
+    guard(integrity, stage, 'after fixture imports')
 
     require(importlib.metadata.version('codex-transcript-viewer') == '0.5.0',
             'frozen rendering dependency must be codex-transcript-viewer==0.5.0')
     self_check()  # Includes an actual third-party HTML render; never substitute once.
+    guard(integrity, stage, 'after self_check rendering')
     fixture = json.loads(fixture_path.read_text(encoding='utf-8'))
     cache = stage / 'build' / 'rollouts'
     cache.mkdir(parents=True, exist_ok=True)
@@ -166,9 +384,13 @@ def render_fixture(stage, fixture_path, evidence):
     def fake_run(args, **kwargs):
         calls.append(args)
         return type('Result', (), {'returncode': 0, 'stdout': b'{"runtimes": []}', 'stderr': b''})()
-    with patch.object(subprocess, 'run', fake_run):
-        require(wslpull.pull_snapshot(['/fixture-unused']) == {'runtimes': []}, 'mock WSL snapshot decode')
+    # This test exercises Windows argv construction, not Windows path semantics.
+    # Linux has no drive-letter cwd, so map the fixture path before calling it.
+    with patch.object(wslpull, 'to_wsl_path', return_value='/mnt/z/fixture-unused.py'), \
+            patch.object(subprocess, 'run', fake_run):
+        require(wslpull.pull_snapshot(['Z:/fixture-unused.py']) == {'runtimes': []}, 'mock WSL snapshot decode')
     require(len(calls) == 1 and calls[0][:3] == ['wsl.exe', '-e', 'python3'], 'Windows-to-WSL argv contract')
+    require(calls[0][3] == '/mnt/z/fixture-unused.py', 'Windows-to-WSL path translation')
     source = ast.parse((stage / 'app' / 'run.py').read_text(encoding='utf-8'))
     once = [n for n in ast.walk(source) if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == 'once']
     require(len(once) == 1 and not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == 'write_context_pages'
@@ -190,15 +412,40 @@ def main():
     private_tmp.mkdir()
     tempfile.tempdir = str(private_tmp)
     report = {'passed': False, 'fixture_only': True, 'formal_acceptance': False}
+    # Keep callable references and their fingerprints before any candidate
+    # module can import into this interpreter or edit __main__.
+    trusted_run_tests = run_tests
+    trusted_render_fixture = render_fixture
+    trusted_guard = assert_worker_integrity
     try:
-        from symphony_board import wslpull
-        wslpull.wsl = deny_process
-        with patch.object(subprocess, 'run', deny_process), patch.object(subprocess, 'Popen', deny_process), \
-                patch.object(socket.socket, 'connect', loopback_connect(socket.socket.connect)):
-            report['python'] = run_tests(args.stage)
+        integrity = capture_worker_integrity(args.stage, {
+            'run_tests': trusted_run_tests,
+            'render_fixture': trusted_render_fixture,
+            'guard': trusted_guard,
+        })
+        report['worker_integrity'] = {
+            'worker_sha256': integrity['worker_sha256'],
+            'frozen_inputs': integrity['frozen_inputs'],
+            'stage_test_inputs': integrity['stage_test_inputs'],
+            'captured_runner': True,
+        }
+        trusted_guard(integrity, args.stage, 'before candidate import')
+        guarded_connect = loopback_connect(socket.socket.connect)
+        with patch.object(subprocess, 'run', deny_process), \
+                patch.object(subprocess, 'Popen', deny_process), \
+                patch.object(socket.socket, 'connect', guarded_connect) as patched_connect:
+            activate_sandbox_hooks(integrity, patched_connect)
+            trusted_guard(integrity, args.stage, 'before candidate import')
+            from symphony_board import wslpull
+            trusted_guard(integrity, args.stage, 'after candidate import')
+            wslpull.wsl = deny_process
+            report['python'] = trusted_run_tests(args.stage, integrity, trusted_guard)
             require(report['python']['passed'], 'Python suite failed, skipped, errored, or executed zero tests')
             if args.render:
-                report['render'] = render_fixture(args.stage, args.fixture, args.evidence)
+                trusted_guard(integrity, args.stage, 'before captured render')
+                report['render'] = trusted_render_fixture(args.stage, args.fixture, args.evidence,
+                                                          integrity, trusted_guard)
+            trusted_guard(integrity, args.stage, 'after candidate execution')
         report['dependencies'] = {'python': sys.version, 'executable': sys.executable,
                                   'codex-transcript-viewer': importlib.metadata.version('codex-transcript-viewer')}
         report['passed'] = True

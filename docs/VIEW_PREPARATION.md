@@ -1,6 +1,6 @@
 # Issue #7 无人值守前置准备
 
-本分支只准备固定来源制品、独立检查候选代码和脱敏夹具，不提前执行 [Issue #7](https://github.com/dailiuyi/innovation-symphony/issues/7) 的 View 合仓。`view/` 尚未导入，现有 View checkout、控制器、可信安装和运行配置均不由这些脚本改动。源码保存、本地提交、门禁安装、真实验收和远端发布是不同状态。
+PR #8 准备了固定来源制品、独立检查代码和脱敏夹具。随后 IS-045 授权完成 ready 前剩余准备，包括真实隔离、依赖、可信检查接入及安装验证。两阶段均不提前执行 [Issue #7](https://github.com/dailiuyi/innovation-symphony/issues/7) 的 View 合仓，`view/` 尚未导入。源码保存、本地提交、门禁安装、真实验收和远端发布是不同状态；新增入口的实际安装及调用证据见本文末尾记录。
 
 ## 授权及来源
 
@@ -53,17 +53,23 @@ python -X utf8 -B scripts/prepare_view_source.py pseudo-task `
   --isolated-root <新的伪任务隔离目录>
 ```
 
-它拒绝 `.local` 和 `innovation-symphony-v0*` 运行路径，标记 `production_claim=false`、`execution_started=false`、`sandbox_mount_executed=false`、`formal_acceptance=false`。这证明文件级预置时序和 mkdir 保留行为，尚未证明真实 bubblewrap 挂载或正式领取后的端到端行为。未来操作者须在授权的 receipt 根目录中、领取前预置制品；本次没有向真实生产 receipt 写入。
+它拒绝 `.local` 和 `innovation-symphony-v0*` 运行路径，标记 `production_claim=false`、`execution_started=false`、`sandbox_mount_executed=false`、`formal_acceptance=false`。这只证明文件级预置时序和 mkdir 保留行为。IS-045 的实际安装方案将源码包在领取前预置到固定可信安装的 `scripts/view_validation/source/`，任务通过只读 `/opt/symphony/scripts/view_validation/source/` 取得制品，不需本轮向生产 receipt 写入。该本机制品目录忽略于 Git，安装时认证来源并记录摘要；缺少制品时门禁失败，没有动态下载或凭据回退。
 
 ## 独立 View 检查的职责
 
-`scripts/view_validation/` 是供外部验收负责人审核的候选检查实现，未接入、未安装、未激活控制器。已有 `check_isolated.py` 只检查 Elixir，`ExecutionSandbox.check_kind` 也未覆盖 View。新增独立脚本或未来 CI 不等于现有控制器会执行该门禁。
+`scripts/view_validation/validator.py` 保留前置准备接口和 `formal_acceptance=false`。IS-045 新增 `check_view.py` 路由标记及 `check_view_isolated.py` 可信包装器，由 `ExecutionSandbox.check` 单独路由到固定工具链 Python 和固定可信脚本；host 直接运行标记失败，额外参数及其他命令不回退宿主。已有 `check_isolated.py` 的全部 Elixir 检查保持不变。
+
+View 包装器核实 Linux 私有网络、候选 Git/控制器 evidence/工具链/可信脚本的只读挂载，运行冻结 Python/JS、候选测试和实际 self_check/HTML 生成，校验来源与候选摘要，再导出 `.check-evidence`。报告区分 `controller_view_check`、`formal_code_checks`、`formal_acceptance=false` 和 `real_windows_wsl_acceptance=false`；正式代码门禁通过不表示最终实机验收完成。工作流必须保留原两条 Elixir 检查并追加 `[python3, "{baseline}/scripts/check_view.py"]`。安装与配置字段存在仍不证明入口已经被实际调用。
+
+共享 launcher 会向每个私有工作区注入 `elixir/deps`。View 包装器在确认隔离契约后，先拒绝 HEAD 跟踪该路径的候选，再只清理私有副本中的注入依赖；不修改宿主工具链或候选工作区。之后严格比较 HEAD、index 和所有候选文件。View 使用独立 Python/Node/Viewer，无需这份 Elixir 依赖。worker 的可信入口在候选首次导入前捕获，入口与测试输入发生篡改即失败；独立审查已复现并要求拒绝 `__main__.run_tests` 替换。该守卫不被解释为对任意恶意 Python 的完整防伪证明。
+
+全量控制器检查与独立 View 检查分别记录：前者为 Elixir 生命周期回归，不能代替后者的冻结测试和实际渲染。
 
 独立检查必须使用冻结基线测试和脱敏固定夹具，实际执行 Python 16 项、JS 10 项基线及 self_check 的解析／HTML 生成；数量是基线而非新增测试上限。必须报告并拒绝必测项零执行、skip、缺依赖、渲染失败和检查期间候选变化。证据绑定候选 SHA、候选树／源码摘要、来源制品、验证器及冻结夹具摘要、依赖、命令和原始结果。固定来源中的 `once` 不调用 `write_context_pages`，不能用一次采集返回成功代替 HTML 生成证明。
 
 未来在实际合仓后，候选的 `view/` 路径、首次运行缺目录修复、唯一临时脚本及异常清理、TOML/JSON/default 配置、原有参数和 cwd 语义必须一起验收。准备阶段的临时伪候选结果不能覆盖未来真实合仓候选。
 
-## 实机环境与外部停点
+## PR #8 准备阶段的实机环境与外部停点（历史）
 
 2026-10-01 本次预检：Windows Python 3.12.5 64 位；`codex-transcript-viewer` 0.5.0；Node v24.19.0；npm 11.17.0；Chrome 153.0.8010.54；Edge 154.0.4258.37。Codex runtime 既有 Playwright / playwright-core 1.62.1 成功加载，其默认 Chromium 文件不存在。一次隔离浏览器尝试指定系统 Chrome、既有 Playwright、全新私有 profile 和 `chromiumSandbox:true`，在当前受限执行上下文中因 GPU 子进程 `0xC0000022`／应用能力 `0x80070005` 拒绝而退出，未执行任何 UI 断言。自建 loopback 夹具服务已关闭，浏览器退出已记录；没有重试、提权或更改安全选项。浏览器自动化代码已准备，但可用性及 UI 验收尚未证明。
 
@@ -80,3 +86,17 @@ Windows 监听表查询时 43191、5187、8765 未见监听，这只是瞬时快
 5. 若改由 Symphony 无人值守执行，另行审核可信检查入口的运行方法和安装／激活授权，并实际确认领取前来源挂载。用户添加 ready 后才可领取。
 
 目前不宣布 Issue 完成，不生成 PR，不把离线准备、伪任务或未来 Draft PR 视作全部实机验收通过。
+
+## IS-045 的当前准备实测
+
+本轮从干净 main 快进到 PR #8 合并提交 `d49829488c1cce65c1917b219e428e98ff7050bb`，之后只在 `codex/issue7-ready-preparation` 保存准备改动。复核远端 main 仍为该 SHA，Issue #7 为 OPEN 且没有标签；没有导入 `view/`，没有远端发布。
+
+- 固定源码包为 36 个净化文件，ZIP SHA256 `a6849efb34a88b892a5d8773a301e490be17a85b5153985be33472ba79594bf2`，外部 manifest SHA256 `a8e0e001d5e293ad0069185beb8c7ffb4eecf4df45a64faaa9ac802e28f057a5`。在真实私有 bubblewrap 中已认证、解包并读取 `app/run.py` 和测试文件；`/evidence` 写入探针得到只读错误，来源前后摘要一致。
+- 在授权后启动 desktop WSL；没有 Symphony systemd 单元自动启动，旧 d4e913e 控制器与 watchdog 当时均不存在。docker-desktop 保持停止。Linux Python 3.12.3、Git 2.43.0、bwrap、cgroup v2、unshare、timeout 等可用。
+- 单独预置 `/var/tmp/innovation-symphony-toolchain/view-validation/` 下的 Python venv、Node 24.19.0 与 Viewer 0.5.0。Node 官方校验值为 `14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647`；Viewer wheel 为 `71f2f3ab33cdca42d0174fc7df83aab2d11255264e4be5f0eeac55fe9935a0eb`。没有替换系统 Python/Node 或原 Elixir 工具链。
+- 在 `/var/tmp/issue7-controller-view-probe-1790869215166431617`，实际调用 `SymphonyElixir.Mvp.ExecutionSandbox.check`，返回 `{:ok, 0}`，导出 `controller_view_check=true`、`formal_code_checks=true`、`formal_acceptance=false` 的报告。这是独立伪候选调用，不是主服务领取 #7；安装后的固定版本仍须重新取得调用证据。
+- Windows Python 实际通过 wsl.exe 读取独立 WSL 脱敏夹具并生成六个 HTML：一个任务、19 轮、Review 尝试 41–44，环境链路成功。固定原来源的首次 `once` 仍因 `build/rollouts` 缺失退出 1；明确创建缓存后的环境验证退出 0。此绕行只证明环境可用，首次运行修复与唯一临时文件清理仍是 #7 的执行内容。证据为 `issue7-real-collection-run3/collection-result.json`。
+- 最新完整浏览器证据为 `issue7-browser-desktop-final/browser-result.json`；当前源码绑定的 pipeline 伪候选为 `a66f3d0939129ff1d14fd8427be8267b7efbe1ea`。Chrome 153.0.8010.54、私有 profile、sandbox=true，七项导航／刷新／关闭重开／390px 检查通过，浏览器错误为空，输入未变，自建服务和浏览器均已关闭。
+- 控制器全量回归为 653 项、0 失败、6 项既有跳过、覆盖率 100%；格式、公共规格、Credo、Dialyzer 和 escript 构建通过。最终脚本与 View 流程使用已预置依赖运行，必测项不跳过。独立复审已用同一伪造输入确认 worker 从虚假通过变为明确拒绝。
+
+上述 Windows、浏览器证据位于本机 Codex 制品目录 `C:/Users/emla/.codex/visualizations/2026/10/01/01a0f7e7-9589-7590-b992-9120f50f53d9/`。工具报告始终保留准备阶段标记，不把环境成功当作最终迁移候选验收。固定安装、实际进程与原状态保留结果在安装完成后追加。

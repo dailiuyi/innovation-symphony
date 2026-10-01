@@ -1,4 +1,5 @@
 .local/
+scripts/view_validation/source/
 .env
 .env.*
 !.env.example
