@@ -1,5 +1,6 @@
 """GH-7: synthetic first run, invocation isolation and existing entrypoint paths."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -15,7 +16,9 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 VIEW = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(VIEW / "app"))
+APP_DIR = str(VIEW / "app")
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 import run as entry
 from symphony_board import api, collector, config, context, wslpull
 from symphony_board.state import BoardState
@@ -23,6 +26,33 @@ from symphony_board.store import BoardStore
 
 
 class MigrationTests(unittest.TestCase):
+    def import_migration_tests(self):
+        spec = importlib.util.spec_from_file_location("migration_import_probe", __file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(Path(module.entry.__file__).resolve(), VIEW / "app" / "run.py")
+        self.assertIs(module.collector, collector)
+        return module
+
+    def test_import_preserves_preconfigured_module_search_path(self):
+        # Keep app away from the front to catch both duplication and reordering.
+        before = [path for path in sys.path if path != APP_DIR]
+        before.insert(1, APP_DIR)
+        with patch.object(sys, "path", before.copy()):
+            self.import_migration_tests()
+            self.assertEqual(sys.path, before)
+
+    def test_import_adds_missing_app_path_for_normal_test_entry(self):
+        before = [path for path in sys.path if path != APP_DIR]
+        with patch.object(sys, "path", before.copy()):
+            self.import_migration_tests()
+            self.assertEqual(sys.path, [APP_DIR, *before])
+            # Check path resolution even when the modules are already cached.
+            from importlib.machinery import PathFinder
+            for name, path in (("run", VIEW / "app" / "run.py"),
+                               ("symphony_board", VIEW / "app" / "symphony_board" / "__init__.py")):
+                self.assertEqual(Path(PathFinder.find_spec(name, sys.path).origin).resolve(), path)
+
     def test_first_cycle_caches_and_renders_without_existing_directories(self):
         sid = "00000007-0000-4000-8000-000000000040"
         rows = [
@@ -147,6 +177,7 @@ class MigrationTests(unittest.TestCase):
                         config.load_config(str(path))
 
     def test_once_entrypoint_from_root_and_view_preserves_out_and_overrides(self):
+        aliases_before = entry.common.REPO_ALIASES.copy()
         self.assertEqual(Path(config.CONFIG_TOML), VIEW / "app" / "config.toml")
         self.assertEqual(Path(api.WEB_DIR), VIEW / "app" / "web")
         self.assertEqual(Path(collector.BUILD_ROLLOUTS), VIEW / "build" / "rollouts")
@@ -164,6 +195,7 @@ class MigrationTests(unittest.TestCase):
                             supplied.append((cfg.interval, cfg.port, cfg.path))
                             return real_cycle(cfg, *args)
                         with patch.object(entry, "DATA_DIR", directory), \
+                                patch.dict(entry.common.REPO_ALIASES), \
                                 patch.object(entry, "self_check"), \
                                 patch.object(entry, "pull_snapshot", return_value={"runtimes": []}), \
                                 patch.object(entry, "enrich_pulls"), \
@@ -172,6 +204,7 @@ class MigrationTests(unittest.TestCase):
                                     "--port", "8620", "--config", str(VIEW / "app" / "config.example.toml"), "--out", relative_out]), \
                                 contextlib.redirect_stdout(io.StringIO()):
                             entry.main()
+                        self.assertEqual(entry.common.REPO_ALIASES, aliases_before)
                         payload = json.loads((Path(directory) / "snapshot.json").read_text())
                         self.assertEqual(payload["tasks"], [])
                         self.assertEqual(payload["interval"], 11)

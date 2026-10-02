@@ -87,3 +87,49 @@ Linear测试，需要真实平台、凭据和显式环境变量；本轮未开�
 浏览器交互、数据库保留及看板启停隔离，保存环境、命令、结果、原始日志、截图和摘要。
 发现代码问题回到原任务修复；只剩外部证据时按既有外部停点合同保留未完成项。
 本轮没有提交、push、PR、合并、安装、部署、删除旧仓库或切换运行服务，不宣布GH-7全部完成。
+
+## 导入副作用修复续跑（2026-10-02）
+
+本节追加本次续跑结果，不替代上面的初轮记录。当前只读 HEAD 是此前被拒绝的
+`3960c9064e9a5b45bf148be74bfdfc883bc6418a`；修复尚未提交，不能将它作为修复后的候选 SHA。
+控制器失败日志确认迁移测试无条件插入已预置的 app 路径，触发
+`worker integrity changed after candidate test import: module search path`。
+
+保留此前导出的修复：仅在 app 路径缺失时添加；回归分别断言预置路径（位于列表中间）
+完全不变和缺失路径仅添加一次、模块仍解析到正确源码。入口测试也恢复配置加载修改的
+仓库别名，避免影响同进程后续夹具。没有改首次缓存、临时文件、固定预期或受信检查。
+
+| 本次命令／诊断 | 结果 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-repair-view` | 26项 Python、10项 JS，无 skip；实际 self_check、迁移前后完整结果比较及8种入口通过 |
+| `/opt/toolchain/view-validation/python/bin/python -I -B view/tests/test_migration.py -v` | 新解释器直接运行10项迁移回归通过，验证普通入口无需预加载 app 模块 |
+| 直接运行 `/opt/symphony/scripts/view_validation/worker.py` 的冻结／候选私有副本 | 各26项 Python、10项 JS通过，完整性保护未改；冻结阶段实际 self_check 与6份 HTML渲染通过；命令及结果见 `/tmp/gh7-repair-trusted-worker-2/` |
+| 在 `/tmp/gh7-repair-negative/` 副本恢复旧的无条件插入 | 新回归明确失败；受信 worker准确复现原完整性错误。这是预期负向诊断，未修改工作区源码 |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 55项、0失败，保留原2项宿主隔离集成 skip；原因与初轮相同 |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项 ExUnit（0失败、6项原 live skip）、100%覆盖率、Dialyzer及 escript构建通过；结果在 `.check-evidence/candidate-dbcxgsrn/` |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 首轮652项、1失败、6 skip，退出10；完整复跑652项、0失败、6原 live skip，退出0；首轮和复跑分别保留于 `.check-evidence/baseline-z0rbeu9i/`、`.check-evidence/baseline-g_56khlq/` |
+
+基线首轮失败为 `MvpExternalTaskTest` 的默认 tracker 绑定断言（419行用例、427行断言）：
+预期 `{:error, :tracker_binding_mismatch}`，实际 `{:error, {:mvp_awaiting_external, "bound"}}`。
+相同命令的新完整运行通过；没有改 Elixir代码、冻结测试、seed、过滤、覆盖率或权限，
+也不以复跑成功抹除首次失败或宣称该既有用例绝无偶发问题。
+
+受信 worker 的命令记录包含 argv、环境、stdout/stderr 与逐项报告。首次临时编排因重复
+创建 `private-home` 失败，改为每阶段只创建一次后重新运行全部阶段通过；未改受信程序。
+以上是未提交源码的自检，不能代替正式候选身份核验、完整门禁或独立 Review。
+
+实际调用正式入口：
+
+```sh
+/opt/toolchain/view-validation/python/bin/python -I -B \
+  /opt/symphony/scripts/check_view_isolated.py \
+  --candidate-sha 3960c9064e9a5b45bf148be74bfdfc883bc6418a
+```
+
+退出1，环境核验报 `GateError: /workspace/.git is not one verified read-only sandbox mount`。
+没有改变挂载、Git、检查或证据来绕过此要求；正式 View 门禁仍须由控制器在受信挂载和
+新冻结候选上执行，不能把上述受信 worker 自检报告成该门禁通过。
+
+浏览器再次实际调用 `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-repair-view/fixture`，
+退出1，`Cannot find module 'playwright/package.json'`（`MODULE_NOT_FOUND`）；UI断言未执行。
+Windows＋WSL真实采集、浏览器交互和真实控制器启停隔离继续保留外部验收项。
