@@ -149,3 +149,17 @@ node E:/code/innovation-symphony/scripts/view_validation/browser_fixture.cjs `
 实际调用已安装 `Executor.resume_recovery` 返回 `{:error, :mvp_resume_binding_mismatch}`，原回执字节未变。现有入口仅接受特定 blocked 停点，开放编码轮还要求前序有效 Review 拒绝；当前状态不满足，不能重启后宣称任务已恢复。当前回执 status=coding，但 API running=0，原 3 次 Agent 尝试、1 次返工、双 Sol 6.1、开始时间和预算均保留。恢复需要补齐并验证狭窄的可信中断接续入口，激活及切换运行版本按既有批准边界处理。
 
 新服务、原回执 SHA256、362 个非构建工作区普通文件摘要、现有入口实际拒绝及剩余阻塞记录在 Codex 制品 `issue7-service-restarted/summary.json`；原文件和配置备份在其 operation 路径。该记录证明服务已启动，不证明 #7 已继续或迁移验收通过。
+
+### 获准固定修复及真实接续（2026-10-02，北京时间 11:45 快照）
+
+按 IS-048，本地控制器修复已提交为 `b12e5ab42e3c762d19e4ceac7fb7d692e92620d0`，完整六项门禁通过：663 项测试、0 失败、6 项既有跳过、覆盖率 100%，格式、公共规格、严格 Credo、Dialyzer 和 escript 构建通过。先前一次既有看门狗计时断言超出 6 毫秒的失败日志另存，未改断言或跳过。独立 Sol 6.1 Review 完成正确性、遗漏及简化检查，并纠正操作脚本的 PID 复用竞态。
+
+首次安装在停止服务前被逐文件摘要门禁拒绝：操作同步脚本误将 PNG 作文本换行处理。修正后补充新鲜独立复审，实际 WSL 归档的 229 个文件全部匹配；执行源码字节没有变化。失败归档保留，不把被拒安装算作成功。
+
+11:43 固定版本安装完成，实际控制器 PID `114696`，cwd 为新固定安装的 `elixir/`，API HTTP 200。安装前后 22,935 个既有状态及工作区普通文件内容摘要完全相同，原 #7 回执字节未变；WORKFLOW 字节及三条冻结检查、沙盒可信根仍沿用原固定安装 `a63d3fd`，没有扩充权限、资源或模型。领取保持开启，看门狗维护暂停保留；本地提交没有推送或合并。
+
+安装后真实只读预检通过，随后经 `Executor.resume_interrupted/3` 审计入口接续原 #7，执行进程 PID `115012`、cwd 指向新固定版本。原第 2 轮继续，新增第 4 次 Agent 尝试、coder 阶段第 2 次；真实 thread/settings/updated 返回 `gpt-6.1-sol`，thread 为 `01a0fab6-1987-7283-b727-a7f671cb2e14`，11:45 已观察到 13 个隔离命令完成事件。回执 status=coding，原失败候选、事件前缀、返工次数 1、开始时间及冻结合同均保留。此为独立受审续跑进程，不登记为主服务 API running=1。
+
+原截止仍为 11:47:29，本次没有追加预算。上述快照不证明新候选、最终 View 检查、真实 Windows＋WSL/浏览器验收、Reviewer 或 Draft PR 已完成；精确后续状态以本次回执及证据为准。安装、完整门禁、独立审查、真实预检和续跑快照归档在 Codex 制品 `issue7-interrupted-resumed/summary.json`，原始审计目录为 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-interrupted-1790909784477234160/`。
+
+11:48 终态核实：原墙钟预算耗尽，回执为 `blocked / :mvp_recovery_resource_exhausted`，第 4 次尝试记录 `{:error, :wall_timeout}`；29 个命令完成事件已保留，没有新候选或 Reviewer/Draft PR。HEAD 仍为 `3960c9064e9a5b45bf148be74bfdfc883bc6418a`，导出的 `view/tests/test_migration.py` 修改保留在原工作区；原回执、二进制 diff 和完整工作区另存为 `receipt-after-budget.json`、`exported-after-budget.patch`、`workspace-after-budget`。续跑操作 `gh7-interrupted-2594` 已形成完成链。本次修复和真实接续已经执行，继续验收仍需要追加有限预算及核实相应审计停点入口，不能沿用本次授权热改回执或归零重领。

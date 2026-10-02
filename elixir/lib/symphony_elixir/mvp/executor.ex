@@ -97,13 +97,21 @@ defmodule SymphonyElixir.Mvp.Executor do
          {:ok, operation} <- OperatorRecheck.begin(context, raw, data, audit),
          {:ok, _, _} <- resume_binding(context, expected_receipt_digest, :resume_recovery),
          {:ok, after_lock_sha} <- workspace_digest(context.workspace),
-         true <- after_lock_sha == workspace_sha or {:error, :mvp_recovery_workspace_changed} do
+         true <- after_lock_sha == workspace_sha or {:error, :mvp_recovery_workspace_changed},
+         :ok <- recovery_resume_dispatch_binding(context, data, dispatch) do
       context = put_effective_recovery_policy(resume_context, effective_policy, data["max_rework"])
       :ok = record_recovery_extension(context, operation.id, extension, data, effective_policy, workspace_sha)
       :ok = record(context, "recovering", %{"operator_recheck" => operation.id, "reason" => nil})
 
       result =
         case dispatch do
+          {:continue_interrupted_coder, number, head, feedback, _proof, stage} ->
+            context
+            |> Map.put(:check_attempt, 1)
+            |> Map.put(:coder_stage_attempt, stage)
+            |> code_round(number, head, feedback, List.last(data["rounds"])["evidence"])
+            |> then(&finish(context, &1))
+
           {:continue_coder, number, head, feedback} ->
             context
             |> Map.put(:check_attempt, 1)
@@ -845,6 +853,25 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp resume_open_coder_round(data, context, authorization, last) do
+    if Map.has_key?(authorization, "interrupted_timeout_evidence_digest"),
+      do: resume_interrupted_timeout(data, context, authorization, last),
+      else: resume_rejected_open_coder_round(data, context, authorization, last)
+  end
+
+  defp resume_interrupted_timeout(data, context, authorization, last) do
+    with true <- frozen_sandbox(data) == sandbox_json(context.settings),
+         false <- Map.has_key?(authorization, "execution_sandbox_change"),
+         {:ok, proof, feedback, stage} <- InterruptedCoder.timeout_evidence(context, data),
+         true <- authorization["interrupted_timeout_evidence_digest"] == digest_hex(Jason.encode!(proof)),
+         true <- stage <= context.settings.recovery.stage_attempts do
+      feedback = Map.put(feedback, "operator_diagnostic", authorization["diagnostic"])
+      {:ok, {:continue_interrupted_coder, last["round"], data["candidate_sha"], feedback, proof, stage}}
+    else
+      _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  end
+
+  defp resume_rejected_open_coder_round(data, context, authorization, last) do
     with {:ok, rejected, review} <- latest_rejected_review(data, context),
          completed = Enum.at(data["rounds"], -2),
          true <- completed["candidate_sha"] == data["candidate_sha"],
@@ -879,6 +906,8 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp recovery_resume_evidence(data, context, {:check_candidate, _number, _sha}), do: recovery_evidence(data, context)
 
+  defp recovery_resume_evidence(_data, _context, {:continue_interrupted_coder, _, _, _, _, _}), do: :ok
+
   defp recovery_resume_evidence(data, context, {:continue_coder, _number, sha, _feedback}) do
     with {:ok, round, review} <- latest_rejected_review(data, context),
          completed = Enum.at(data["rounds"], -2),
@@ -903,6 +932,15 @@ defmodule SymphonyElixir.Mvp.Executor do
       _ -> {:error, :mvp_recovery_evidence_mismatch}
     end
   end
+
+  defp recovery_resume_dispatch_binding(context, data, {:continue_interrupted_coder, _, _, _, proof, stage}) do
+    case InterruptedCoder.timeout_evidence(context, data) do
+      {:ok, ^proof, _feedback, ^stage} -> :ok
+      _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  end
+
+  defp recovery_resume_dispatch_binding(_context, _data, _dispatch), do: :ok
 
   defp resume_external_evidence_context(context, data, {:check_candidate, _number, sha}) do
     history = data["external_evidence_history"] || []
@@ -1085,6 +1123,10 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp recovery_resume_round_budget(data, {:continue_coder, number, _sha, _feedback}),
     do: if(number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted})
+
+  defp recovery_resume_round_budget(data, {:continue_interrupted_coder, number, _, _, _, _}) do
+    if number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted}
+  end
 
   defp recovery_resume_round_budget(data, {:check_candidate, number, _sha}),
     do: if(number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted})

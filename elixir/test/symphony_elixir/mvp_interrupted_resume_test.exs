@@ -7,6 +7,127 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
   @new_boot "00000000-0000-0000-0000-000000000002"
   @url "https://github.com/owner/repo/pull/42"
 
+  test "wall-budget extension after audited interrupted coder timeout preserves partial work and consumes stage three" do
+    {context, auth, before} = timed_out!()
+    previous_files = prior_files(context)
+    assert {:ok, @url} = Executor.resume_recovery(context, digest(File.read!(context.receipt)), auth)
+    data = Receipt.read(context.receipt)
+    assert data["recovery"]["started_at"] == before["recovery"]["started_at"]
+    assert data["recovery"]["policy"]["max_elapsed_ms"] == 10_800_000
+    assert data["rework_count"] == 1
+    assert length(data["rounds"]) == 2
+    assert data["recovery"]["agent_attempts"] == 6
+    assert Enum.find(data["recovery"]["events"], &(&1["attempt"] == 5))["stage_attempt"] == 3
+    assert Enum.find(data["recovery"]["events"], &(&1["attempt"] == 6))["stage_attempt"] == 1
+    assert Enum.take(data["recovery"]["events"], length(before["recovery"]["events"])) == before["recovery"]["events"]
+    assert Process.get(:checked) == [1, 2, 3]
+    assert Process.get(:reviewed_sha) == data["candidate_sha"]
+    assert previous_files == Map.new(previous_files, fn {path, _} -> {path, File.read!(path)} end)
+    assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
+  end
+
+  test "timeout continuation authenticates every prior audit and current timeout file" do
+    {context, auth, before} = timed_out!()
+    raw = File.read!(context.receipt)
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = InterruptedCoder.timeout_evidence(context, %{})
+    op = Path.join([context.evidence, "operator-rechecks", before["operator_recheck"]])
+    attempt = List.last(before["rounds"])["evidence"] |> Path.join("agent-attempt-4")
+    files = for directory <- [op, attempt], path <- Path.wildcard(Path.join(directory, "*")), File.regular?(path), do: path
+
+    for path <- files do
+      bytes = File.read!(path)
+      File.rm!(path)
+      assert {:error, :mvp_interruption_timeout_evidence_mismatch} = InterruptedCoder.timeout_evidence(context, before)
+      File.write!(path, "malformed")
+      result = Executor.resume_recovery(context, digest(raw), auth)
+      assert {:error, :mvp_interruption_timeout_evidence_mismatch} = result
+      File.write!(path, "[]")
+      result = Executor.resume_recovery(context, digest(raw), auth)
+      assert {:error, :mvp_interruption_timeout_evidence_mismatch} = result
+      File.write!(path, bytes)
+    end
+
+    wrong = Map.put(auth, "interrupted_timeout_evidence_digest", "wrong")
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = Executor.resume_recovery(context, digest(raw), wrong)
+    changed = Map.put(auth, "execution_sandbox_change", %{})
+    result = Executor.resume_recovery(context, digest(raw), changed)
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = result
+    assert File.read!(context.receipt) == raw
+  end
+
+  test "timeout continuation rejects changed event history and cannot extend exhausted stage or agent caps" do
+    {context, auth, before} = timed_out!()
+    raw = File.read!(context.receipt)
+
+    for changed <- [
+          Map.put(before, "rework_count", 0),
+          put_in(before, ["recovery", "events"], Enum.drop(before["recovery"]["events"], -1)),
+          put_in(before, ["recovery", "agent_attempts"], 5)
+        ] do
+      rewrite_timeout_fixture(context, changed)
+      assert {:error, :mvp_interruption_timeout_evidence_mismatch} = InterruptedCoder.timeout_evidence(context, changed)
+    end
+
+    rewrite_timeout_fixture(context, before)
+    assert File.read!(context.receipt) == raw
+    exhausted = put_in(before, ["recovery", "agent_attempts"], context.settings.recovery.max_agent_attempts)
+    File.write!(context.receipt, Jason.encode!(exhausted))
+    assert {:error, :mvp_recovery_agent_budget_exhausted} = Executor.resume_recovery(context, digest(File.read!(context.receipt)), auth)
+    {capped, capped_auth, _} = timed_out!(2)
+    result = Executor.resume_recovery(capped, digest(File.read!(capped.receipt)), capped_auth)
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = result
+  end
+
+  test "timeout evidence is revalidated after acquiring the operator lock" do
+    {context, auth, _} = timed_out!()
+    raw = File.read!(context.receipt)
+    Process.put(:timeout_owner_observations, 0)
+
+    changing = fn _ ->
+      count = Process.get(:timeout_owner_observations) + 1
+      Process.put(:timeout_owner_observations, count)
+      if count == 1, do: :ok, else: {:error, :active}
+    end
+
+    context = %{context | opts: Keyword.put(context.opts, :interruption_active_owner, changing)}
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = Executor.resume_recovery(context, digest(raw), auth)
+    assert File.read!(context.receipt) == raw
+    assert Process.get(:coder_calls) == 2
+    assert File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+  end
+
+  defp timed_out!(stage \\ 1) do
+    {context, auth, before} = interrupted!()
+    before = put_in(before, ["recovery", "events"], List.update_at(before["recovery"]["events"], -1, &Map.put(&1, "stage_attempt", stage)))
+    File.write!(context.receipt, Jason.encode!(before))
+    {:ok, started, _} = DateTime.from_iso8601(before["recovery"]["started_at"])
+    expired = DateTime.to_unix(started, :millisecond) + context.settings.recovery.max_elapsed_ms
+    Process.put(:timeout_now, expired - 1_000)
+
+    agent = fn _, _, _, _ ->
+      Process.put(:timeout_now, expired)
+      {:error, :wall_timeout}
+    end
+
+    opts = context.opts |> Keyword.put(:agent, agent) |> Keyword.put(:now_ms, fn -> Process.get(:timeout_now) end)
+    assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_interrupted(%{context | opts: opts}, digest(File.read!(context.receipt)), auth)
+    context = %{context | opts: Keyword.put(context.opts, :now_ms, fn -> expired end)}
+    data = Receipt.read(context.receipt)
+    {:ok, proof, _, _} = InterruptedCoder.timeout_evidence(context, data)
+    {:ok, workspace_sha} = Executor.workspace_digest(context.workspace)
+    auth = auth |> Map.put("id", "after-wall-timeout") |> Map.put("predecessor", data["operator_recheck"])
+    auth = auth |> Map.put("wall_budget_extension_ms", 3_600_000) |> Map.put("workspace_digest", workspace_sha)
+    {context, Map.put(auth, "interrupted_timeout_evidence_digest", digest(Jason.encode!(proof))), data}
+  end
+
+  defp rewrite_timeout_fixture(context, data) do
+    raw = Jason.encode!(data, pretty: true)
+    File.write!(context.receipt, raw)
+    path = Path.join([context.evidence, "operator-rechecks", data["operator_recheck"], "completion.json"])
+    completion = path |> File.read!() |> Jason.decode!() |> Map.put("final_receipt_sha256", digest(raw))
+    File.write!(path, Jason.encode!(completion))
+  end
+
   test "interrupted diagnosed check repair preserves the round, evidence, usage and budget and reruns all gates" do
     {context, auth, before} = interrupted!()
     raw = File.read!(context.receipt)

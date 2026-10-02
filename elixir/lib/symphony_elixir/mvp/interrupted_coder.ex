@@ -142,6 +142,118 @@ defmodule SymphonyElixir.Mvp.InterruptedCoder do
 
   defp attempt_result(_path, _open, _finished), do: {:error, :attempt_result}
 
+  @doc "Authenticate a completed interrupted continuation whose coder exhausted the original wall budget."
+  @spec timeout_evidence(map(), map()) :: {:ok, map(), map(), pos_integer()} | {:error, atom()}
+  def timeout_evidence(context, data) do
+    id = data["operator_recheck"]
+
+    with true <- matches?(id, ~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\z/),
+         directory = Path.join([context.evidence, "operator-rechecks", id]),
+         {:ok, ^directory} <- SymphonyElixir.PathSafety.canonicalize(directory),
+         {:ok, authorization_raw} <- read(Path.join(directory, "authorization.json")),
+         {:ok, authorization} <- Jason.decode(authorization_raw),
+         {:ok, before_raw} <- read(Path.join(directory, "receipt-before.json")),
+         {:ok, before} <- Jason.decode(before_raw),
+         {:ok, completion_raw} <- read(Path.join(directory, "completion.json")),
+         {:ok, completion} <- Jason.decode(completion_raw),
+         {:ok, current_raw} <- read(context.receipt),
+         {:ok, ^data} <- Jason.decode(current_raw),
+         true <- authorization["id"] == id and authorization["receipt_sha256"] == digest(before_raw),
+         true <- timeout_completion?(completion, id, current_raw),
+         true <- timeout_history?(before, data),
+         {:ok, prior, feedback} <- evidence(context, before),
+         true <- authorization["interruption_evidence"] == prior,
+         true <- authorization["interruption_evidence_digest"] == digest(Jason.encode!(prior)),
+         {:ok, owner} <- owner(context, before, authorization),
+         true <- authorization["interrupted_owner"] == owner,
+         resume = Enum.at(data["recovery"]["events"], length(before["recovery"]["events"])),
+         true <- resume == interruption_event(before, authorization),
+         {:ok, timeout, next_stage} <- timeout_attempt(before, data, id) do
+      proof = %{
+        "authorization_sha256" => digest(authorization_raw),
+        "receipt_before_sha256" => digest(before_raw),
+        "completion_sha256" => digest(completion_raw),
+        "prior_evidence" => prior,
+        "owner" => owner,
+        "timeout" => timeout
+      }
+
+      {:ok, proof, feedback, next_stage}
+    else
+      _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  rescue
+    _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+  end
+
+  defp timeout_completion?(completion, id, raw) do
+    completion["id"] == id and completion["final_receipt_sha256"] == digest(raw) and
+      completion["result"] == "{:error, :mvp_recovery_resource_exhausted}"
+  end
+
+  defp interruption_event(before, authorization) do
+    owner = authorization["interrupted_owner"]
+
+    %{
+      "kind" => "operator_interrupted_coder_resume",
+      "operation_id" => authorization["id"],
+      "attempt" => before["recovery"]["agent_attempts"],
+      "round" => length(before["rounds"]),
+      "previous_boot_id" => owner["previous_boot_id"],
+      "current_boot_id" => owner["current_boot_id"],
+      "workspace_digest" => authorization["workspace_digest"],
+      "interruption_evidence_digest" => authorization["interruption_evidence_digest"]
+    }
+  end
+
+  defp timeout_history?(before, data) do
+    before["status"] == "coding" and data["status"] == "blocked" and
+      data["reason"] == ":mvp_recovery_resource_exhausted" and frozen_history?(before, data) and
+      before["candidate_sha"] == data["candidate_sha"] and before["rework_count"] == data["rework_count"] and
+      Enum.drop(before["rounds"], -1) == Enum.drop(data["rounds"], -1) and
+      Map.delete(List.last(before["rounds"]), "usage") == Map.delete(List.last(data["rounds"]), "usage")
+  end
+
+  defp timeout_attempt(before, data, id) do
+    old_events = before["recovery"]["events"]
+    prior_start = List.last(old_events)
+    count = before["recovery"]["agent_attempts"] + 1
+
+    with [resume, start, finish] <- Enum.drop(data["recovery"]["events"], length(old_events)),
+         true <- resume["kind"] == "operator_interrupted_coder_resume" and resume["operation_id"] == id,
+         true <- resume["attempt"] == count - 1 and resume["round"] == length(data["rounds"]),
+         true <- data["recovery"]["agent_attempts"] == count,
+         true <- start["role"] == "coder" and start["status"] == "started" and start["attempt"] == count,
+         true <- start["stage_attempt"] == prior_start["stage_attempt"] + 1,
+         true <- start["usage_key"] == "coder_attempt_#{count}",
+         true <- timeout_usage?(before, data, start["usage_key"]),
+         true <- finish == %{"status" => "finished", "usage_key" => start["usage_key"], "outcome" => "{:error, :mvp_recovery_resource_exhausted}"},
+         path = Path.join(List.last(data["rounds"])["evidence"], "agent-attempt-#{count}"),
+         true <- start["evidence"] == path,
+         {:ok, files} <- timeout_files(path) do
+      {:ok, files, start["stage_attempt"] + 1}
+    else
+      _ -> {:error, :timeout_attempt}
+    end
+  end
+
+  defp timeout_usage?(before, data, key) do
+    usage = List.last(data["rounds"])["usage"]
+    Map.has_key?(usage, key) and Map.delete(usage, key) == List.last(before["rounds"])["usage"]
+  end
+
+  defp timeout_files(path) do
+    with {:ok, prompt} <- read(Path.join(path, "prompt.txt")),
+         {:ok, messages} <- read(Path.join(path, "messages.log")),
+         {:ok, ""} <- read(Path.join(path, "output.txt")),
+         {:ok, raw} <- read(Path.join(path, "outcome.json")),
+         {:ok, %{"result" => "{:error, :wall_timeout}", "outcome" => "{:error, :mvp_recovery_resource_exhausted}"}} <- Jason.decode(raw) do
+      {:ok, %{"directory" => path, "prompt_sha256" => digest(prompt), "messages_sha256" => digest(messages), "outcome_sha256" => digest(raw)}}
+    else
+      _ -> {:error, :timeout_files}
+    end
+  end
+
   @doc "Read operator-owned historical records and independently observe the current boot and ownership."
   @spec owner(map(), map(), map()) :: {:ok, map()} | {:error, atom()}
   def owner(context, data, authorization) do
