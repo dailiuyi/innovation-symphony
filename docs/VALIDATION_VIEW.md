@@ -218,3 +218,60 @@ GH7-A11、A12、A16、A17 的完整浏览器复验保留未完成：由获准的
 GH7-A15 单独保留实施前来源远端核查的时序缺口。所有者须提供当时的带时间记录，
 或明确决定是否接受迟补核查及其范围；本轮离线核对固定来源不补造历史事实，
 也没有把评审材料当作例外授权。本轮不提交、push、PR、合并、部署或升级服务。
+
+## 默认 tracker 绑定测试修复续跑（2026-10-02）
+
+本轮只读 base HEAD 为 `b6c07277c60fe9ab00c1b5acb7648d0bb6a72d39`；修改未提交，
+最终候选 SHA 仍由控制器冻结。只读失败日志 `/evidence/round-4/check-1.log`
+显示唯一失败为 `MvpExternalTaskTest` 的默认 tracker 绑定断言，其他门禁通过。
+
+原因是该测试用 `WorkflowStore` 进程存在推断 tracker 必然不匹配，而 store 可保留
+此前测试最后有效的匹配配置。修复只改变该测试：明确加载匹配和不匹配配置，
+分别断言继续恢复及拒绝恢复，核对实际传给执行器的 tracker，且每次调用都不改变
+配置路径、进程和不匹配配置。退出时恢复原环境和缓存状态，不依赖测试顺序。
+没有改变生产绑定逻辑、覆盖率、检查配置、跳过条件或控制器证据。
+
+负向诊断在 `/tmp/gh7-binding-old-probe_test.exs` 私有副本中保留旧断言，仅预置匹配
+配置，稳定复现原错误（1项失败、22项按定向命令排除）；日志为
+`/tmp/gh7-binding-old-probe.log`。这是旧测试假设错误的证据，不是通过报告。
+新回归同时检查匹配与不匹配，不把原拒绝断言改成宽泛错误或无条件通过。
+
+| 本次命令／诊断 | 结果与记录 |
+| --- | --- |
+| `MIX_ENV=test HEX_OFFLINE=1 mix test test/symphony_elixir/mvp_external_task_test.exs --seed 699831`（`elixir/`内） | 修复后23项、0失败；`/tmp/gh7-binding-targeted-final.log`。初次新增测试错误地预期绑定校验先于tracker读取，定向运行失败；按既有读取顺序修正该断言后复跑，不改变生产顺序 |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-binding-view` | 退出0；26项Python、10项JS、实际self_check及6份HTML、完整迁移比较、8种入口通过，无skip；`/tmp/gh7-binding-view.log`及输出目录 |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；55项，原2项宿主隔离集成skip；本环境无`/sys/fs/cgroup`及授权宿主runner，未改启用条件；`/tmp/gh7-binding-scripts.log` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项、无skip；`/tmp/gh7-binding-validator.log` |
+| 固定包及manifest摘要、36个原始来源文件、3个浏览器脚本Node语法、`git diff --check` | 通过；仅已登记的6个来源文件有迁移差异，无真实配置、数据库或嵌套Git |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-binding-view/fixture` | 退出1：`Cannot find module 'playwright/package.json'`，`MODULE_NOT_FOUND`；`/tmp/gh7-binding-browser.log`；浏览器UI断言未执行 |
+
+本节各项通过仅为工作区自检，不替代正式候选验证或独立Review。来源实施前远端
+核查、准确候选上的浏览器交互、Windows＋WSL真实采集及控制器启停隔离继续待
+所有者或获准负责人提供外部验收；本轮没有提交、发布、安装或切换运行服务。
+
+## 保留修复后的本会话复验（2026-10-02）
+
+本次续跑保留上述未提交的 tracker 测试修复和验证记录；只读 HEAD 仍为
+`b6c07277c60fe9ab00c1b5acb7648d0bb6a72d39`，它不是包含未提交修复的候选 SHA。
+生成页滚动修复已经存在于工作区，没有重复改动展示实现或黄金预期。
+本节记录本会话实际执行结果，最终不可变候选及独立 Review 仍由控制器负责。
+
+| 本次命令／诊断 | 结果与记录 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-resume-view` | 退出0；26项 Python、10项 JS，无 skip；实际 self_check、6份 HTML、完整迁移结果比较、8种启动入口通过。日志 `/tmp/gh7-resume-view.log`，报告 `/tmp/gh7-resume-view/code-check-result.json` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；55项、0失败，原2项宿主 sandbox 集成 skip，要求 `SYMPHONY_SANDBOX_INTEGRATION=1` 和预配置宿主 runner。日志 `/tmp/gh7-resume-scripts.log` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项、无 skip；日志 `/tmp/gh7-resume-validator.log` |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-resume-view/fixture` | 退出1，`Cannot find module 'playwright/package.json'`（`MODULE_NOT_FOUND`）；日志 `/tmp/gh7-resume-browser.log`。环境未提供 Playwright／Chromium，完整 UI 断言未执行；未安装依赖、替换浏览器组合或降低门禁 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出0；652项 ExUnit、0失败、6项原 live skip，seed 337123；日志 `/tmp/gh7-resume-baseline.log`，工具产物 `.check-evidence/baseline-vbt_a_02/` |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项 ExUnit（0失败、6项原 live skip，seed 310026）、100%覆盖率、Dialyzer和 escript 构建通过；日志 `/tmp/gh7-resume-candidate.log`，工具产物 `.check-evidence/candidate-jdu7eecw/`；candidate／baseline 的有效政策均无变化 |
+
+固定包 SHA256 与迁移记录一致，来源 manifest 与预置 manifest 字节一致；36个源码
+文件齐全，仅已登记的6个来源文件有差异，无嵌套 Git。包内 `SOURCE_MANIFEST.json`
+为制品元数据，在仓库中保存为 `view/docs/source-manifest.json`。
+实际版本为 Python 3.12.3、Node v24.19.0、codex-transcript-viewer 0.5.0；
+三个浏览器脚本通过 Node 语法检查，但语法检查不能替代浏览器验收。
+
+GH7-A11／A12／A16／A17 的完整浏览器及 CI 浏览器步骤仍未通过本轮验证；
+需要在准确修复候选上验证 README／CI 指定的 Playwright 1.62.1 与配套 Chromium，
+并由获准负责人复验 Windows＋WSL 真实采集和完整浏览器流程。GH7-A15 的实施前
+远端核查历史记录或所有者例外决定仍缺失；本会话不补造历史事实或实机证据。
