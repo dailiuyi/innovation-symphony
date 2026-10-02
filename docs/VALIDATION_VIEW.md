@@ -275,3 +275,46 @@ GH7-A11／A12／A16／A17 的完整浏览器及 CI 浏览器步骤仍未通过�
 需要在准确修复候选上验证 README／CI 指定的 Playwright 1.62.1 与配套 Chromium，
 并由获准负责人复验 Windows＋WSL 真实采集和完整浏览器流程。GH7-A15 的实施前
 远端核查历史记录或所有者例外决定仍缺失；本会话不补造历史事实或实机证据。
+
+## 严格候选库存失败后的日志回归（2026-10-02）
+
+本会话 base HEAD 为 `f5e68a9a964e6c7c1ca32440bccee7d2f462a2f1`，修改未提交。
+只读 `/evidence/round-5/check-3.log` 在执行 View suite 前拒绝了候选，具体原因是
+`disk file list differs from HEAD, including ignored files`。当前工作区已有
+`elixir/log/`、预置依赖及未提交的测试日志配置调整；日志未列出差异文件，不能断言
+启动日志是上次失败的唯一来源。没有改库存校验、忽略额外文件或删除已有产物／证据。
+
+保留并验证 `elixir/config/config.exs` 中的修复：只在 test 环境将应用启动日志放入
+每次 VM 调用独有的系统临时目录，正常退出时先释放 disk_log handler 再清理轮转文件。
+新增 `scripts/tests/test_mix_startup_logs.py` 使用无第三方依赖的真实 Mix 应用，加载实际
+配置和实际 LogFile 模块，在 test_helper 运行前写入并同步日志；断言正常测试退出、
+helper 抛错和随后重试均不在项目目录写日志、各调用路径不同且目录完全清理。
+另实际加载 dev 配置，确认原日志默认值保持不变。不宣称硬杀 VM 的 at_exit 会执行。
+指定隔离门禁继续使用冻结配置；本次候选配置由上述真实 Mix 回归单独覆盖。
+
+| 本会话命令／诊断 | 结果／原始记录 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-repair-code-checks` | 退出0；26项 Python、10项 JS，无 skip；实际 self_check、6份 HTML、完整迁移比较、8种入口通过；报告为输出目录的 `code-check-result.json` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -p test_mix_startup_logs.py -v` | 退出0；2项新回归通过；`/tmp/gh7-repair-log-targeted.log`。首轮夹具错误地要求 Mix 自身的 lock/pubsub 临时目录也不存在，修正为核对本次日志目录及全部轮转文件后通过 |
+| 在私有 Mix 项目中将配置替换为 HEAD 的旧配置，再运行同一日志回归 | 三次调用均被路径断言拒绝，日志实际写入私有项目的 `log/`；`/tmp/gh7-repair-old-config-probe.log`。这是预期失败的负向诊断，不是候选失败或旧配置通过声明 |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；57项、0失败，原2项宿主隔离集成 skip；`/tmp/gh7-repair-scripts-final.log` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项、无 skip；包括损坏报告、额外忽略文件、脏候选及缺依赖拒绝回归 |
+| `MIX_ENV=test mix format --check-formatted config/config.exs`（elixir 内）、三个浏览器脚本的 Node `--check`、`git diff --check`、固定来源核对 | 退出0；36个原始文件齐全，仅已登记的6个来源文件有差异；manifest 与预置文件字节一致，无嵌套 Git |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-repair-code-checks/fixture` | 退出1：`Cannot find module 'playwright/package.json'`，`MODULE_NOT_FOUND`；UI断言未执行。没有安装依赖、替换浏览器组合或跳过失败；完整 CI View job 尚未在本环境通过 |
+
+首轮并行的 candidate 和 baseline 隔离检查均失败，工具原始产物分别保留在
+`.check-evidence/candidate-guazb8z5/` 和 `.check-evidence/baseline-env8lyev/`。
+candidate 为打包入口创建线程失败：`Resource temporarily unavailable (11)`，退出1；
+baseline 为 WatchdogTest 的启动状态 `process` 为 nil，退出10。随后改为串行完整
+复跑原命令，不修改测试、超时、过滤、覆盖率或冻结政策；复跑结果追加如下。
+
+| 串行完整复跑 | 结果／记录 |
+| --- | --- |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项 ExUnit（0失败、6项原 live skip，seed 7031）、100%覆盖率、Dialyzer及 escript 构建通过；`/tmp/gh7-repair-candidate-rerun.log`、`.check-evidence/candidate-zedhnhp0/` |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出0；652项 ExUnit、0失败、6项原 live skip，seed 117777；`/tmp/gh7-repair-baseline-rerun.log` |
+
+本轮环境与外部停点未改变：Playwright 1.62.1／配套 Chromium 完整浏览器及 CI 验证、
+Windows＋WSL 准确新候选的实机复验、GH7-A15 历史记录或所有者明确例外决定仍缺失。
+原2项宿主隔离与6项真实平台 live 测试的 skip 不算通过。干净已提交候选的正式 View
+检查及独立 Review 仍归控制器；未运行 routing marker 作为宿主检查，也未改控制器证据。
+本会话没有提交、发布、创建 PR、合并、部署或切换服务，不宣布 GH-7 全部验收完成。
