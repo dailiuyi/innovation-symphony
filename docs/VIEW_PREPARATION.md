@@ -133,3 +133,19 @@ node E:/code/innovation-symphony/scripts/view_validation/browser_fixture.cjs `
 ```
 
 本轮准确命令在 `.local/issue7-browser-command.txt`，实机采集脚本在 `.local/issue7-windows-wsl-probe.py`，只作为脱敏夹具流程参考。最终复跑需移除该脚本对“已知首次运行失败”的历史预期及缓存绕行，改为断言修复后成功，并增加迁移兼容性、唯一临时文件和异常清理检查。若最终环境、权限或证据仍有缺口，保留 `awaiting_external`，不批准合并或把未执行项记为通过。
+
+### 获准开启领取（2026-10-02，北京时间）
+
+按 IS-046，所有者已添加 ready，并授权 #7 使用双 Sol 6.1 和开启领取。独立模型评论为 [5944045994](https://github.com/dailiuyi/innovation-symphony/issues/7#issuecomment-5944045994)，控制器通过真实 GitHub GET 解析确认 `coder=gpt-6.1-sol`、`reviewer=gpt-6.1-sol`；当时唯一可领取任务为 GH-7，仓库默认双 Astra 保留。评论必须无末尾换行，预检已发现并修正此严格语法问题。
+
+北京时间 09:47:13 对现有 WORKFLOW 的 `mvp.enabled` 从 false 原子修改为 true，服务通过既有热更新机制生效，没有重启，PID 仍为 40124。09:47:29 实际领取 #7，base 为 `d49829488c1cce65c1917b219e428e98ff7050bb`；09:47:36 首次 coder 会话启动，真实 `thread/settings/updated` 返回模型 `gpt-6.1-sol`，随后已有隔离工作区命令完成事件。回执状态为 `coding`，两角色模型均冻结为 Sol 6.1；此时 reviewer 尚未调用，最终检查及实机验收尚未完成。
+
+操作证据在 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-enable-sol61/`，包含原配置备份、只读解析、启用记录及真实回执/状态快照。回执为 `state/attempt-4/4aabe612425a799ec4157fd8d7a3df9a6e0122063fb9aa3ffc55b5351e8de74e.json`，实际会话证据在其 `.evidence/round-1/agent-attempt-1/messages.log`。本次操作前 state/workspaces 中 22916 个既有普通文件内容摘要均保持不变，新 #7 回执和工作区由控制器正常创建；看门狗维护暂停继续保留。本节更新此前“本轮不打开领取”的操作状态，不将编码启动登记为合仓验收通过。
+
+### 服务启动与中断接续阻塞（2026-10-02，北京时间）
+
+按 IS-047 启动原固定服务，新 PID 2397，cwd 及固定 SHA 与指针一致，API HTTP 200；领取仍开启，看门狗维护暂停保留。此前 WSL boot ID 从 `def38c35-e337-4164-b29e-3f4ed7417337` 变为 `dfce0a37-8c44-48cc-89f8-75bbd03d8ba1`，旧控制器及 coder 已消失。原 #7 第 1 轮 View 正式检查拒绝测试导入对 sys.path 的副作用，诊断后进入第 2 轮 coder；10:22:53 中断时尚未形成该轮候选，也没有前序 Review 拒绝。
+
+实际调用已安装 `Executor.resume_recovery` 返回 `{:error, :mvp_resume_binding_mismatch}`，原回执字节未变。现有入口仅接受特定 blocked 停点，开放编码轮还要求前序有效 Review 拒绝；当前状态不满足，不能重启后宣称任务已恢复。当前回执 status=coding，但 API running=0，原 3 次 Agent 尝试、1 次返工、双 Sol 6.1、开始时间和预算均保留。恢复需要补齐并验证狭窄的可信中断接续入口，激活及切换运行版本按既有批准边界处理。
+
+新服务、原回执 SHA256、362 个非构建工作区普通文件摘要、现有入口实际拒绝及剩余阻塞记录在 Codex 制品 `issue7-service-restarted/summary.json`；原文件和配置备份在其 operation 路径。该记录证明服务已启动，不证明 #7 已继续或迁移验收通过。

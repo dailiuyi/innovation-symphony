@@ -7,7 +7,11 @@ defmodule SymphonyElixir.Mvp.Attempts do
   @type role :: :coder | :reviewer | :diagnosis
   @spec run(map(), role(), String.t(), (-> :ok | {:error, term()})) :: {:ok, map()} | {:error, term()}
   def run(context, role, prompt, verify_fun) do
-    attempt(context, role, prompt, prompt, verify_fun, 1)
+    stage = if role == :coder, do: Map.get(context, :coder_stage_attempt, 1), else: 1
+
+    if is_integer(stage) and stage in 1..context.settings.recovery.stage_attempts,
+      do: attempt(context, role, prompt, prompt, verify_fun, stage),
+      else: {:error, :mvp_recovery_resource_exhausted}
   end
 
   defp attempt(context, role, original, prompt, verify_fun, stage_attempt) do
