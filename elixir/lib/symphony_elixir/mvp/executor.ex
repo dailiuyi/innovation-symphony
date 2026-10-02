@@ -878,7 +878,7 @@ defmodule SymphonyElixir.Mvp.Executor do
          true <- rejected["round"] <= completed["round"],
          :ok <- rejected_review_ancestor(context, rejected, completed),
          :ok <- no_review_after_rejection(data["rounds"], rejected["round"]),
-         {:ok, feedback} <- coder_resume_feedback(data["rounds"], completed, review, authorization, context) do
+         {:ok, feedback} <- coder_resume_feedback(data, completed, review, authorization, context) do
       {:ok, {:continue_coder, last["round"], data["candidate_sha"], feedback}}
     else
       _ -> {:error, :mvp_recovery_resume_stage_unsupported}
@@ -937,6 +937,22 @@ defmodule SymphonyElixir.Mvp.Executor do
     case InterruptedCoder.timeout_evidence(context, data) do
       {:ok, ^proof, _feedback, ^stage} -> :ok
       _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  end
+
+  defp recovery_resume_dispatch_binding(context, data, {:continue_coder, _, _, feedback}) do
+    case latest_round_check_failure(data["rounds"], Enum.at(data["rounds"], -2)["round"]) do
+      nil ->
+        :ok
+
+      {round, failure} ->
+        with :ok <- valid_round_check_failure?(round, failure, context, frozen_sandbox(data)),
+             {:ok, proof} <- check_failure_proof(failure),
+             true <- proof == feedback["resume_check_evidence"] do
+          :ok
+        else
+          _ -> {:error, :mvp_recovery_evidence_mismatch}
+        end
     end
   end
 
@@ -1068,19 +1084,21 @@ defmodule SymphonyElixir.Mvp.Executor do
       else: {:error, :mvp_recovery_evidence_mismatch}
   end
 
-  defp coder_resume_feedback(rounds, completed, review, authorization, context) do
-    case latest_round_check_failure(rounds, completed["round"]) do
+  defp coder_resume_feedback(data, completed, review, authorization, context) do
+    case latest_round_check_failure(data["rounds"], completed["round"]) do
       nil ->
         {:ok, Map.put(review, "operator_diagnostic", authorization["diagnostic"])}
 
       {round, failure} ->
-        with :ok <- valid_round_check_failure?(round, failure, context),
+        with :ok <- valid_round_check_failure?(round, failure, context, frozen_sandbox(data)),
+             {:ok, proof} <- check_failure_proof(failure),
              :ok <- rejected_review_ancestor(context, round, completed) do
           feedback =
             failure
             |> Map.put("kind", "check")
             |> Map.put("review_rejection", review)
             |> Map.put("operator_diagnostic", authorization["diagnostic"])
+            |> Map.put("resume_check_evidence", proof)
 
           {:ok, feedback}
         end
@@ -1097,7 +1115,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp valid_round_check_failure?(round, failure, context) do
+  defp valid_round_check_failure?(round, failure, context, sandbox) do
     index = failure["index"]
     evidence = round["evidence"]
     log_path = failure["log_path"]
@@ -1105,13 +1123,46 @@ defmodule SymphonyElixir.Mvp.Executor do
     with true <- is_integer(index) and index > 0 and index <= length(round["checks"]),
          true <- is_binary(evidence) and evidence == Path.join(context.evidence, "round-#{round["round"]}"),
          true <- log_path == Path.join(evidence, "check-#{index}.log"),
-         true <- failure["exit_status"] not in [0, nil],
+         command = expand_check_command(context, Enum.at(round["checks"], index - 1), evidence),
+         true <- resumable_check_failure?(failure, command, sandbox),
          true <- File.regular?(log_path),
          {:ok, raw} <- File.read(Path.rootname(log_path) <> ".json"),
          {:ok, ^failure} <- Jason.decode(raw) do
       :ok
     else
       _ -> {:error, :mvp_recovery_evidence_mismatch}
+    end
+  end
+
+  defp resumable_check_failure?(%{"exit_status" => status}, _, _) when is_integer(status) and status != 0, do: true
+
+  defp resumable_check_failure?(%{"exit_status" => nil, "error" => "{:error, :sandbox_check_evidence_missing}"} = failure, ["python3", script] = argv, %{"enabled" => true}) do
+    with true <- Path.basename(script) == "check_view.py",
+         true <- failure["argv"] == argv,
+         {:ok, raw} <- File.read(failure["log_path"]),
+         {:ok, report} <- Jason.decode(raw) do
+      report == %{
+        "schema_version" => 1,
+        "kind" => "controller_view_check",
+        "controller_view_check" => true,
+        "passed" => false,
+        "formal_code_checks" => false,
+        "formal_acceptance" => false,
+        "real_windows_wsl_acceptance" => false,
+        "candidate_sha" => nil,
+        "error" => "ValueError: candidate worktree is dirty; disk file list differs from HEAD, including ignored files"
+      }
+    else
+      _ -> false
+    end
+  end
+
+  defp resumable_check_failure?(_, _, _), do: false
+
+  defp check_failure_proof(failure) do
+    with {:ok, log} <- File.read(failure["log_path"]),
+         {:ok, json} <- File.read(Path.rootname(failure["log_path"]) <> ".json") do
+      {:ok, %{"log_sha256" => digest_hex(log), "failure_sha256" => digest_hex(json)}}
     end
   end
 
@@ -2352,8 +2403,7 @@ defmodule SymphonyElixir.Mvp.Executor do
   defp check(context, argv, index, evidence, timeout) do
     on_message(context).(%{event: :mvp_check_started, timestamp: DateTime.utc_now(), message: "check #{index}"})
 
-    command =
-      Enum.map(argv, &(&1 |> String.replace("{workspace}", context.workspace) |> String.replace("{baseline}", Path.join(context.evidence, "baseline")) |> String.replace("{evidence}", evidence)))
+    command = expand_check_command(context, argv, evidence)
 
     log_path = Path.join(evidence, "check-#{index}.log")
 
@@ -2373,6 +2423,10 @@ defmodule SymphonyElixir.Mvp.Executor do
     File.write!(Path.join(evidence, "check-#{index}.json"), Jason.encode!(check, pretty: true))
 
     if status == 0, do: {:cont, :ok}, else: {:halt, {:error, check}}
+  end
+
+  defp expand_check_command(context, argv, evidence) do
+    Enum.map(argv, &(&1 |> String.replace("{workspace}", context.workspace) |> String.replace("{baseline}", Path.join(context.evidence, "baseline")) |> String.replace("{evidence}", evidence)))
   end
 
   defp check_timeout(context) do

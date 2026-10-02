@@ -163,3 +163,77 @@ node E:/code/innovation-symphony/scripts/view_validation/browser_fixture.cjs `
 原截止仍为 11:47:29，本次没有追加预算。上述快照不证明新候选、最终 View 检查、真实 Windows＋WSL/浏览器验收、Reviewer 或 Draft PR 已完成；精确后续状态以本次回执及证据为准。安装、完整门禁、独立审查、真实预检和续跑快照归档在 Codex 制品 `issue7-interrupted-resumed/summary.json`，原始审计目录为 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-interrupted-1790909784477234160/`。
 
 11:48 终态核实：原墙钟预算耗尽，回执为 `blocked / :mvp_recovery_resource_exhausted`，第 4 次尝试记录 `{:error, :wall_timeout}`；29 个命令完成事件已保留，没有新候选或 Reviewer/Draft PR。HEAD 仍为 `3960c9064e9a5b45bf148be74bfdfc883bc6418a`，导出的 `view/tests/test_migration.py` 修改保留在原工作区；原回执、二进制 diff 和完整工作区另存为 `receipt-after-budget.json`、`exported-after-budget.patch`、`workspace-after-budget`。续跑操作 `gh7-interrupted-2594` 已形成完成链。本次修复和真实接续已经执行，继续验收仍需要追加有限预算及核实相应审计停点入口，不能沿用本次授权热改回执或归零重领。
+
+### IS-049 加时与直接执行现场记录
+
+用户明确授权“增加 60 分钟”，并要求“不要小队模式”。据此主代理直接实现、简化和复核有限接续修复，没有继续委派子代理，也不宣称本轮控制器源码经过独立团队 Review；Symphony 原冻结的独立任务 Reviewer 仍使用 `gpt-6.1-sol`。
+
+固定本地提交 `e33153a45f3534fb67b54835e8e82f0a1e3e8485` 的六项门禁全部通过：667 项测试、0 失败、6 项既有真实平台 E2E 未启用，覆盖率 100%，格式、公开规格、严格 Credo、Dialyzer 和 escript 构建通过。真实原回执和安装后只读预检通过；没有下调阈值、更改冻结检查或增加跳过。
+
+北京时间 2026-10-02 12:30，固定控制器已安装运行，主服务 PID `200567`、API HTTP 200，cwd 对应该 SHA 的 release；安装前后 22943 个原状态和工作区文件摘要一致，原回执及 WORKFLOW 字节不变，受管入口维护暂停保留。仅通过审计入口继续原 #7，没有重新领取其他任务。
+
+原开始时间 `2026-10-02T01:47:29.323954Z` 保留，墙钟上限从 7200000 增至 10800000 毫秒，截止为北京时间 12:47:29。已使用的 4 次模型尝试、1 次返工和第 2 轮历史不归零；第 5 次实际调用进入该轮 coder 第 3 次阶段尝试，真实模型 `gpt-6.1-sol`，会话 `01a0fae0-a77a-7a01-ba33-fab3abf132ab`。主服务 API 的 running 计数不包含独立审计续跑，进度以原回执和调用日志为准。
+
+脱敏制品为 `issue7-budget-resumed/summary.json`，原始审计目录 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-budget-1790914174076825547/`。本条只确认修复验证、安装、预算生效和实际启动；最终候选门禁、Windows＋WSL/浏览器验收、独立任务 Review 和 PR 结果仍须按后续真实证据补记。控制器修复没有推送、合并或部署，也没有切换 View 运行服务。
+
+北京时间 12:38，在当前固定候选 `3960c9064e9a5b45bf148be74bfdfc883bc6418a` 的 Git 归档副本完成真实 Windows Python→wsl.exe 脱敏采集：首次运行没有预建缓存，`once` 自然成功，得到一个任务、19 轮、Review 41–44、六个 session 及六页 Viewer HTML。并发不同 glob 的实际采集返回各自数据且无临时脚本残留；Windows 24 项 Python 回归通过。Chrome 153、Playwright 1.62.1、私有 profile、sandbox=true 的七项导航／读取状态／390px 检查通过，无浏览器错误，22 个输入文件未变，自建服务和浏览器均已关闭；主代理查看窄屏截图。报告位于 `issue7-final-collection-3960c9064e9a-1790915874036092700/collection-result.json` 及相邻 `-browser/browser-result.json`。这是该 SHA 的实测证据，整体 Issue 验收仍为 false；正在修复产生新候选后必须重跑，不能以旧 SHA 或准备伪候选的报告替代。
+
+北京时间 12:43:17，第 5 次 coder 实际完成，控制器提交新候选 `32ae9429da84ddc02132317f05d1ed4ed83eab79` 并开始原正式检查。Coder 只修复迁移测试的路径插入／别名配置隔离，并补充验收记录；其候选 Elixir 全检查通过，基线完整复跑 652 项、0 失败、6 项既有跳过，首轮单项失败日志保留。操作者随后对新 SHA 在新的 Git 归档目录重跑真实 Windows＋WSL 采集、自然首次缓存、六页 HTML、并发与临时文件清理、Windows Python 26 项、Windows Node 10 项及 Chrome 七项验收，全部通过。新报告是 `issue7-final-collection-32ae9429da84-1790916280969017300/collection-result.json`、`windows-node-tests.log` 及相邻 `-browser/browser-result.json`；这些是对应新候选的独立外部实测，尚不代表已由原控制器导入、完成全部正式门禁及独立 Reviewer 批准。
+
+北京时间 12:47:29.428，审计操作 `gh7-budget-66` 完成并停止，最终回执摘要 `251462ca1e229c77d2318f1c0433029a98e0050598a6e2adb1db259d612a26c0` 与完成链一致。回执为 `blocked / :mvp_recovery_resource_exhausted`，第一条正式候选检查因剩余墙钟额度耗尽退出 124；后两条正式检查（含独立 View 门禁）及独立 Reviewer 尚未执行，未创建 PR。新候选保留，任务工作区干净，审计执行进程已退出，总模型次数 5、返工 1 和原历史不变。对应新 SHA 的外部实测报告已摘要归档，但尚未导入 Reviewer；不能将其或 coder 自检替代正式门禁。本次没有再加时、重新领取或重写回执；继续原正式检查及独立 Review 需新的明确预算授权，经审计入口处理同一候选。现场报告 `issue7-budget-resumed/budget-stop.json` 保存停点。
+
+### IS-050 两小时续检
+
+所有者随后明确“增加两小时预算”。原墙钟上限经既有 `Executor.resume_recovery/3` 审计入口增加 7200000 至 18000000 毫秒，原开始时间不变，截止北京时间 14:47:29。前序 `gh7-budget-66` 的授权有效政策、完成链、原回执摘要、冻结范围／检查／隔离、干净工作区及基线副本均经预检核验；只恢复原已获准政策，不改运行 WORKFLOW。当前固定 `e33153a` 控制器直接执行，无源码修改、依赖安装或服务重启。
+
+北京时间 13:00:50.626，独立审计续跑 PID `331649` 实际开始同一候选 `32ae9429` 的第一条正式检查；累计模型次数仍 5、返工 1，原历史前缀及其他策略核验一致。原始操作目录 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-check-budget-1790917206423565880/`。原对应候选的 Windows＋WSL 和浏览器证据保留，尚须适用入口导入并经独立 Reviewer 判断；此记录不是门禁或 Review 已通过的声明。
+
+截至北京时间 13:34，同一候选的三项正式检查已经实际完成：候选和基线各 652 项测试、0 失败、6 项既有真实平台 E2E 跳过；受信独立 View 门禁返回 `passed=true`、`formal_code_checks=true`，而整体与实机验收仍为 false。第 6 次实际模型调用为独立 `gpt-6.1-sol` Reviewer，会话 `01a0fb05-8928-7e71-864e-e97abe904b09`；其结论为不批准，指出刷新断言未等待完成、生成完整会话页缺少阅读位置回归，并列出外部实机证据要求。原控制器自动进入第 3 轮、第 7 次模型调用的 coder，第 2 次返工；实际会话 `01a0fb0e-92a6-7260-8f44-5053b8ccb04d`，模型仍为 `gpt-6.1-sol`，原开始时间、政策和历史保持。新候选尚未产生，不把旧候选实测记为新候选通过。
+
+北京时间 13:31 的源仓只读远端核对确认 `dailiuyi/innovation-view` main 仍为固定 `d734a087d83243530bd79f40dfbaedaabf8fe677`。本机 `app/symphony_board/wslpull.py` 修改及 untracked `tests/test_wslpull.py` 保留，没有拉取、覆盖或读取真实配置。这是当前远端核对证据，不倒推为实施前远端查询记录。
+
+北京时间 13:36，第 7 次 coder 完成，控制器产生新候选 `2fb9d3f652796af4b95a40df543015b54dcac5ef` 并开始第 3 轮正式检查。其改动包含等待快照进入客户端后的阅读保持断言、真实生成 HTML 的刷新／失败恢复测试及 Linux 验证夹具路径修复。操作者对该 SHA 新建 Git 归档副本，真实 Windows→WSL 首次缓存、六页 HTML、并发隔离、Python 26 项、Node 10 项、JSON／默认配置及不同 cwd／参数入口均通过；实际候选 Python API 的七项独立浏览器检查通过。
+
+原候选 `view/tests/browser-smoke.cjs` 全套浏览器实测没有通过：Playwright 1.62.1 和系统 Chrome 153.0.8010.54、私有 profile、强制浏览器沙箱下，四组断言通过后，`browser-refresh.cjs:142` 在生成完整会话页失败。只读现场复跑记录为 `open=true`、`expanded=true`，但 content 的 scrollHeight/clientHeight 都是 3769，tree 都是 815，两个 scrollTop 均为 0，无法建立测试要求的非零容器滚动前提。失败、取证 JSON 和截图均保留在新 SHA 制品的相邻 `-candidate-browser*` 目录，自建 View/API 和浏览器均已关闭。此证据只确认新增验收测试存在未解决项，不宣称产品刷新本身失败，也不以七项子集通过替代全套浏览器通过；后续由正式 Reviewer 判定并按原流程返工。系统 Chrome 与 Playwright 自带 Chromium 分开记录，没有安装新依赖。
+
+北京时间 13:54，第 8 次独立 Reviewer 结论为 `approved=false`，静态审查未发现可证实代码阻塞，仅列 GH7-A11/A12/A13/A15/A16 外部验收条件；控制器按既有合同创建 [Draft PR #9](https://github.com/dailiuyi/innovation-symphony/pull/9)，任务保持 `awaiting_external`，不是最终批准或完成。已附加 PR 到本聊天，没有合并或部署。
+
+停靠后，对同一 SHA 的私有实际 Python View 启动、运行、停止做了现场对照：主控制器 PID `200567`、cwd/SHA/start_ticks/boot_id 和 API HTTP 200 在前／中／后三次一致，6 份原任务回执字节摘要及 GH-7 Issue／评论状态一致；私有 View/API 与 BoardStore 均正常关闭。报告在该 SHA 制品的 `controller-isolation-result.json`。随后原审计入口已核验并复制五项等待条件的真实外部证据，包含完整浏览器失败和取证，而非一律通过标志；北京时间 13:57:49.805，第一个冻结检查实际开始，操作 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-external-1790920606054271530/`，PID `561525`，继续原政策、历史和 PR。最终 Reviewer 必须重新核查证据并将发现的代码缺陷交回返工。
+
+配套浏览器仅完成现有 Playwright CLI 的只读安装预览：1.62.1 指定 Chromium/Headless Shell `151.0.7922.34`（revision 1234）、FFmpeg 1011、Winldd 1007，本机配套 Chromium 文件不存在。因所有者最初明确安装依赖前需批准，已提出只下载到独立验收制品目录的具体安装申请；没有依据异步提问送达就视为已批准，也没有安装或切换现有系统 Chrome／运行服务。
+
+第 9 次独立 Reviewer 已实际读取导入证据并再次拒绝：明确把新增滚动夹具失败及受影响的完整浏览器／CI 验收分类为代码缺陷，确认控制器启停隔离证据已补齐；GH7-A15 则要求历史实施前核查记录或所有者对迟补核查的明确例外决定。原控制器完成第 10 次诊断，并实际进入第 4 轮、第 11 次 Sol 6.1 coder，会话 `01a0fb43-53d5-7100-9342-b87124c6304a`，累计返工 3，原政策／计时／历史保持。其修复改用生成页实际整页滚动，并增加树列表溢出，尚须新候选实机复验。
+
+北京时间 14:12:55，操作者先重新只读查询源 main，再于 14:12:57 完成固定包构建和验证；来源仍为完整 `d734a087d83243530bd79f40dfbaedaabf8fe677`，包摘要仍为 `a6849efb34a88b892a5d8773a301e490be17a85b5153985be33472ba79594bf2`，源仓已有修改不变。这个新来源核验没有重写历史，也没有在该步骤另跑候选门禁。已就 GH7-A15 提交仅适用于 #7 的迟补核查例外申请；所有者尚未答复，不能记录为已批准决定。两项待答复申请与实机失败均保留，Draft PR #9 不代表最终验收完成。
+
+### 所有者人工验收反馈与预算停点（2026-10-02）
+
+所有者在本线程回复“人工验收没问题”，按 IS-051 记录人工验收通过的反馈。用户未指定完整 SHA 或具体覆盖项，因此该反馈不替代机器执行证据，也不自动绑定后续修复版本。
+
+北京时间 15:52 的只读核对显示，PR #9 保持 open、Draft、未合并，远端候选仍为 `2fb9d3f652796af4b95a40df543015b54dcac5ef`；原任务工作区候选已为 `b6c07277c60fe9ab00c1b5acb7648d0bb6a72d39`，尚未更新到该 PR。原回执为 `blocked / :mvp_recovery_resource_exhausted`，累计 12 次 Agent 尝试、4 次返工，墙钟上限仍为 18000000 毫秒。最新已完成的独立 Review 仍是第 9 次、对应旧候选的拒绝，不能据此认定新候选已通过或已被拒绝。准确候选的完整检查、浏览器复验和独立 Reviewer 复审仍未完成；本次反馈没有追加预算或授权安装、时序例外、合并及服务切换，未启动新执行操作。
+
+### IS-052 追加两小时并继续复审流程
+
+所有者随后明确授权再加两小时。操作 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-third-budget-1790929189179047797/` 保存原回执、工作区及基线副本。首次只读预检拒绝操作脚本误从外部证据续跑授权直接读取预算政策；原回执未变，失败输出保留。沿该授权的前序加时记录核验政策，确认外部续跑的冻结检查一致后，第二次预检通过，固定源码和服务均未修改。
+
+北京时间 16:22:04，经 `Executor.resume_recovery/3` 启动原任务，独立执行 PID `800015`，固定控制器仍为 `e33153a45f3534fb67b54835e8e82f0a1e3e8485`。原预算增加至 25200000 毫秒；开始时间、冻结合同和历史前缀核验一致。第 13 次实际调用已进入第 5 轮 coder，模型 `gpt-6.1-sol`，接续两项未提交修改，未跳过修复直接伪造 Reviewer 通过。人工验收反馈写入本次授权诊断，未认定未指明 SHA 的人工反馈覆盖新候选或所有机器检查。完整门禁与实际 Reviewer 复审结果须另记，不以启动成功替代复审完成。
+
+北京时间 16:31，coder 完成 tracker 配置匹配／不匹配测试修复，控制器提交新候选 `f5e68a9a964e6c7c1ca32440bccee7d2f462a2f1`，开始原三项正式检查。操作者随即对新 SHA 的独立 Git 归档副本重跑真实 Windows→WSL 脱敏首次采集、自然缓存、六页 HTML、并发隔离及临时文件清理，Windows Python 26 项通过；完整 `browser-smoke.cjs` 八组断言全部通过，包括上次失败的生成会话滚动／展开／筛选／刷新及异常重试检查。另七项实际 API 操作及窄屏检查通过，截图已保留并由主代理查看窄屏任务图；多配置和不同 cwd 的实际入口检查也通过。私有 API／BoardStore／浏览器正常关闭，45 个归档源文件字节均未变。该报告使用现有系统 Chrome 153.0.8010.54 和 Playwright 1.62.1，未安装或宣称验证配套 Chromium；制品 `issue7-final-collection-f5e68a9a964e-1790930003931448900/` 及相邻 `-candidate-browser`、`-actual-api`。本条是新候选的真实外部检查记录，尚未通过外部审计入口导入 Reviewer，不代表整体批准。
+
+第 5 轮的第一项正式候选检查全部通过（652 项、0 失败、6 项原有跳过、100% 覆盖率、格式／规格／Credo／Dialyzer／构建），第二项基线复跑也为 652 项、0 失败、6 项跳过。但第三项受信独立 View 检查在执行测试前失败，明确报错 `candidate worktree is dirty; disk file list differs from HEAD, including ignored files`。只读第 14 次诊断确认三个测试生成的 `elixir/log/symphony.log.*` 污染候选目录，要求将测试日志隔离到临时目录、清理自身产物并覆盖成功／异常／重复运行；不允许修改冻结检查或放宽忽略文件规则。控制器因此进入第 6 轮、第 15 次 coder，独立 Reviewer 尚未启动。
+
+北京时间 16:50:59.073，第 15 次 coder 因累计墙钟上限退出 `:wall_timeout`；最终操作结果为 `blocked / :mvp_recovery_resource_exhausted`，15 次尝试、5 次返工，候选仍为 `f5e68a9a964e6c7c1ca32440bccee7d2f462a2f1`。`elixir/config/config.exs` 未提交的日志隔离修复保留，尚未经完整验证、提交或安装。原回执摘要为 `61696f324c1e6886c33790ad56982dd9f7ea07381bdf626c4d49cb1512bb39f7`，原操作已形成完成链，回执、工作区和二进制差异分别保存在操作目录的 `receipt-after-budget.json`、`workspace-after-budget`、`workspace-after-budget.patch`。本次追加两小时确已生效，但沿用原开始时间累计墙钟，阻塞等待也计入；实际恢复窗口约 29 分钟，并非从恢复时开始的完整两小时。原历史和冻结合同核验一致，没有新独立 Review，不把正式门禁失败伪装为 Reviewer 拒绝或通过。制品 `issue7-third-budget/summary.json`、`budget-stop.json` 保存结果；依赖安装和 GH7-A15 时序例外仍未获明确批准。
+
+所有者质疑“哪跑了两小时，是不是别的原因堵塞”后，只读审计确认：原五小时上限加上已认证的 209720 毫秒外部等待抵扣，旧截止为北京时间 14:50:59.043954；本次实际恢复在 16:22:04.593625，已经超过旧截止 5465.549671 秒（91 分 5.55 秒）。操作者直接给旧累计上限增加 7200000 毫秒，将新截止延到 16:50:59.043954，实际仅余 1734.450329 秒（28 分 54.45 秒），没有提供恢复后完整两小时。这是加时操作的可用窗口计算问题，不是实际运行两小时。另一个直接阻塞是真实受信 View 检查发现测试日志污染：16:41:09 第三条检查拒绝后，16:41–16:46 诊断，16:46:51 再次进入 coder，16:50:59 被墙钟终止。新的 Reviewer 从未调用；不能将它归因于 Reviewer 不同意、服务未启动或已充分执行两小时。`issue7-third-budget/budget-diagnosis.json` 保存原始时间点、实际失败文本及事件链。本次核查未追加预算、启动任务或修改回执。
+
+### IS-053 实际窗口安排与接续入口阻塞
+
+所有者要求“给足够的时间跑”后，操作者按当前时间、原开始时间和认证的外部等待抵扣计算至少四小时可用窗口，预留五分钟启动余量。操作 `/var/tmp/innovation-symphony-v0-rerun1/operator-gh7-available-window-1790933024172666122` 保存原回执、工作区和基线。预检通过仅证明元数据与冻结合同符合条件；实际入口随后返回 `:mvp_recovery_resume_stage_unsupported`，未生效四小时政策，原回执摘要仍为 `61696f324c1e6886c33790ad56982dd9f7ea07381bdf626c4d49cb1512bb39f7`。此前“已实际恢复”的进展表述已纠正，预定截止不作为运行截止证据。
+
+阻塞原因是原 View preflight 在干净源码校验阶段输出失败 JSON，没有生成隔离检查的子进程退出状态，失败记录为 `exit_status=null / {:error, :sandbox_check_evidence_missing}`；旧预算接续入口只接受非零整数退出码。最小修复仅允许绑定原隔离 View 路由、冻结命令、准确失败报告及持久失败记录的审计接续，仍须重跑全部冻结检查和独立任务 Review。
+
+首轮单独 Sol 6.1 CLI Reviewer 对两个控制器补丁文件返回 `approved=false`，指出占位符展开差异、隔离 View 身份绑定和互斥锁内证据复核三项缺陷。主代理直接修复，未使用 Codex 小队；新增占位符路由正例和非 View／非隔离负例，接续前再次核验报告及失败 JSON 摘要。第二轮复审调用被自动审批拒绝，理由为未明确授权向具体外部目的地披露内部源码；只读核实配置目的地为 `https://api.openai.com/v1`，已向所有者提出精确授权请求。该独立控制器补丁审查不等于 GH-7 正式 Reviewer 验收，也不等于运行版本安装批准。运行控制器仍为 `e33153a45f3534fb67b54835e8e82f0a1e3e8485`，原任务继续保持预算停点。
+
+修正后的第二轮隔离构建 `/var/tmp/issue7-window-fix-validation-1790934720541292025` 已通过六项门禁：格式、规格、严格 Credo、完整测试覆盖率、Dialyzer 和可执行构建。完整测试为 669 项、0 失败、6 项原有实机跳过、100% 覆盖率；预算／中断接续专项测试也通过。未修改冻结 View 检查、运行 WORKFLOW、真实任务回执或工作区。第二轮独立补丁复审仍未执行，未本地提交、远端发布或安装该修复，四小时实际执行窗口仍待生效。
+
+所有者随后明确批准上述指定 OpenAI API 的补丁复审。第二轮独立 `gpt-6.1-sol` 复审实际完成，`approved=true / findings=[]`：确认精确隔离 View 预检失败绑定、占位符展开、锁内摘要重验及保留原失败与完整后续检查。报告 `issue7-window-fix/issue7-window-fix-validation-1790934720541292025/independent-review.json` 与六项门禁、源码摘要共同保存。该批准仅覆盖两个控制器文件，不覆盖 GH-7 候选验收或运行安装；此前“复审仍未执行”是审批解除前的历史快照。

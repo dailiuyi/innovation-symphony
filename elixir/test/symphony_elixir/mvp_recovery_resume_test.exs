@@ -619,6 +619,95 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
     refute resumed_coder.prompt =~ "Most recent check failure"
   end
 
+  test "open coder resume preserves a failed View preflight without a child exit code and reruns every check" do
+    context = context!()
+    {settings, before} = view_preflight_history!(context)
+    failure = put_view_preflight_failure!(context, before, :valid)
+    {resume, auth} = resume_inputs!(context, settings, "view-preflight-resume")
+    resume = Map.update!(resume, :opts, &sandbox_callbacks(&1, context))
+
+    assert {:ok, @url} = Executor.resume_recovery(resume, digest(File.read!(context.receipt)), auth)
+    after_data = Receipt.read(context.receipt)
+    assert Enum.at(after_data["rounds"], 10)["check_failure"] == failure
+    assert is_nil(failure["exit_status"])
+    assert Enum.at(calls(context, :coder), 1).prompt =~ "sandbox_check_evidence_missing"
+    assert length(calls(context, :reviewer)) == 1
+    assert length(calls(context, :sandbox_check)) == 10
+    assert after_data["rework_count"] == before["rework_count"]
+    assert after_data["recovery"]["started_at"] == before["recovery"]["started_at"]
+  end
+
+  test "open coder resume rejects unsupported or tampered no-exit-code View evidence without changing state" do
+    corruptions =
+      [:malformed, :passed, :unknown_error, :wrong_command] ++
+        [:wrong_failure, :zero_exit, :unknown_transport, :missing_log, :non_view, :non_isolated]
+
+    for corruption <- corruptions do
+      context = context!()
+      {settings, before} = view_preflight_history!(context, corruption)
+      put_view_preflight_failure!(context, before, corruption)
+      {resume, auth} = resume_inputs!(context, settings, "invalid-view-preflight")
+      raw = File.read!(context.receipt)
+
+      assert {:error, :mvp_recovery_resume_stage_unsupported} = Executor.resume_recovery(resume, digest(raw), auth)
+      assert File.read!(context.receipt) == raw
+      assert length(calls(context, :coder)) == 1
+      assert calls(context, :reviewer) == []
+      refute File.exists?(operation_dir(context, "invalid-view-preflight"))
+    end
+  end
+
+  defp view_preflight_history!(context, corruption \\ :valid) do
+    before = blocked_gh5!(context, settings())
+    sandbox = sandbox_profile!(context).settings
+    sandbox = if corruption == :non_isolated, do: %{enabled: false}, else: sandbox
+    script = if corruption == :non_view, do: "check_candidate.py", else: "check_view.py"
+    checks = List.duplicate(["python3", "{baseline}/scripts/" <> script], 10)
+    updated = before |> Map.put("execution_sandbox", json_map(sandbox)) |> Map.update!("rounds", &Enum.map(&1, fn round -> Map.put(round, "checks", checks) end))
+    write_receipt!(context, updated)
+    {%{settings() | checks: checks, sandbox: sandbox}, updated}
+  end
+
+  defp put_view_preflight_failure!(context, before, corruption) do
+    round = Enum.at(before["rounds"], 10)
+    log = Path.join(round["evidence"], "check-10.log")
+
+    report = %{
+      "schema_version" => 1,
+      "kind" => "controller_view_check",
+      "controller_view_check" => true,
+      "passed" => false,
+      "formal_code_checks" => false,
+      "formal_acceptance" => false,
+      "real_windows_wsl_acceptance" => false,
+      "candidate_sha" => nil,
+      "error" => "ValueError: candidate worktree is dirty; disk file list differs from HEAD, including ignored files"
+    }
+
+    report = corrupt_view_report(report, corruption)
+
+    command = Enum.map(Enum.at(round["checks"], 9), &String.replace(&1, "{baseline}", Path.join(context.receipt <> ".evidence", "baseline")))
+    failure = %{"index" => 10, "argv" => command, "log_path" => log, "exit_status" => nil, "error" => "{:error, :sandbox_check_evidence_missing}", "repairable" => false}
+
+    failure = corrupt_view_failure(failure, corruption)
+
+    File.write!(log, if(corruption == :malformed, do: "invalid JSON", else: Jason.encode!(report)))
+    File.write!(Path.rootname(log) <> ".json", Jason.encode!(if(corruption == :wrong_failure, do: Map.put(failure, "repairable", true), else: failure)))
+    if corruption == :missing_log, do: File.rm!(log)
+    rounds = List.update_at(before["rounds"], 10, &Map.put(&1, "check_failure", failure))
+    Receipt.update(context.receipt, "blocked", %{"rounds" => rounds})
+    failure
+  end
+
+  defp corrupt_view_report(report, :passed), do: Map.put(report, "passed", true)
+  defp corrupt_view_report(report, :unknown_error), do: Map.put(report, "error", "unverified transport failure")
+  defp corrupt_view_report(report, _), do: report
+
+  defp corrupt_view_failure(failure, :wrong_command), do: Map.put(failure, "argv", ["untrusted"])
+  defp corrupt_view_failure(failure, :zero_exit), do: Map.put(failure, "exit_status", 0)
+  defp corrupt_view_failure(failure, :unknown_transport), do: Map.put(failure, "error", "{:error, :unknown}")
+  defp corrupt_view_failure(failure, _), do: failure
+
   test "resume refuses rejected repair when no additional round remains" do
     context = context!()
     settings = settings()
