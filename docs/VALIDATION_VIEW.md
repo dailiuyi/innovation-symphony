@@ -133,3 +133,47 @@ Linear测试，需要真实平台、凭据和显式环境变量；本轮未开�
 浏览器再次实际调用 `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-repair-view/fixture`，
 退出1，`Cannot find module 'playwright/package.json'`（`MODULE_NOT_FOUND`）；UI断言未执行。
 Windows＋WSL真实采集、浏览器交互和真实控制器启停隔离继续保留外部验收项。
+
+## 刷新阅读保持回归续跑（2026-10-02）
+
+本节保留并补充此前失败记录。当前 base HEAD 为
+`32ae9429da84ddc02132317f05d1ed4ed83eab79`；本轮修复未提交，不能将该 SHA
+或工具报告中的 HEAD 当作包含本轮修改的最终候选。控制器另行冻结、验证及 Review。
+
+评审指出的异步断言缺口已补入 `view/tests/browser-refresh.cjs`，由原 smoke 强制调用：
+
+- 路由内使用实际解析的工具记录生成120条固定长记录；检查较早分页与非零滚动。
+  新快照改变会话摘要，等待请求完成及客户端接受更新后，逐值核对正文、阅读位置、
+  类型、搜索、文本选区、活动标签和分页；断言没有后台重读，再验证显式重读得到 v2。
+- 实际打开本轮 viewer 生成的 HTML，保留生产刷新逻辑，补入固定长记录、折叠内容
+  和树节点；夹具轮询间隔设为3600秒，逐次等待 `refreshSilent()` 完成，核对新内容
+  确实应用且原正文、展开状态、活动节点、搜索、筛选和滚动／阅读位置保持。
+  损坏 HTML、503 和后续恢复均有明确结果断言。
+- 更新仅存在于 Playwright 路由内，不改原配置、数据、黄金迁移预期或展示实现。
+  这些是新增断言设计，本环境未执行 UI，不能据此登记浏览器验收通过。
+
+额外诊断发现验证器的实际 worker 回归只模拟了 `wsl.exe`，Linux 临时路径仍进入
+Windows 驱动器转换而产生 `IndexError: string index out of range`。仅在该测试的
+非 Windows 子进程模拟路径转换，保持实际 worker、解析、渲染、沙箱限制和全部
+正负向断言；损坏候选必须被拒绝。没有修改 worker 或受信检查的有效政策。
+
+| 本次命令／诊断 | 结果与原始记录 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-refresh-view-handoff` | 最后代码检查退出0；26项 Python、10项 JS、实际 self_check、6份 HTML、完整迁移比较及8种入口通过，无 skip；`/tmp/gh7-refresh-view-handoff.log`、输出目录 `code-check-result.json`；前次同样通过，保留于 `/tmp/gh7-refresh-view-final/` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；55项，保留原2项宿主隔离集成 skip，原因与初轮相同；`/tmp/gh7-refresh-scripts.log` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 修复后退出0；24项、无 skip，包含实际固定源渲染及损坏候选拒绝；`/tmp/gh7-refresh-validator-final.log`。初次未配置 Node／固定包环境失败及修复前路径失败分别保留于 `/tmp/gh7-refresh-validator.log`、`/tmp/gh7-refresh-validator-rerun.log` |
+| `/opt/toolchain/view-validation/node/bin/node --check view/tests/browser-refresh.cjs` 及同命令检查 `browser-smoke.cjs` | 各退出0；仅语法检查，不代表浏览器兼容性或 UI 通过 |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-refresh-view-handoff/fixture` | 退出1：`Cannot find module 'playwright/package.json'`，`MODULE_NOT_FOUND`；`/tmp/gh7-refresh-browser-handoff.log`，前次同样失败保留于 `/tmp/gh7-refresh-browser-final.log`。离线工具链无 Playwright／Chromium，UI断言未执行，未降级或跳过后报告通过 |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项 ExUnit（0失败、6项原 live skip）、100%覆盖率、Dialyzer及 escript构建通过；`/tmp/gh7-current-candidate.log`、`.check-evidence/candidate-zldbj957/`；有效政策无变化 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 首轮退出10：652项、1失败、6项原 live skip；完整复跑退出0：652项、0失败、6项原 live skip。日志分别为 `/tmp/gh7-current-baseline.log`、`/tmp/gh7-current-baseline-rerun.log`；工具产物分别在 `.check-evidence/baseline-a4p5hj4h/`、`.check-evidence/baseline-twaqs4xm/` |
+
+baseline 首轮为既有 `WatchdogTest` 的 packaged manual starts 用例（1151行）：
+1390行计时断言预期不超过 `interval_ms + 100 = 1600`，实际1614毫秒。
+原命令完整复跑成功；未修改 Elixir、计时门槛、seed、过滤、覆盖率或跳过政策，
+不以成功复跑删除首次失败记录，也不把该既有计时用例登记为从无偶发问题。
+
+真实平台 live E2E 的6项 skip 沿用原显式启用条件，不计作真实平台通过。
+最终候选 SHA 的完整正式报告、Playwright 1.62.1／配套 Chromium 的成功运行、
+Windows＋WSL 首次真实采集与浏览器、控制器启停健康及只读外部状态对照、
+来源远端审计继续待项目所有者或其指定的独立验收负责人接手。本轮没有提交、
+push、PR、合并、安装、服务切换或写入控制器证据，不宣布 GH-7 全部验收完成。
