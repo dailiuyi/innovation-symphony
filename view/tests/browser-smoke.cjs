@@ -13,6 +13,9 @@ const out = path.resolve(__dirname, '../build/_screenshots');
 (async () => {
   await fs.mkdir(out, {recursive:true});
   const browser = await chromium.launch({headless:true, ...(chrome ? {executablePath:chrome} : {})});
+  const environment = {node:process.version, playwright:require('playwright/package.json').version,
+    browser:browser.version(), executable:chrome || chromium.executablePath()};
+  process.stdout.write(`Browser environment ${JSON.stringify(environment)}\n`);
   const context = await browser.newContext({viewport:{width:1440,height:960}, reducedMotion:'reduce', permissions:['clipboard-read','clipboard-write']});
   const page = await context.newPage();
   const errors = [];
@@ -104,7 +107,7 @@ const out = path.resolve(__dirname, '../build/_screenshots');
     await nativeReading(page, origin, snapshot, session);
     check('completed snapshot refresh preserves transcript content, older page, scroll, filters and selection');
     await generatedReading(context, page, origin, session);
-    check('generated transcript refresh preserves output, expanded state, selection and scroll; malformed/failure retry');
+    check('generated transcript refresh preserves output, expanded state, active node and scroll; malformed/failure retry');
 
     await page.reload(); await visible('.context-metadata');
     assert(page.url().endsWith('#/agents/' + session.id));
@@ -162,6 +165,6 @@ const out = path.resolve(__dirname, '../build/_screenshots');
     await page.screenshot({path:path.join(out, 'board-mobile.png')});
     assert.deepEqual(errors, []);
     check('dark/light and mobile layout, no browser script errors');
-    await fs.writeFile(path.join(out, 'smoke-result.json'), JSON.stringify({passed:true,checks, sessions:snapshot.sessions.length,stories:snapshot.stories.length,errors},null,2));
+    await fs.writeFile(path.join(out, 'smoke-result.json'), JSON.stringify({passed:true,environment,checks, sessions:snapshot.sessions.length,stories:snapshot.stories.length,errors},null,2));
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error); process.exitCode=1;});

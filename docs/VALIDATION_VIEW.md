@@ -177,3 +177,44 @@ baseline 首轮为既有 `WatchdogTest` 的 packaged manual starts 用例（1151
 Windows＋WSL 首次真实采集与浏览器、控制器启停健康及只读外部状态对照、
 来源远端审计继续待项目所有者或其指定的独立验收负责人接手。本轮没有提交、
 push、PR、合并、安装、服务切换或写入控制器证据，不宣布 GH-7 全部验收完成。
+
+## 生成页滚动夹具修复续跑（2026-10-02）
+
+本节追加本次工作区自检，不替代前述失败记录或独立评审。base HEAD 为
+`2fb9d3f652796af4b95a40df543015b54dcac5ef`，本轮未提交；该 SHA 不包含本次修复，
+不能作为修复候选身份。最终候选仍由控制器冻结并另行正式检查和独立 Review。
+
+生成页实际布局中 `#content` 随正文增高，正文由 document/window 滚动；40 个约20px
+树节点不足以使约815px的列表溢出。修复仅调整浏览器夹具：120 个搜索后仍匹配的节点，
+设置位置前检查真实页面和树列表均有溢出，按整页滚动将展开输出内的固定阅读锚点
+置于视口内。等待滚动稳定和实际刷新完成后，严格比较正文、展开状态、活动节点、
+搜索、筛选、页面／树滚动、阅读锚点及 URL。保留版本更新、损坏 HTML、503、恢复及
+不导航断言；没有修改生产布局、refreshSilent、黄金预期或状态语义。
+smoke 的日志和成功报告新增实际 Node、Playwright、浏览器版本和可执行文件路径。
+
+| 本次命令／诊断 | 结果与原始记录 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-scroll-view-final` | 退出0；26项 Python、10项 JS，无 skip；实际 self_check、6份 HTML、完整迁移比较及8种入口通过；`/tmp/gh7-scroll-view-final.log` 和输出目录 `code-check-result.json`；初次同样通过的记录保留在 `/tmp/gh7-scroll-view.log`、`/tmp/gh7-scroll-view/` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项、无 skip；`/tmp/gh7-scroll-validator.log` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；55项、0失败，原2项宿主隔离集成 skip（未设置 `SYMPHONY_SANDBOX_INTEGRATION=1`，要求预配置的宿主 runner）；`/tmp/gh7-scroll-scripts.log` |
+| `/opt/toolchain/view-validation/node/bin/node --check view/tests/browser-refresh.cjs`、同命令检查 `browser-smoke.cjs`，`git diff --check` | 退出0；语法检查不代表 UI 断言通过 |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-scroll-view/fixture` | 退出1；`Cannot find module 'playwright/package.json'`，`MODULE_NOT_FOUND`；`/tmp/gh7-scroll-browser.log`。本次离线沙箱没有 Playwright／Chromium，完整 UI 断言未执行，CI浏览器步骤未能通过本轮验证；没有降级或跳过后报告通过 |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项 ExUnit（0失败、6项原 live skip）、100%覆盖率、Dialyzer及 escript构建通过；`/tmp/gh7-scroll-candidate.log`、`.check-evidence/candidate-ey6h20eb/`；未修改有效检查政策 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 首轮退出10：652项、1失败、6项原 live skip；原命令完整复跑退出0：652项、0失败、6项原 live skip。日志 `/tmp/gh7-scroll-baseline.log`、`/tmp/gh7-scroll-baseline-rerun.log`；工具产物 `.check-evidence/baseline-6pdr7kbm/`、`.check-evidence/baseline-dr4lrmhz/` |
+
+baseline 首轮是既有 `MvpExternalTaskTest` 的默认 tracker 绑定断言（419行用例、
+427行断言）：预期 `{:error, :tracker_binding_mismatch}`，实际
+`{:error, {:mvp_awaiting_external, "bound"}}`。本轮没有改 Elixir、冻结测试、seed、
+过滤、覆盖率或跳过政策；完整复跑通过，不抹去首轮失败。6项 live E2E 的原显式启用
+条件保持不变，不计作真实外部平台通过；宿主隔离集成的2项 skip 同样保留。
+
+Python、Node 和 viewer 仍为本页记录的预置固定版本。Playwright 1.62.1 与配套 Chromium
+仍是 README／CI 所要求且待实际通过的组合，没有以系统 Chrome 的旧部分结果替代。
+GH7-A11、A12、A16、A17 的完整浏览器复验保留未完成：由获准的 View 验收负责人在
+准确新候选 SHA 上运行完整 fixture／smoke，并在 Windows＋WSL 上复验真实采集与
+完整浏览器流程，保存版本、命令、原始结果、日志及未执行项。缺依赖、渲染失败和
+断言失败仍必须非零退出。历史实机采集及局部交互证据不代表修复候选的全部通过。
+
+GH7-A15 单独保留实施前来源远端核查的时序缺口。所有者须提供当时的带时间记录，
+或明确决定是否接受迟补核查及其范围；本轮离线核对固定来源不补造历史事实，
+也没有把评审材料当作例外授权。本轮不提交、push、PR、合并、部署或升级服务。

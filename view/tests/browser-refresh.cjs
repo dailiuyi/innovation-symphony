@@ -95,9 +95,14 @@ async function generatedReading(context, board, origin, session) {
     if (!refresh) throw new Error('generated page is missing the production refresh script');
     refresh.textContent = refresh.textContent.replace(/setInterval\(refreshSilent, \d+ \* 1000\)/,
       'setInterval(refreshSilent, 3600 * 1000)');
-    for (let i = 0; i < 40; i++) {
+    // 120 matching nodes overflow the real sidebar after search/filtering at the
+    // smoke viewport. Forty 20px rows fit inside its ~815px tree container.
+    for (let i = 0; i < 120; i++) {
       tree.insertAdjacentHTML('beforeend', `<a class="tree-node tree-role-tool" href="#gh7-reading-${i}">GH7 reading ${i}</a>`);
-      messages.insertAdjacentHTML('beforeend', `<details id="gh7-reading-${i}"><summary>GH7 reading ${i}</summary><div class="tool-output expandable" onclick="this.classList.toggle('expanded')"><pre class="output-preview">GH7 preview ${i}</pre><pre class="output-full">${(`GH7 retained output ${i}\n`).repeat(80)}</pre></div></details>`);
+      const output = (`GH7 retained output ${i}\n`).repeat(12)
+        + (i === 0 ? '<span id="gh7-reading-anchor">GH7 visible reading anchor</span>\n' : '')
+        + (`GH7 retained output ${i}\n`).repeat(68);
+      messages.insertAdjacentHTML('beforeend', `<details id="gh7-reading-${i}"><summary>GH7 reading ${i}</summary><div class="tool-output expandable" onclick="this.classList.toggle('expanded')"><pre class="output-preview">GH7 preview ${i}</pre><pre class="output-full">${output}</pre></div></details>`);
     }
     messages.insertAdjacentHTML('beforeend', '<p id="gh7-update">GH7 generated version 1</p>');
     return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
@@ -116,7 +121,8 @@ async function generatedReading(context, board, origin, session) {
     return route.fulfill({contentType: 'text/html', body});
   });
   const reading = () => transcript.evaluate(() => ({
-    content: document.getElementById('content').scrollTop,
+    page: window.scrollY,
+    href: location.href,
     tree: document.getElementById('tree-container').scrollTop,
     search: document.getElementById('tree-search').value,
     filter: document.querySelector('.filter-btn.active').dataset.filter,
@@ -125,7 +131,10 @@ async function generatedReading(context, board, origin, session) {
     expanded: document.querySelector('#gh7-reading-0 .tool-output').classList.contains('expanded'),
     text: document.querySelector('#gh7-reading-0 .output-full').innerText,
     readingTop: document.querySelector('#gh7-reading-0 .output-full').getBoundingClientRect().top,
+    anchorTop: document.getElementById('gh7-reading-anchor').getBoundingClientRect().top,
   }));
+  const settled = () => transcript.evaluate(() => new Promise(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve))));
   try {
     await transcript.goto(url);
     await transcript.waitForFunction(() => typeof window.refreshSilent === 'function');
@@ -133,20 +142,35 @@ async function generatedReading(context, board, origin, session) {
     await transcript.locator('#tree-search').fill('GH7 reading');
     await transcript.locator('.tree-node[href="#gh7-reading-0"]').click();
     await transcript.locator('#gh7-reading-0 .tool-output').click();
+    const overflow = await transcript.evaluate(() => ({
+      page: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight,
+      tree: document.getElementById('tree-container').scrollHeight > document.getElementById('tree-container').clientHeight,
+    }));
+    assert(overflow.page && overflow.tree, 'filtered fixture must overflow the actual page and tree scroll containers');
     await transcript.evaluate(() => {
-      document.getElementById('content').scrollTop = 240;
+      // The viewer's main grows with its content; the document scrolls. Cancel
+      // the tree click's smooth navigation and place a real output line in view.
+      const anchor = document.getElementById('gh7-reading-anchor');
+      window.scrollTo({top: window.scrollY + anchor.getBoundingClientRect().top - 160, behavior: 'instant'});
       document.getElementById('tree-container').scrollTop = 80;
       window.gh7NoNavigation = true;
     });
+    await settled();
+    await transcript.waitForFunction(() => window.scrollY > 0 && document.getElementById('tree-container').scrollTop > 0);
     const before = await reading();
-    assert(before.open && before.expanded && before.content > 0 && before.tree > 0,
+    await settled();
+    assert.deepEqual(await reading(), before, 'transcript and tree scrolling have settled before refresh');
+    assert(before.open && before.expanded && before.page > 0 && before.tree > 0,
       'exercise expanded output and nonzero transcript/tree positions');
+    assert(before.anchorTop > 0 && before.anchorTop < await transcript.evaluate(() => innerHeight),
+      'exercise a visible line inside the expanded output');
     for (const next of [2, 'malformed', 'unavailable', 3]) {
       version = next;
       const count = requests;
       const changed = await transcript.evaluate(() => window.refreshSilent());
       assert(requests > count, 'refreshSilent must fetch the generated page');
       assert.equal(changed, typeof next === 'number', 'apply updates, reject malformed/failed reads and allow retry');
+      await settled();
       assert.deepEqual(await reading(), before, 'generated page preserves reading state after completed refresh');
       assert.equal(await transcript.evaluate(() => window.gh7NoNavigation), true, 'refresh must not navigate');
       const expected = next === 3 ? 3 : 2;
