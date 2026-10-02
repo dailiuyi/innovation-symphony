@@ -1,0 +1,165 @@
+// Run against a local read-only board. Playwright is a development dependency.
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const fs = require('node:fs/promises');
+const args = process.argv.slice(2);
+const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
+const origin = option('--url', 'http://127.0.0.1:8613');
+const chrome = option('--chrome', undefined);
+const out = path.resolve(__dirname, '../build/_screenshots');
+
+(async () => {
+  await fs.mkdir(out, {recursive:true});
+  const browser = await chromium.launch({headless:true, ...(chrome ? {executablePath:chrome} : {})});
+  const context = await browser.newContext({viewport:{width:1440,height:960}, reducedMotion:'reduce', permissions:['clipboard-read','clipboard-write']});
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const checks = [];
+  const check = (name) => { checks.push(name); process.stdout.write(`PASS ${name}\n`); };
+  const visible = async selector => page.locator(selector).first().waitFor({state:'visible', timeout:10000});
+  const hidden = async selector => page.locator(selector).waitFor({state:'hidden', timeout:10000});
+  try {
+    await page.goto(origin + '/#/board');
+    await visible('.card');
+    const snapshot = await (await page.request.get(origin + '/api/snapshot')).json();
+    const boot = await (await page.request.get(origin + '/api/bootstrap')).json();
+    assert(snapshot.sessions.length && snapshot.stories.length, 'smoke requires collected tasks and sessions');
+    assert(snapshot.sessions.some(s => s.firstTs && s.role === '编码'), 'smoke requires a collected coder session');
+    const initialCards = await page.locator('.card').count();
+    await page.locator('[data-board-search]').fill('__no_such_task_795__');
+    assert.equal(await page.locator('.card').count(), 0);
+    await page.locator('[data-board-clear]').click();
+    assert.equal(await page.locator('.card').count(), initialCards);
+    await page.locator('[data-board-attention]').click();
+    assert.equal(await page.locator('.col-done .card').count(), 0);
+    await page.locator('[data-board-clear]').click();
+    await page.locator('[data-board-layout="list"]').click();
+    await page.reload(); await visible('.card');
+    assert(await page.locator('#board').evaluate(el => el.classList.contains('is-compact-list')));
+    await page.screenshot({path:path.join(out, 'board-list-dark.png')});
+    await page.locator('[data-board-layout="board"]').click();
+    await page.screenshot({path:path.join(out, 'board-dark.png')});
+    await page.locator('.card').first().click();
+    await visible('#detail-pane .detail-head');
+    const round = page.locator('#detail-pane details.round').first();
+    if (await round.count()) {
+      await round.locator('summary').first().click();
+      const agent = round.locator('[data-session]').first();
+      if (await agent.count()) { await agent.click(); await visible('.context-metadata'); await page.keyboard.press('Escape'); }
+      assert(await round.evaluate(el=>el.open), 'task round remains expanded after reading context');
+    }
+    await page.locator('#detail-close').click();
+    check('board search, attention, layout persistence');
+
+    await page.locator('[data-view="agents"]').click();
+    await visible('#agent-groups .acard');
+    await page.locator('[data-srole="Review"]').click();
+    assert((await page.locator('#agent-groups .acard-top > .badge').allTextContents()).every(v=>v==='Review'));
+    await page.locator('[data-srole="all"]').click();
+    await page.locator('.sb-repo').first().click();
+    assert(page.url().includes('#/agents'));
+    await page.locator('.sb-repo').first().click();
+    const session = [...snapshot.sessions].reverse().find(s=>s.role==='编码');
+    await page.locator('#agent-search').fill(session.id);
+    assert.equal(await page.locator('#agent-groups .acard').count(), 1);
+    await page.locator('#agent-groups .acard').click();
+    await visible('.context-metadata');
+    assert(page.url().endsWith('#/agents/' + session.id));
+    await page.goto(origin + '/#/story/' + snapshot.stories[0].id);
+    await visible('#detail-pane .detail-head');
+    await page.goto(origin + '/#/agents/' + session.id); await visible('.context-metadata');
+    await page.goBack(); await visible('#detail-pane .detail-head');
+    await page.goForward(); await visible('.context-metadata');
+    check('task and session deep links, browser back and forward');
+    const issued = await page.locator('#context-overview .context-section .context-text').first().innerText();
+    assert(issued.startsWith('Implement only'), 'overview shows real issued instruction');
+    assert.equal((await page.request.get(origin + '/prototypes/' + session.href)).status(), 200);
+    await page.locator('[data-context-copy]').click();
+    assert((await page.evaluate(()=>navigator.clipboard.readText())).startsWith('Implement only'));
+    await page.locator('[data-context-link]').click();
+    assert((await page.evaluate(()=>navigator.clipboard.readText())).endsWith('#/agents/' + session.id));
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-context-export]').click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), `agent-${session.id}.md`);
+    await page.locator('[data-context-refresh]').click();
+    await visible('.context-metadata');
+    await page.screenshot({path:path.join(out, 'agent-context-dark.png')});
+    check('agent filtering, issue instruction, copy, export, refresh');
+
+    await page.locator('[data-context-tab="transcript"]').click();
+    await visible('.context-entry');
+    await page.locator('#context-type').selectOption('tool');
+    await visible('.context-entry');
+    assert((await page.locator('.context-entry header > .badge').allTextContents()).every(v=>v==='工具'));
+    const older = page.locator('[data-context-older]');
+    if (await older.count()) { await older.click(); await visible('.context-entry'); }
+    await page.locator('#context-search').fill('__no_such_record_795__');
+    await visible('#context-entries .empty-state');
+    await page.locator('#context-search').fill('');
+    await visible('.context-entry');
+    await page.locator('#refresh-now').evaluate(el=>el.click());
+    assert.equal(await page.locator('#context-type').inputValue(), 'tool');
+    check('bounded transcript search, type filter, pagination, reading preservation');
+
+    await page.reload(); await visible('.context-metadata');
+    assert(page.url().endsWith('#/agents/' + session.id));
+    await page.locator('#session-pane-open').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert(await page.locator('#session-pane').evaluate(el=>el.contains(document.activeElement)));
+    await page.keyboard.press('Escape');
+    await hidden('#session-overlay');
+    assert(page.url().endsWith('#/agents'));
+    assert.equal(await page.locator('#app').evaluate(el=>el.inert), false);
+    // Reopening the same session must rebuild DOM that changed under the shell.
+    await page.locator('#agent-search').fill(session.id);
+    await page.locator('#agent-groups .acard').click(); await visible('.context-metadata');
+    await page.locator('[data-context-tab="transcript"]').click(); await visible('.context-entry');
+    await page.keyboard.press('Escape');
+    await page.locator('#agent-groups .acard').click(); await visible('.context-metadata');
+    assert.equal(await page.locator('#context-overview').isVisible(), true);
+    assert.equal(await page.locator('#context-transcript').isVisible(), false);
+    await page.evaluate(()=>{location.hash='#/agents/missing-test-session';});
+    await hidden('#session-overlay');
+    assert((await page.locator('#agent-note').innerText()).includes('不在当前采集快照'));
+    await page.evaluate(()=>{location.hash='#/agents';});
+    check('direct session link, keyboard focus, Escape');
+
+    await page.locator('#agent-search').fill('');
+    const cardsBeforeFailure = await page.locator('#agent-groups .acard').count();
+    await page.route('**/api/bootstrap', route=>route.abort());
+    await page.route('**/api/snapshot', route=>route.abort());
+    await page.locator('#refresh-now').click();
+    await page.waitForFunction(()=>document.getElementById('live-label').textContent.includes('服务断开'));
+    assert.equal(await page.locator('#agent-groups .acard').count(), cardsBeforeFailure);
+    await page.unroute('**/api/bootstrap'); await page.unroute('**/api/snapshot');
+    await page.locator('#refresh-now').click();
+    await page.waitForFunction(()=>document.getElementById('live-label').textContent.includes('正常'));
+    await page.route('**/api/bootstrap', route=>route.fulfill({json:{...boot, collection:{status:'error', lastError:'smoke simulated collection failure'}}}));
+    await page.locator('#refresh-now').click();
+    await page.waitForFunction(()=>document.getElementById('live-label').textContent.includes('采集失败'));
+    await page.unroute('**/api/bootstrap'); await page.locator('#refresh-now').click();
+    check('simulated service and collector failure preserve data and recover');
+
+    await page.locator('#theme-toggle').click();
+    assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
+    await page.screenshot({path:path.join(out, 'agents-light.png')});
+    await page.locator('#theme-toggle').click();
+    await page.screenshot({path:path.join(out, 'agents-dark.png')});
+    await page.setViewportSize({width:390,height:844});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({path:path.join(out, 'agents-mobile.png')});
+    await page.locator('#agent-groups .acard').first().click(); await visible('.context-metadata');
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({path:path.join(out, 'agent-context-mobile.png')});
+    await page.keyboard.press('Escape');
+    await page.locator('[data-view="board"]').click(); await visible('.card');
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({path:path.join(out, 'board-mobile.png')});
+    assert.deepEqual(errors, []);
+    check('dark/light and mobile layout, no browser script errors');
+    await fs.writeFile(path.join(out, 'smoke-result.json'), JSON.stringify({passed:true,checks, sessions:snapshot.sessions.length,stories:snapshot.stories.length,errors},null,2));
+  } finally { await browser.close(); }
+})().catch(error=>{console.error(error); process.exitCode=1;});

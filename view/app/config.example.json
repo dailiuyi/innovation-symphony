@@ -1,0 +1,16 @@
+{
+  "board": {
+    "title": "innovation-view",
+    "interval": 5,
+    "port": 8613,
+    "runtime_glob": "/var/tmp/innovation-symphony-v0*",
+    "stall_hours": 24
+  },
+  "cost": {
+    "currency": "¥",
+    "input_per_m": 2.0,
+    "cached_input_per_m": 0.4,
+    "output_per_m": 8.0
+  },
+  "repos": [{"name": "dailiuyi/innovation-symphony", "alias": "Symphony", "enabled": true}]
+}
