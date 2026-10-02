@@ -55,7 +55,7 @@ const json = (res, value, status = 200) => {
   try {
     await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
     const child = spawn(process.execPath, [path.join(__dirname, 'browser-smoke.cjs'), '--url',
-      'http://127.0.0.1:' + server.address().port], {stdio:'inherit'});
+      'http://127.0.0.1:' + server.address().port, '--out', path.join(fixture, 'browser')], {stdio:'inherit'});
     const code = await new Promise((resolve, reject) => {child.once('error', reject); child.once('exit', resolve);});
     assert.equal(code, 0, 'fixture browser smoke failed');
     passed = true;

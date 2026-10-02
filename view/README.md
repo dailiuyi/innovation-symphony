@@ -89,6 +89,10 @@ python -B scripts/run_view_checks.py --output view/build/checks
 该命令只证明代码与固定夹具检查，报告明确列出未执行的浏览器和真实 Windows＋WSL。
 主仓 CI 独立 View job 另执行下述浏览器检查，不改变 Elixir 或隔离门禁。
 
+检查准备交给控制器的候选时，将 `--output` 指向仓库外尚不存在的临时目录，
+避免包括 ignored 文件在内的候选库存被检查产物污染。固定浏览器夹具的截图与
+smoke 报告写入该结果目录的 `fixture/browser/`，不另写源码树。
+
 浏览器固定依赖为 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
 
 ```sh
@@ -130,7 +134,8 @@ python app/run.py --port 8614
 node tests/browser-smoke.cjs --url http://127.0.0.1:8614 --chrome "<Chrome 可执行文件路径>"
 ```
 
-脚本截图保存到 `build/_screenshots/`。运行烟雾检查后还要按[手工检查清单](docs/DEMO-SCOPE.md#手工浏览器检查)核对交互和窄屏表现。清单是待执行步骤；这里不代表浏览器验收已经完成。
+真实环境 smoke 的截图默认保存到 `build/_screenshots/`，可用 `--out <仓库外目录>`
+指定输出位置。运行烟雾检查后还要按[手工检查清单](docs/DEMO-SCOPE.md#手工浏览器检查)核对交互和窄屏表现。清单是待执行步骤；这里不代表浏览器验收已经完成。
 
 ## 代码结构
 

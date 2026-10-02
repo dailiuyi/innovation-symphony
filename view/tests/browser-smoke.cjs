@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
 const origin = option('--url', 'http://127.0.0.1:8613');
 const chrome = option('--chrome', undefined);
-const out = path.resolve(__dirname, '../build/_screenshots');
+const out = path.resolve(option('--out', path.resolve(__dirname, '../build/_screenshots')));
 
 (async () => {
   await fs.mkdir(out, {recursive:true});

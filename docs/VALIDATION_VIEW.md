@@ -318,3 +318,44 @@ Windows＋WSL 准确新候选的实机复验、GH7-A15 历史记录或所有者�
 原2项宿主隔离与6项真实平台 live 测试的 skip 不算通过。干净已提交候选的正式 View
 检查及独立 Review 仍归控制器；未运行 routing marker 作为宿主检查，也未改控制器证据。
 本会话没有提交、发布、创建 PR、合并、部署或切换服务，不宣布 GH-7 全部验收完成。
+
+## 第6轮库存拒绝后的产物生命周期复验（2026-10-02）
+
+本次离线任务副本的 base HEAD 为 `63d47b7b33cf4520b171615a04b3b77514254e7a`。
+修复未提交，该 SHA 不是含本次修复的候选；最终身份和独立 Review 仍由控制器负责。
+只读 `/evidence/round-6/check-3.log` 在会话检查前拒绝了候选库存。
+本次实际核实源码目录有未跟踪、被忽略的 `elixir/log/symphony.log.1`、`.idx`、`.siz`，
+分别为0、18、13字节。先保存逐文件 SHA256、大小、base HEAD 和范围说明，并核对
+独立副本字节，再将原目录移至 `/tmp/gh7-retained-logs-069cnoc_/original-log/`；副本和
+manifest 同在该归档目录。仅移动本次可丢弃任务副本中的产物，没有删除真实服务数据、
+日志或控制器证据，也没有放宽库存检查。
+
+增强 `scripts/tests/test_mix_startup_logs.py`：包含遗留轮转文件的项目和全新项目均
+执行成功、helper失败、应用启动失败及连续重试；构建与日志放在独立临时目录。
+逐次比较源码完整文件清单及字节，证明测试不修改旧日志、不增加额外产物；再核对
+明确保存并移出遗留文件后的清单，重复执行证明清洁候选保持清洁。非test配置实际
+启动并写入原默认 `log/symphony.log`，退出后保留轮转文件。没有增加生产自动清理。
+生成页120节点、document滚动、可见阅读锚点及非零位置的严格断言保持不变。
+固定浏览器夹具只增加将截图／smoke报告写入夹具结果目录，真实smoke默认路径保留。
+
+环境仍为离线 Linux；Python 3.12.3、Node v24.19.0、viewer 0.5.0、Elixir 1.19.5／
+OTP 28.5。以下是工作区自检，不是正式候选通过报告。
+
+| 本次命令／诊断 | 结果、退出码与原始记录 |
+| --- | --- |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -p test_mix_startup_logs.py -v` | 退出0；3项真实Mix回归通过；`/tmp/gh7-lifecycle-targeted.log` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；58项，56通过、原2项宿主sandbox集成skip；`/tmp/gh7-lifecycle-scripts.log` |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-lifecycle-view-final` | 退出0；26项Python、10项JS，无skip；self_check、6份实际HTML、完整迁移结果比较和8种入口通过；`/tmp/gh7-lifecycle-view-final.log`、输出目录的`code-check-result.json`。调整浏览器输出前同样通过的结果保留在`/tmp/gh7-lifecycle-view/` |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项、无skip；`/tmp/gh7-lifecycle-validator.log` |
+| 在私有项目去掉test日志重定向，运行相同回归 | 五次调用的路径断言及最终残留断言均拒绝旧配置，预期6个断言失败；确认脚本退出0；`/tmp/gh7-lifecycle-old-config-confirmed.log`。首次诊断包装器漏计最终残留断言，退出1的原记录保留在`/tmp/gh7-lifecycle-old-config.log`；没有候选回归失败 |
+| 浏览器输出位置诊断（临时Playwright替身故意使launch失败） | 退出0；实际smoke及fixture子进程均将输出放在指定外部目录，源码清单及内容不变；原失败仍非零且报告`passed:false`；`/tmp/gh7-lifecycle-browser-output.log`。只证明输出生命周期，不计作任何UI断言通过 |
+| 三个浏览器脚本的Node `--check`、固定包verify、manifest及36个来源文件、`git diff --check` | 通过；迁移差异仍为已登记的6个来源文件。扣除预置deps和指定工具生成的`.check-evidence`后，磁盘无额外源码文件；不把该诊断当作正式已提交候选认证 |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-lifecycle-view-final/fixture` | 退出1：`Cannot find module 'playwright/package.json'`、`MODULE_NOT_FOUND`；`/tmp/gh7-lifecycle-browser-final.log`。完整UI断言未执行，未用替身、语法检查或数据等价替代浏览器验收 |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；format、specs、Credo、652项ExUnit（0失败、6项原live skip，seed 225141）、100%覆盖率、Dialyzer及escript构建通过；`/tmp/gh7-lifecycle-candidate.log`、`.check-evidence/candidate-0h20qcj5/` |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出0；652项ExUnit、0失败、6项原live skip，seed 44274；`/tmp/gh7-lifecycle-baseline.log`、`.check-evidence/baseline-3diuoltg/`；candidate及baseline均本会话串行执行，无需重跑，冻结政策未改变 |
+
+Playwright 1.62.1／配套Chromium没有在此沙箱中预置，完整浏览器检查明确失败于
+依赖加载；未修改依赖要求或检查政策。GH7-A11／A12／A16／A17的真实浏览器与
+Windows＋WSL新候选复验、控制器启停隔离及只读外部状态对照、GH7-A15的实施前
+远端核查记录或所有者例外决定仍未完成。6项live及2项宿主集成skip不算通过。
+本轮未运行routing marker代替可信入口，没有提交、发布、PR、安装或服务切换。
