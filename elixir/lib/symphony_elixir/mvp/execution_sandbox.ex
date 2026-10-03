@@ -61,9 +61,25 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
     with {:ok, kind} <- check_kind(command),
          {:ok, run} <- prepare(config, context, timeout) do
-      argv =
-        launcher(config, context, run.scratch, timeout) ++
-          ["--", "python3", "/opt/symphony/scripts/check_isolated.py", kind, "--candidate-sha", Commands.git!(["rev-parse", "HEAD"], context.workspace)]
+      candidate_sha = Commands.git!(["rev-parse", "HEAD"], context.workspace)
+
+      check_argv =
+        case kind do
+          "view" ->
+            [
+              "/opt/toolchain/view-validation/python/bin/python",
+              "-I",
+              "-B",
+              "/opt/symphony/scripts/check_view_isolated.py",
+              "--candidate-sha",
+              candidate_sha
+            ]
+
+          _ ->
+            ["python3", "/opt/symphony/scripts/check_isolated.py", kind, "--candidate-sha", candidate_sha]
+        end
+
+      argv = launcher(config, context, run.scratch, timeout) ++ ["--"] ++ check_argv
 
       # The launcher owns timeouts and descendant cleanup; give it time to export evidence.
       runner = Keyword.get(context.opts, :sandbox_command_run, &Commands.run_logged/4)
@@ -198,20 +214,32 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
       "Repair failures and rerun within THIS session. Do not finish with known failing checks. " <>
       "The trusted toolchain, dependencies and baseline are preinstalled; no external credentials or services are available. " <>
       "Do not weaken checks or change their effective policy. Report skipped and unexecuted tests accurately. " <>
+      "When an Issue asks to migrate the prepared View, the fixed sanitized source is available read-only at /opt/symphony/scripts/view_validation/source/view-source.zip and source-manifest.json; use /opt/toolchain/view-validation/python/bin/python and /opt/toolchain/view-validation/node/bin/node for offline validation work. " <>
+      "scripts/check_view.py is only a controller routing marker; it is not a host-side checker. " <>
       "Do not commit or modify .git. The controller performs a separate full verification and independent Review."
   end
 
   defp role_prompt(prompt, _), do: prompt <> "\n\nAll repository paths refer to the isolated copy at /workspace; the frozen base is /baseline and controller feedback is read-only at /evidence."
 
+  defp check_kind(["python3", script]) do
+    if Path.basename(script) == "check_view.py",
+      do: {:ok, "view"},
+      else: check_kind_legacy(["python3", script])
+  end
+
   defp check_kind(["python3", script | _]) do
+    check_kind_legacy(["python3", script])
+  end
+
+  defp check_kind(_), do: {:error, :unsupported_isolated_check}
+
+  defp check_kind_legacy(["python3", script]) do
     case Path.basename(script) do
       "check_candidate.py" -> {:ok, "candidate"}
       "check_baseline.py" -> {:ok, "baseline"}
       _ -> {:error, :unsupported_isolated_check}
     end
   end
-
-  defp check_kind(_), do: {:error, :unsupported_isolated_check}
 
   defp await_result(scratch, remaining) when remaining > 0 do
     result_path = Path.join(scratch, "result.json")

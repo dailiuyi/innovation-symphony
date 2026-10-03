@@ -16,8 +16,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "view_validation"))
-from worker import render_fixture, run_tests
-from validator import validate_python_report, validate_tap
+from validator import validate_python_report, validate_render, validate_tap
 
 FIXTURE = ROOT / "scripts" / "view_validation" / "fixtures" / "acceptance.json"
 EXPECTED = ROOT / "view" / "tests" / "fixtures" / "migration-expected.json"
@@ -37,11 +36,14 @@ def projection(stage, output):
 
 
 def render(stage, output):
-    sys.path.insert(0, str(stage / "app"))
-    from symphony_board import wslpull
-    # This fixture mocks wsl.exe; Linux has no Windows drive to translate.
-    with patch.object(wslpull, "to_wsl_path", side_effect=lambda path: "/mnt/c/fixture/" + Path(path).name):
-        render_fixture(stage, FIXTURE, output)  # self_check + real viewer rendering + retry assertions
+    # The worker owns candidate imports, captured runner integrity and isolation.
+    # Its CLI is shared with the controller's synthetic validation path.
+    output.mkdir(parents=True, exist_ok=True)
+    subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/view_validation/worker.py"),
+                    "--stage", str(stage), "--fixture", str(FIXTURE),
+                    "--evidence", str(output), "--render"], check=True, timeout=120)
+    report = json.loads((output / "worker-result.json").read_text(encoding="utf-8"))
+    validate_render(report)
     result = projection(stage, output)
     (output / "projection.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     return result
@@ -113,8 +115,9 @@ def main():
         with tempfile.TemporaryDirectory(prefix="view-ci-") as directory:
             stage = Path(directory) / "view"
             copy_view(ROOT / "view", stage)
-            sys.path.insert(0, str(stage / "app"))
-            python = run_tests(stage)
+            actual = render(stage, output / "fixture")
+            worker_report = json.loads((output / "fixture/worker-result.json").read_text(encoding="utf-8"))
+            python = worker_report["python"]
             frozen = json.loads((ROOT / "scripts/view_validation/frozen/baseline.json").read_text())
             validate_python_report({"passed": python["passed"], "python": python},
                                    frozen["python_baseline_count"], frozen["python_identities"])
@@ -129,11 +132,6 @@ def main():
             result.check_returncode()
             report["commands"].append(js)
             report["javascript"] = validate_tap(result.stdout, frozen["javascript_baseline_count"])
-            cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "--fixture-stage", str(stage),
-                   "--output", str(output / "fixture")]
-            report["commands"].append(cmd)
-            subprocess.run(cmd, check=True, timeout=120)
-            actual = json.loads((output / "fixture/projection.json").read_text())
             expected = json.loads(EXPECTED.read_text())
             if actual != expected:
                 raise AssertionError("fixed pre-migration snapshot/context/HTML results differ; inspect fixture/projection.json")

@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     ExecutionSandbox,
     ExternalHandoff,
     Feedback,
+    InterruptedCoder,
     OperatorRecheck,
     Receipt,
     Recovery,
@@ -96,13 +97,21 @@ defmodule SymphonyElixir.Mvp.Executor do
          {:ok, operation} <- OperatorRecheck.begin(context, raw, data, audit),
          {:ok, _, _} <- resume_binding(context, expected_receipt_digest, :resume_recovery),
          {:ok, after_lock_sha} <- workspace_digest(context.workspace),
-         true <- after_lock_sha == workspace_sha or {:error, :mvp_recovery_workspace_changed} do
+         true <- after_lock_sha == workspace_sha or {:error, :mvp_recovery_workspace_changed},
+         :ok <- recovery_resume_dispatch_binding(context, data, dispatch) do
       context = put_effective_recovery_policy(resume_context, effective_policy, data["max_rework"])
       :ok = record_recovery_extension(context, operation.id, extension, data, effective_policy, workspace_sha)
       :ok = record(context, "recovering", %{"operator_recheck" => operation.id, "reason" => nil})
 
       result =
         case dispatch do
+          {:continue_interrupted_coder, number, head, feedback, _proof, stage} ->
+            context
+            |> Map.put(:check_attempt, 1)
+            |> Map.put(:coder_stage_attempt, stage)
+            |> code_round(number, head, feedback, List.last(data["rounds"])["evidence"])
+            |> then(&finish(context, &1))
+
           {:continue_coder, number, head, feedback} ->
             context
             |> Map.put(:check_attempt, 1)
@@ -124,6 +133,102 @@ defmodule SymphonyElixir.Mvp.Executor do
     else
       false -> {:error, :mvp_recovery_not_enabled}
       error -> error
+    end
+  end
+
+  @doc "Continue a boot-interrupted, diagnosed check-repair coder in its original open round."
+  @spec resume_interrupted(map(), String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def resume_interrupted(context, expected_receipt_digest, authorization) do
+    context = Map.put(context, :limit, Recovery.limit(context.settings))
+
+    with true <- Recovery.enabled?(context.settings),
+         {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, :interrupted),
+         :ok <- recovery_scope(data, context),
+         :ok <- interrupted_resources(context, data, authorization),
+         {:ok, workspace_sha} <- workspace_digest(context.workspace),
+         true <- authorization["workspace_digest"] == workspace_sha or {:error, :mvp_recovery_workspace_digest_mismatch},
+         {:ok, evidence, feedback} <- InterruptedCoder.evidence(context, data),
+         true <- authorization["interruption_evidence_digest"] == digest_hex(Jason.encode!(evidence)) or {:error, :mvp_interruption_evidence_mismatch},
+         {:ok, owner} <- InterruptedCoder.owner(context, data, authorization),
+         audit = Map.merge(authorization, %{"interruption_evidence" => evidence, "interrupted_owner" => owner}),
+         {:ok, operation} <- OperatorRecheck.begin(context, raw, data, audit) do
+      resume = %{
+        digest: expected_receipt_digest,
+        authorization: authorization,
+        data: data,
+        workspace_sha: workspace_sha,
+        evidence: evidence,
+        feedback: feedback,
+        owner: owner
+      }
+
+      result = interrupted_locked(context, resume, operation)
+      :ok = OperatorRecheck.complete(operation, result)
+      result
+    else
+      false -> {:error, :mvp_recovery_not_enabled}
+      error -> error
+    end
+  end
+
+  defp interrupted_locked(context, resume, operation) do
+    digest = resume.digest
+    authorization = resume.authorization
+    data = resume.data
+    workspace_sha = resume.workspace_sha
+    evidence = resume.evidence
+    feedback = resume.feedback
+    owner = resume.owner
+
+    with {:ok, _, ^data} <- resume_binding(context, digest, :interrupted),
+         :ok <- recovery_scope(data, context),
+         :ok <- interrupted_resources(context, data, authorization),
+         {:ok, ^workspace_sha} <- workspace_digest(context.workspace),
+         {:ok, ^evidence, ^feedback} <- InterruptedCoder.evidence(context, data),
+         {:ok, ^owner} <- InterruptedCoder.owner(context, data, authorization) do
+      event = %{
+        "kind" => "operator_interrupted_coder_resume",
+        "operation_id" => operation.id,
+        "attempt" => data["recovery"]["agent_attempts"],
+        "round" => length(data["rounds"]),
+        "previous_boot_id" => owner["previous_boot_id"],
+        "current_boot_id" => owner["current_boot_id"],
+        "workspace_digest" => workspace_sha,
+        "interruption_evidence_digest" => authorization["interruption_evidence_digest"]
+      }
+
+      recovery = Map.update!(data["recovery"], "events", &(&1 ++ [event]))
+      :ok = Receipt.update(context.receipt, "coding", %{"operator_recheck" => operation.id, "reason" => nil, "recovery" => recovery})
+      last = List.last(data["rounds"])
+
+      feedback = Map.put(feedback, "operator_diagnostic", authorization["diagnostic"])
+
+      context
+      |> Map.put(:check_attempt, 1)
+      |> Map.put(:coder_stage_attempt, List.last(data["recovery"]["events"])["stage_attempt"] + 1)
+      |> code_round(last["round"], data["candidate_sha"], feedback, last["evidence"])
+      |> then(&finish(context, &1))
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :mvp_interruption_evidence_changed}
+    end
+  end
+
+  defp interrupted_resources(context, data, authorization) do
+    stage = List.last(data["recovery"]["events"])["stage_attempt"]
+
+    cond do
+      Map.has_key?(authorization, "wall_budget_extension_ms") or Map.has_key?(authorization, "execution_sandbox_change") ->
+        {:error, :mvp_interruption_resource_change}
+
+      frozen_sandbox(data) != sandbox_json(context.settings) ->
+        {:error, :mvp_recovery_sandbox_mismatch}
+
+      not is_integer(stage) or stage < 1 or stage >= context.settings.recovery.stage_attempts ->
+        {:error, :mvp_recovery_resource_exhausted}
+
+      true ->
+        review_protocol_budget(context, data, authorization)
     end
   end
 
@@ -748,13 +853,32 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp resume_open_coder_round(data, context, authorization, last) do
+    if Map.has_key?(authorization, "interrupted_timeout_evidence_digest"),
+      do: resume_interrupted_timeout(data, context, authorization, last),
+      else: resume_rejected_open_coder_round(data, context, authorization, last)
+  end
+
+  defp resume_interrupted_timeout(data, context, authorization, last) do
+    with true <- frozen_sandbox(data) == sandbox_json(context.settings),
+         false <- Map.has_key?(authorization, "execution_sandbox_change"),
+         {:ok, proof, feedback, stage} <- InterruptedCoder.timeout_evidence(context, data),
+         true <- authorization["interrupted_timeout_evidence_digest"] == digest_hex(Jason.encode!(proof)),
+         true <- stage <= context.settings.recovery.stage_attempts do
+      feedback = Map.put(feedback, "operator_diagnostic", authorization["diagnostic"])
+      {:ok, {:continue_interrupted_coder, last["round"], data["candidate_sha"], feedback, proof, stage}}
+    else
+      _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  end
+
+  defp resume_rejected_open_coder_round(data, context, authorization, last) do
     with {:ok, rejected, review} <- latest_rejected_review(data, context),
          completed = Enum.at(data["rounds"], -2),
          true <- completed["candidate_sha"] == data["candidate_sha"],
          true <- rejected["round"] <= completed["round"],
          :ok <- rejected_review_ancestor(context, rejected, completed),
          :ok <- no_review_after_rejection(data["rounds"], rejected["round"]),
-         {:ok, feedback} <- coder_resume_feedback(data["rounds"], completed, review, authorization, context) do
+         {:ok, feedback} <- coder_resume_feedback(data, completed, review, authorization, context) do
       {:ok, {:continue_coder, last["round"], data["candidate_sha"], feedback}}
     else
       _ -> {:error, :mvp_recovery_resume_stage_unsupported}
@@ -782,6 +906,8 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp recovery_resume_evidence(data, context, {:check_candidate, _number, _sha}), do: recovery_evidence(data, context)
 
+  defp recovery_resume_evidence(_data, _context, {:continue_interrupted_coder, _, _, _, _, _}), do: :ok
+
   defp recovery_resume_evidence(data, context, {:continue_coder, _number, sha, _feedback}) do
     with {:ok, round, review} <- latest_rejected_review(data, context),
          completed = Enum.at(data["rounds"], -2),
@@ -806,6 +932,31 @@ defmodule SymphonyElixir.Mvp.Executor do
       _ -> {:error, :mvp_recovery_evidence_mismatch}
     end
   end
+
+  defp recovery_resume_dispatch_binding(context, data, {:continue_interrupted_coder, _, _, _, proof, stage}) do
+    case InterruptedCoder.timeout_evidence(context, data) do
+      {:ok, ^proof, _feedback, ^stage} -> :ok
+      _ -> {:error, :mvp_interruption_timeout_evidence_mismatch}
+    end
+  end
+
+  defp recovery_resume_dispatch_binding(context, data, {:continue_coder, _, _, feedback}) do
+    case latest_round_check_failure(data["rounds"], Enum.at(data["rounds"], -2)["round"]) do
+      nil ->
+        :ok
+
+      {round, failure} ->
+        with :ok <- valid_round_check_failure?(round, failure, context, frozen_sandbox(data)),
+             {:ok, proof} <- check_failure_proof(failure),
+             true <- proof == feedback["resume_check_evidence"] do
+          :ok
+        else
+          _ -> {:error, :mvp_recovery_evidence_mismatch}
+        end
+    end
+  end
+
+  defp recovery_resume_dispatch_binding(_context, _data, _dispatch), do: :ok
 
   defp resume_external_evidence_context(context, data, {:check_candidate, _number, sha}) do
     history = data["external_evidence_history"] || []
@@ -933,19 +1084,21 @@ defmodule SymphonyElixir.Mvp.Executor do
       else: {:error, :mvp_recovery_evidence_mismatch}
   end
 
-  defp coder_resume_feedback(rounds, completed, review, authorization, context) do
-    case latest_round_check_failure(rounds, completed["round"]) do
+  defp coder_resume_feedback(data, completed, review, authorization, context) do
+    case latest_round_check_failure(data["rounds"], completed["round"]) do
       nil ->
         {:ok, Map.put(review, "operator_diagnostic", authorization["diagnostic"])}
 
       {round, failure} ->
-        with :ok <- valid_round_check_failure?(round, failure, context),
+        with :ok <- valid_round_check_failure?(round, failure, context, frozen_sandbox(data)),
+             {:ok, proof} <- check_failure_proof(failure),
              :ok <- rejected_review_ancestor(context, round, completed) do
           feedback =
             failure
             |> Map.put("kind", "check")
             |> Map.put("review_rejection", review)
             |> Map.put("operator_diagnostic", authorization["diagnostic"])
+            |> Map.put("resume_check_evidence", proof)
 
           {:ok, feedback}
         end
@@ -962,7 +1115,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp valid_round_check_failure?(round, failure, context) do
+  defp valid_round_check_failure?(round, failure, context, sandbox) do
     index = failure["index"]
     evidence = round["evidence"]
     log_path = failure["log_path"]
@@ -970,13 +1123,46 @@ defmodule SymphonyElixir.Mvp.Executor do
     with true <- is_integer(index) and index > 0 and index <= length(round["checks"]),
          true <- is_binary(evidence) and evidence == Path.join(context.evidence, "round-#{round["round"]}"),
          true <- log_path == Path.join(evidence, "check-#{index}.log"),
-         true <- failure["exit_status"] not in [0, nil],
+         command = expand_check_command(context, Enum.at(round["checks"], index - 1), evidence),
+         true <- resumable_check_failure?(failure, command, sandbox),
          true <- File.regular?(log_path),
          {:ok, raw} <- File.read(Path.rootname(log_path) <> ".json"),
          {:ok, ^failure} <- Jason.decode(raw) do
       :ok
     else
       _ -> {:error, :mvp_recovery_evidence_mismatch}
+    end
+  end
+
+  defp resumable_check_failure?(%{"exit_status" => status}, _, _) when is_integer(status) and status != 0, do: true
+
+  defp resumable_check_failure?(%{"exit_status" => nil, "error" => "{:error, :sandbox_check_evidence_missing}"} = failure, ["python3", script] = argv, %{"enabled" => true}) do
+    with true <- Path.basename(script) == "check_view.py",
+         true <- failure["argv"] == argv,
+         {:ok, raw} <- File.read(failure["log_path"]),
+         {:ok, report} <- Jason.decode(raw) do
+      report == %{
+        "schema_version" => 1,
+        "kind" => "controller_view_check",
+        "controller_view_check" => true,
+        "passed" => false,
+        "formal_code_checks" => false,
+        "formal_acceptance" => false,
+        "real_windows_wsl_acceptance" => false,
+        "candidate_sha" => nil,
+        "error" => "ValueError: candidate worktree is dirty; disk file list differs from HEAD, including ignored files"
+      }
+    else
+      _ -> false
+    end
+  end
+
+  defp resumable_check_failure?(_, _, _), do: false
+
+  defp check_failure_proof(failure) do
+    with {:ok, log} <- File.read(failure["log_path"]),
+         {:ok, json} <- File.read(Path.rootname(failure["log_path"]) <> ".json") do
+      {:ok, %{"log_sha256" => digest_hex(log), "failure_sha256" => digest_hex(json)}}
     end
   end
 
@@ -988,6 +1174,10 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp recovery_resume_round_budget(data, {:continue_coder, number, _sha, _feedback}),
     do: if(number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted})
+
+  defp recovery_resume_round_budget(data, {:continue_interrupted_coder, number, _, _, _, _}) do
+    if number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted}
+  end
 
   defp recovery_resume_round_budget(data, {:check_candidate, number, _sha}),
     do: if(number <= data["max_rework"] + 1, do: :ok, else: {:error, :mvp_recovery_resource_exhausted})
@@ -1335,9 +1525,9 @@ defmodule SymphonyElixir.Mvp.Executor do
          true <- Base.encode16(:crypto.hash(:sha256, raw), case: :lower) == digest,
          {:ok, data} <- Jason.decode(raw),
          true <- is_map(data),
-         true <- mode in [:recheck, :recover, :resume_recovery, :review_protocol, :external] or not File.exists?(Path.join(context.evidence, "operator-rechecks")),
+         true <- audited_resume_mode?(mode) or not File.exists?(Path.join(context.evidence, "operator-rechecks")),
          true <- resume_identity?(context, data, mode),
-         true <- mode not in [:resume_recovery, :review_protocol] or resume_checks_binding?(context, data),
+         true <- not dirty_resume_mode?(mode) or resume_checks_binding?(context, data),
          true <- resume_rounds?(context, data, mode),
          {:ok, branch} <- Commands.git(["branch", "--show-current"], context.workspace),
          true <- branch == context.branch,
@@ -1351,7 +1541,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp resume_identity?(context, data, mode) do
     expected = %{
-      "status" => if(mode == :external, do: "awaiting_external", else: "blocked"),
+      "status" => resume_status(mode),
       "repository" => context.repository.repo,
       "issue" => context.issue.id,
       "workspace" => context.workspace,
@@ -1365,13 +1555,24 @@ defmodule SymphonyElixir.Mvp.Executor do
       context.evidence == context.receipt <> ".evidence" and resume_state?(context, data, mode)
   end
 
+  defp audited_resume_mode?(mode) do
+    mode in [:recheck, :recover, :resume_recovery, :review_protocol, :external, :interrupted]
+  end
+
+  defp dirty_resume_mode?(mode), do: mode in [:resume_recovery, :review_protocol, :interrupted]
+
   defp previous_limit(context, :resume), do: context.limit
   defp previous_limit(context, :recheck), do: context.limit
   defp previous_limit(context, :recover), do: context.limit
   defp previous_limit(context, :resume_recovery), do: context.limit
   defp previous_limit(context, :review_protocol), do: context.limit
   defp previous_limit(context, :external), do: context.limit
+  defp previous_limit(context, :interrupted), do: context.limit
   defp previous_limit(_context, {:extend, limit}), do: limit
+
+  defp resume_status(:external), do: "awaiting_external"
+  defp resume_status(:interrupted), do: "coding"
+  defp resume_status(_mode), do: "blocked"
 
   defp resume_checks_binding?(context, data) do
     is_list(context.settings.checks) and is_list(data["rounds"]) and data["rounds"] != [] and
@@ -1406,6 +1607,11 @@ defmodule SymphonyElixir.Mvp.Executor do
     resume_recovery_identity?(context, data) and resume_recovery_policy?(context, data) and protocol_progress?(data)
   end
 
+  defp resume_state?(context, data, :interrupted) do
+    resume_recovery_identity?(context, data) and resume_recovery_policy?(context, data) and
+      interrupted_progress?(data)
+  end
+
   defp resume_state?(context, data, :external) do
     Recovery.enabled?(context.settings) and is_integer(context.limit) and context.limit == data["max_rework"] and
       is_map(data["external_handoff"]) and data["external_handoff"]["status"] == "pending" and
@@ -1417,6 +1623,14 @@ defmodule SymphonyElixir.Mvp.Executor do
     extension_budget?(context, data, previous_limit) and
       data["reason"] == ":mvp_rework_exhausted" and is_nil(data["operator_rework_extension"]) and
       is_list(data["rounds"]) and data["rounds"] != [] and extension_failure?(data)
+  end
+
+  defp interrupted_progress?(data) do
+    recovery = data["recovery"]
+
+    is_nil(data["reason"]) and is_map(recovery) and is_binary(recovery["started_at"]) and
+      is_integer(recovery["agent_attempts"]) and recovery["agent_attempts"] > 0 and
+      is_list(recovery["events"]) and is_list(data["rounds"]) and length(data["rounds"]) >= 2
   end
 
   defp protocol_progress?(data) do
@@ -1508,19 +1722,21 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp round_candidate_valid?(round, number, mode, total_rounds) do
     is_binary(round["candidate_sha"]) or
-      (mode == :resume_recovery and number == total_rounds and is_nil(round["candidate_sha"]))
+      (mode in [:resume_recovery, :interrupted] and number == total_rounds and is_nil(round["candidate_sha"]))
   end
 
   defp resume_candidate_sha_valid?(last, data, mode) do
     last["candidate_sha"] == data["candidate_sha"] or
-      (mode == :resume_recovery and is_nil(last["candidate_sha"]) and is_nil(last["review"]) and is_nil(last["comment"]))
+      (mode in [:resume_recovery, :interrupted] and is_nil(last["candidate_sha"]) and is_nil(last["review"]) and is_nil(last["comment"]))
   end
 
   defp resume_review_fields_valid?(last, mode) do
-    mode in [:recover, :resume_recovery, :review_protocol, :external] or (is_nil(last["review"]) and is_nil(last["comment"]))
+    audited_review_mode?(mode) or (is_nil(last["review"]) and is_nil(last["comment"]))
   end
 
-  defp resume_verify(context, data, mode) when mode in [:resume_recovery, :review_protocol] do
+  defp audited_review_mode?(mode), do: mode in [:recover, :resume_recovery, :review_protocol, :external, :interrupted]
+
+  defp resume_verify(context, data, mode) when mode in [:resume_recovery, :review_protocol, :interrupted] do
     with :ok <- assert_metadata(context.workspace, context.metadata),
          :ok <- unchanged_head(context.workspace, data["candidate_sha"]),
          true <- tree_digest(Path.join(context.evidence, "baseline")) == context.baseline_digest do
@@ -1609,9 +1825,9 @@ defmodule SymphonyElixir.Mvp.Executor do
          :ok <- unchanged_head(context.workspace, head),
          {:ok, sha} <- commit_candidate(context.workspace, context.issue),
          :ok <- record(context, "checking", %{"candidate_sha" => sha}) do
-      check_and_review(context, number, sha, evidence)
+      check_and_review(Map.delete(context, :coder_stage_attempt), number, sha, evidence)
     else
-      {:error, :mvp_no_changes} -> no_changes(context, number, head)
+      {:error, :mvp_no_changes} -> no_changes(Map.delete(context, :coder_stage_attempt), number, head)
       error -> error
     end
   end
@@ -2187,8 +2403,7 @@ defmodule SymphonyElixir.Mvp.Executor do
   defp check(context, argv, index, evidence, timeout) do
     on_message(context).(%{event: :mvp_check_started, timestamp: DateTime.utc_now(), message: "check #{index}"})
 
-    command =
-      Enum.map(argv, &(&1 |> String.replace("{workspace}", context.workspace) |> String.replace("{baseline}", Path.join(context.evidence, "baseline")) |> String.replace("{evidence}", evidence)))
+    command = expand_check_command(context, argv, evidence)
 
     log_path = Path.join(evidence, "check-#{index}.log")
 
@@ -2208,6 +2423,10 @@ defmodule SymphonyElixir.Mvp.Executor do
     File.write!(Path.join(evidence, "check-#{index}.json"), Jason.encode!(check, pretty: true))
 
     if status == 0, do: {:cont, :ok}, else: {:halt, {:error, check}}
+  end
+
+  defp expand_check_command(context, argv, evidence) do
+    Enum.map(argv, &(&1 |> String.replace("{workspace}", context.workspace) |> String.replace("{baseline}", Path.join(context.evidence, "baseline")) |> String.replace("{evidence}", evidence)))
   end
 
   defp check_timeout(context) do
