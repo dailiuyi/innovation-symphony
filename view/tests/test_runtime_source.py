@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 import tempfile
 import threading
@@ -228,6 +229,16 @@ class RuntimeSourceTests(unittest.TestCase):
             with patch.object(local_files.os, 'open') as opened, self.assertRaises(PermissionError):
                 local_files.open_artifact('/root/.codex/sessions', '/root/.codex/sessions/rollout-denied.jsonl')
             opened.assert_not_called()
+
+    def test_forbidden_glob_match_is_rejected_before_directory_open(self):
+        # Simulate discovery without inspecting any real protected directory.
+        with patch.object(local_files, '_directory', return_value=99), \
+                patch.object(local_files.os, 'listdir', return_value=['sessions']), \
+                patch.object(local_files.os, 'stat', return_value=SimpleNamespace(st_mode=stat.S_IFDIR)), \
+                patch.object(local_files.os, 'close'), \
+                patch.object(local_files.os, 'open', return_value=100) as opened, self.assertRaises(PermissionError):
+            local_files.glob_directories('/root/.codex/*')
+        self.assertEqual([call.args[0] for call in opened.call_args_list], ['root', '.codex'])
 
     def test_bad_receipt_disappearing_file_and_unreadable_root(self):
         with tempfile.TemporaryDirectory() as tmp:

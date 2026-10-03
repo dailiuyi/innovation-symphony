@@ -81,9 +81,10 @@ def walk_directory(root, path):
         # Callers may prune directories in place (e.g. receipt evidence).
         yield base, directories, files
         for name in directories:
+            child_path = normalized(os.path.join(base, name))
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             try:
-                yield from walk(child, os.path.join(base, name))
+                yield from walk(child, child_path)
             finally:
                 os.close(child)
     fd = _directory(path)
@@ -117,9 +118,10 @@ def glob_directories(pattern):
                 raise PermissionError("runtime glob refuses symbolic links")
             if not stat.S_ISDIR(info.st_mode):
                 continue
+            child_path = normalized(os.path.join(base, name))
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             try:
-                yield from expand(child, os.path.join(base, name), index + 1)
+                yield from expand(child, child_path, index + 1)
             finally:
                 os.close(child)
     fd = _directory(os.sep)
