@@ -352,7 +352,21 @@ class ValidatorTests(unittest.TestCase):
                 evidence = base / (label + '-evidence')
                 evidence.mkdir()
                 env = v.clean_environment(evidence)
-                result = subprocess.run([sys.executable, '-I', '-B', str(HERE / 'worker.py'), '--stage', str(stage),
+                command = [sys.executable, '-I', '-B', str(HERE / 'worker.py')]
+                if os.name != 'nt':
+                    # This worker already simulates wsl.exe. Its synthetic Linux
+                    # temporary path also needs a Windows-to-WSL path simulation,
+                    # as in run_view_checks.render; retain every worker assertion.
+                    driver = (
+                        "import runpy, sys\nfrom pathlib import Path\nfrom unittest.mock import patch\n"
+                        "worker = sys.argv.pop(1)\nsys.argv[0] = worker\n"
+                        "sys.path.insert(0, str(Path(sys.argv[sys.argv.index('--stage') + 1]) / 'app'))\n"
+                        "from symphony_board import wslpull\n"
+                        "with patch.object(wslpull, 'to_wsl_path', side_effect=lambda path: '/mnt/c/fixture/' + Path(path).name):\n"
+                        "    runpy.run_path(worker, run_name='__main__')\n"
+                    )
+                    command = [sys.executable, '-I', '-B', '-c', driver, str(HERE / 'worker.py')]
+                result = subprocess.run(command + ['--stage', str(stage),
                     '--fixture', str(HERE / 'fixtures' / 'acceptance.json'), '--evidence', str(evidence), '--render'],
                     env=env, capture_output=True, timeout=60)
                 report = json.loads((evidence / 'worker-result.json').read_text(encoding='utf-8'))

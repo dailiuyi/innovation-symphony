@@ -12,7 +12,7 @@ GH-5 新增独立于运行器的本地进程看门狗入口，按固定版本指
 
 GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复检查失败与 Review 拒绝共用预算，完整保存检查日志，Review 拒绝理由仍回帖。默认 `max_rework=0` 保持兼容，显式 1..5 启用，最多五次返工加初始一轮。固定检查 runner 使用结构化 ExUnit 结果识别普通及自定义断言，核对完整报告与退出码；缺失或矛盾报告不能通过。显式复检绑定原候选、基线、模型和预算，保留历史操作及终态审计，已用次数不重置；不会因修改配置而自动重启所有 blocked 任务。源码发布与实际运行版本须分别核实。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
 
-Issue #7 的无人值守前置准备位于 [VIEW_PREPARATION](docs/VIEW_PREPARATION.md)：固定私有 View 来源包、独立检查候选代码和脱敏夹具。当前尚未导入 `view/`、安装新的可信门禁或启动真实采集；准备结果不代替最终合仓候选的实机验收。
+GH-7 将固定版本的 innovation-view 导入 [`view/`](view/README.md)，提供独立 Python 只读采集与展示服务，可维护本地数据库、缓存和日志；启停不影响 `elixir/` 控制器。PR #9 已合入 main；2026-10-03 按 IS-055 安装固定版本看板，本机网址为 [http://127.0.0.1:8613/](http://127.0.0.1:8613/)，真实 Windows＋WSL 采集和浏览器检查通过。控制器仍运行 `43ef956`，原 GH-7 交付回执的身份不一致停点保留。实际安装及验证局限见 [运行记录](docs/OPERATIONS.md)，通用步骤见 [View 说明](view/README.md)，[迁移记录](view/docs/MIGRATION.md) 与 [前置准备](docs/VIEW_PREPARATION.md) 保留历史与边界。
 
 ## 已确认的使用方式
 

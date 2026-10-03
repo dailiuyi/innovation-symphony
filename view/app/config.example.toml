@@ -1,0 +1,30 @@
+# Symphony 监控看板配置示例。
+# 复制为 app/config.toml（或 app/config.json）后按需修改；不创建文件则全部用默认值。
+# 修改后重启 python app/run.py 生效。
+
+[board]
+title = "innovation-view"          # 侧栏与浏览器标题
+interval = 5                        # 采集间隔（秒），采集周期对齐
+port = 8613                         # 服务端口
+runtime_glob = "/var/tmp/innovation-symphony-v0*"   # 默认扫描的运行时目录 glob
+stall_hours = 24                    # 等人任务停滞告警阈值（小时）
+
+# Token 单价（每 1M token），用于统计页把 token 折算成成本。
+# 三项都为 0 或删掉 [cost] 段时，只展示 token 数量。
+[cost]
+currency = "¥"
+input_per_m = 2.0                   # 非缓存输入单价
+cached_input_per_m = 0.4            # 缓存命中输入单价
+output_per_m = 8.0                  # 输出单价
+
+# 仓库接入是可选的：不写 [[repos]] 时，看板显示回执里发现的所有仓库。
+# 写了 [[repos]] 之后，不在列表里的仓库会出现在侧栏「待接入」里提醒你登记。
+[[repos]]
+name = "dailiuyi/innovation-symphony"   # 必须与回执 repository 字段一致
+alias = "Symphony"                       # 可选：看板上的显示名
+# glob = "/var/tmp/innovation-symphony-v0*"   # 可选：为这个仓库追加扫描目录
+enabled = true
+
+# [[repos]]
+# name = "acme/other"
+# enabled = false   # 隐藏该仓库的任务（数据仍会采集入库）

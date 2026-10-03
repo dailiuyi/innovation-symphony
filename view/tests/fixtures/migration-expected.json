@@ -1,0 +1,1694 @@
+{
+  "snapshot": {
+    "generated": "生成 Fixture",
+    "interval": 3600,
+    "tasks": [
+      {
+        "id": "fixture--project--fixture--GH-7",
+        "repo": "fixture/project",
+        "repoRaw": "fixture/project",
+        "runtime": "fixture",
+        "attempt": "",
+        "issue": "7",
+        "issueLabel": "GH-7",
+        "title": "synthetic validation.",
+        "meta": "fixture/project · fixture · Issue #7",
+        "status": "reviewing",
+        "statusLabel": "Review 中",
+        "badge": "b-review",
+        "stage": [
+          3,
+          3
+        ],
+        "duration": "0m 00s",
+        "coder": "—",
+        "reviewer": "—",
+        "base": "—",
+        "cand": "1111111",
+        "branch": "—",
+        "pullRequest": "",
+        "pr": null,
+        "reason": "",
+        "workspace": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "updated": "— ",
+        "tokens": null,
+        "entries": 18,
+        "sessions": [
+          {
+            "id": "00000007-0000-4000-8000-000000000040",
+            "short": "00000007",
+            "role": "编码",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1353,
+            "href": "context-00000007-0000-4000-8000-000000000040.html",
+            "title": "synthetic validation.",
+            "promptHead": "Implement only this repository's issue: GH-7 synthetic validation.",
+            "prompt": "Implement only this repository's issue: GH-7 synthetic validation. Preserve this fixture instruction.",
+            "lastOutput": "FIXTURE_CODER_40",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": 19,
+            "attempt": 40,
+            "stageAttempt": 1,
+            "attemptStatus": "completed",
+            "attemptOutcome": "completed",
+            "roundSource": "evidence"
+          },
+          {
+            "id": "00000007-0000-4000-8000-000000000041",
+            "short": "00000007",
+            "role": "Review",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1302,
+            "href": "context-00000007-0000-4000-8000-000000000041.html",
+            "title": "synthetic validation.",
+            "promptHead": "Independently review GH-7: synthetic validation.",
+            "prompt": "Independently review GH-7: synthetic validation.",
+            "lastOutput": "FIXTURE_REVIEWER_41",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": 19,
+            "attempt": 41,
+            "stageAttempt": 1,
+            "attemptStatus": "failed",
+            "attemptOutcome": "invalid_review",
+            "roundSource": "evidence"
+          },
+          {
+            "id": "00000007-0000-4000-8000-000000000042",
+            "short": "00000007",
+            "role": "Review",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1302,
+            "href": "context-00000007-0000-4000-8000-000000000042.html",
+            "title": "synthetic validation.",
+            "promptHead": "Independently review GH-7: synthetic validation.",
+            "prompt": "Independently review GH-7: synthetic validation.",
+            "lastOutput": "FIXTURE_REVIEWER_42",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": 19,
+            "attempt": 42,
+            "stageAttempt": 2,
+            "attemptStatus": "failed",
+            "attemptOutcome": "invalid_review",
+            "roundSource": "evidence"
+          },
+          {
+            "id": "00000007-0000-4000-8000-000000000043",
+            "short": "00000007",
+            "role": "Review",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1302,
+            "href": "context-00000007-0000-4000-8000-000000000043.html",
+            "title": "synthetic validation.",
+            "promptHead": "Independently review GH-7: synthetic validation.",
+            "prompt": "Independently review GH-7: synthetic validation.",
+            "lastOutput": "FIXTURE_REVIEWER_43",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": 19,
+            "attempt": 43,
+            "stageAttempt": 3,
+            "attemptStatus": "failed",
+            "attemptOutcome": "invalid_review",
+            "roundSource": "evidence"
+          },
+          {
+            "id": "00000007-0000-4000-8000-000000000044",
+            "short": "00000007",
+            "role": "Review",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1302,
+            "href": "context-00000007-0000-4000-8000-000000000044.html",
+            "title": "synthetic validation.",
+            "promptHead": "Independently review GH-7: synthetic validation.",
+            "prompt": "Independently review GH-7: synthetic validation.",
+            "lastOutput": "FIXTURE_REVIEWER_44",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": 19,
+            "attempt": 44,
+            "stageAttempt": 1,
+            "attemptStatus": "completed",
+            "attemptOutcome": "completed",
+            "roundSource": "evidence"
+          },
+          {
+            "id": "00000007-0000-4000-8000-000000000049",
+            "short": "00000007",
+            "role": "Review",
+            "issue": "GH-7",
+            "runtime": "fixture",
+            "repo": "fixture/project",
+            "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+            "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+            "start": "09:02:03",
+            "end": "09:02:03",
+            "firstTs": "2026-09-30T01:02:03Z",
+            "lastTs": "2026-09-30T01:02:03Z",
+            "duration": "0m 00s",
+            "entries": 3,
+            "counts": {
+              "reasoning": 1,
+              "tool": 1,
+              "assistant": 1,
+              "user": 0,
+              "developer": 0
+            },
+            "tokens": null,
+            "model": "fixture-model",
+            "modelEvidence": "turn_context.model",
+            "bytes": 1304,
+            "href": "context-00000007-0000-4000-8000-000000000049.html",
+            "title": "synthetic validation.",
+            "promptHead": "Independently review GH-7: synthetic validation.",
+            "prompt": "Independently review GH-7: synthetic validation.",
+            "lastOutput": "FIXTURE_UNASSIGNED_49",
+            "lastOutputTruncated": false,
+            "lastOutputTs": "2026-09-30T01:02:03Z",
+            "verdict": null,
+            "note": "",
+            "round": null,
+            "attempt": null,
+            "stageAttempt": null,
+            "attemptStatus": "unknown",
+            "attemptOutcome": "unknown",
+            "roundSource": "unassigned"
+          }
+        ],
+        "preflight": [],
+        "flow": [
+          {
+            "kind": "coder",
+            "state": "present",
+            "label": "编码代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000040.html"
+          },
+          {
+            "kind": "check",
+            "state": "missing",
+            "label": "检查",
+            "detail": "没有 check-*.log",
+            "href": ""
+          },
+          {
+            "kind": "review",
+            "state": "present",
+            "label": "Review 代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000041.html"
+          },
+          {
+            "kind": "review",
+            "state": "present",
+            "label": "Review 代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000042.html"
+          },
+          {
+            "kind": "review",
+            "state": "present",
+            "label": "Review 代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000043.html"
+          },
+          {
+            "kind": "review",
+            "state": "present",
+            "label": "Review 代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000044.html"
+          },
+          {
+            "kind": "review",
+            "state": "present",
+            "label": "Review 代理",
+            "detail": "00000007 · 0m 00s",
+            "href": "context-00000007-0000-4000-8000-000000000049.html"
+          },
+          {
+            "kind": "opinion",
+            "state": "missing",
+            "label": "review.json",
+            "detail": "没有审查结果文件",
+            "href": ""
+          },
+          {
+            "kind": "status",
+            "state": "current",
+            "label": "Review 中",
+            "detail": "—",
+            "href": ""
+          }
+        ],
+        "gap": "",
+        "rounds": [
+          {
+            "round": 1,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 2,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 3,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 4,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 5,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 6,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 7,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 8,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 9,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 10,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 11,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 12,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 13,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 14,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 15,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 16,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 17,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 18,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          },
+          {
+            "round": 19,
+            "coder": null,
+            "reviewer": null,
+            "controller": true,
+            "status": "reviewing",
+            "reason": "",
+            "review": null,
+            "accepted": false,
+            "candidate": ""
+          }
+        ],
+        "roundsAuthority": "controller",
+        "evidence": [],
+        "logs": [],
+        "result": "正在进行独立审查，结论以控制器接受的结果为准。 候选提交 1111111。 会话 编码 1 次、Review 5 次。",
+        "viewer": "context-00000007-0000-4000-8000-000000000040.html",
+        "returns": [],
+        "timeline": [
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000040"
+          },
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000041"
+          },
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000042"
+          },
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000043"
+          },
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000044"
+          },
+          {
+            "kind": "session",
+            "id": "00000007-0000-4000-8000-000000000049"
+          }
+        ]
+      }
+    ],
+    "stories": [
+      {
+        "id": "story--fixture--project--fixture--GH-7",
+        "repo": "fixture/project",
+        "runtime": "fixture",
+        "issue": "7",
+        "issueLabel": "GH-7",
+        "title": "synthetic validation.",
+        "meta": "fixture/project · fixture · Issue #7 · 1 次尝试",
+        "attempts": 1,
+        "outcome": "Review 中",
+        "outcomeKind": "running",
+        "outcomeDetail": "这一拍还在进行。",
+        "badge": "b-review",
+        "pr": null,
+        "preflight": [],
+        "beats": [
+          {
+            "taskId": "fixture--project--fixture--GH-7",
+            "n": 1,
+            "attempt": "",
+            "label": "第 1 次",
+            "status": "reviewing",
+            "statusLabel": "Review 中",
+            "badge": "b-review",
+            "reason": "",
+            "returns": [],
+            "handoff": "",
+            "pr": null,
+            "gap": "",
+            "flow": [
+              {
+                "kind": "coder",
+                "state": "present",
+                "label": "编码代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000040.html"
+              },
+              {
+                "kind": "check",
+                "state": "missing",
+                "label": "检查",
+                "detail": "没有 check-*.log",
+                "href": ""
+              },
+              {
+                "kind": "review",
+                "state": "present",
+                "label": "Review 代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000041.html"
+              },
+              {
+                "kind": "review",
+                "state": "present",
+                "label": "Review 代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000042.html"
+              },
+              {
+                "kind": "review",
+                "state": "present",
+                "label": "Review 代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000043.html"
+              },
+              {
+                "kind": "review",
+                "state": "present",
+                "label": "Review 代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000044.html"
+              },
+              {
+                "kind": "review",
+                "state": "present",
+                "label": "Review 代理",
+                "detail": "00000007 · 0m 00s",
+                "href": "context-00000007-0000-4000-8000-000000000049.html"
+              },
+              {
+                "kind": "opinion",
+                "state": "missing",
+                "label": "review.json",
+                "detail": "没有审查结果文件",
+                "href": ""
+              },
+              {
+                "kind": "status",
+                "state": "current",
+                "label": "Review 中",
+                "detail": "—",
+                "href": ""
+              }
+            ],
+            "duration": "0m 00s"
+          }
+        ]
+      }
+    ],
+    "sessions": [
+      {
+        "id": "00000007-0000-4000-8000-000000000040",
+        "short": "00000007",
+        "role": "编码",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1353,
+        "href": "context-00000007-0000-4000-8000-000000000040.html",
+        "title": "synthetic validation.",
+        "promptHead": "Implement only this repository's issue: GH-7 synthetic validation.",
+        "prompt": "Implement only this repository's issue: GH-7 synthetic validation. Preserve this fixture instruction.",
+        "lastOutput": "FIXTURE_CODER_40",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      },
+      {
+        "id": "00000007-0000-4000-8000-000000000041",
+        "short": "00000007",
+        "role": "Review",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1302,
+        "href": "context-00000007-0000-4000-8000-000000000041.html",
+        "title": "synthetic validation.",
+        "promptHead": "Independently review GH-7: synthetic validation.",
+        "prompt": "Independently review GH-7: synthetic validation.",
+        "lastOutput": "FIXTURE_REVIEWER_41",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      },
+      {
+        "id": "00000007-0000-4000-8000-000000000042",
+        "short": "00000007",
+        "role": "Review",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1302,
+        "href": "context-00000007-0000-4000-8000-000000000042.html",
+        "title": "synthetic validation.",
+        "promptHead": "Independently review GH-7: synthetic validation.",
+        "prompt": "Independently review GH-7: synthetic validation.",
+        "lastOutput": "FIXTURE_REVIEWER_42",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      },
+      {
+        "id": "00000007-0000-4000-8000-000000000043",
+        "short": "00000007",
+        "role": "Review",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1302,
+        "href": "context-00000007-0000-4000-8000-000000000043.html",
+        "title": "synthetic validation.",
+        "promptHead": "Independently review GH-7: synthetic validation.",
+        "prompt": "Independently review GH-7: synthetic validation.",
+        "lastOutput": "FIXTURE_REVIEWER_43",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      },
+      {
+        "id": "00000007-0000-4000-8000-000000000044",
+        "short": "00000007",
+        "role": "Review",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1302,
+        "href": "context-00000007-0000-4000-8000-000000000044.html",
+        "title": "synthetic validation.",
+        "promptHead": "Independently review GH-7: synthetic validation.",
+        "prompt": "Independently review GH-7: synthetic validation.",
+        "lastOutput": "FIXTURE_REVIEWER_44",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      },
+      {
+        "id": "00000007-0000-4000-8000-000000000049",
+        "short": "00000007",
+        "role": "Review",
+        "issue": "GH-7",
+        "runtime": "fixture",
+        "repo": "fixture/project",
+        "cwd": "/var/tmp/innovation-symphony-v0-fixture/workspaces/GH-7",
+        "cwdShort": "innovation-symphony-v0-fixture/workspaces/GH-7",
+        "start": "09:02:03",
+        "end": "09:02:03",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z",
+        "duration": "0m 00s",
+        "entries": 3,
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "tokens": null,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "bytes": 1304,
+        "href": "context-00000007-0000-4000-8000-000000000049.html",
+        "title": "synthetic validation.",
+        "promptHead": "Independently review GH-7: synthetic validation.",
+        "prompt": "Independently review GH-7: synthetic validation.",
+        "lastOutput": "FIXTURE_UNASSIGNED_49",
+        "lastOutputTruncated": false,
+        "lastOutputTs": "2026-09-30T01:02:03Z",
+        "verdict": null,
+        "note": ""
+      }
+    ],
+    "logs": [],
+    "runtimes": [
+      {
+        "name": "fixture",
+        "root": "/var/tmp/innovation-symphony-v0-fixture"
+      }
+    ]
+  },
+  "contexts": {
+    "00000007-0000-4000-8000-000000000040": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000040",
+        "role": "编码",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Implement only this repository's issue: GH-7 synthetic validation.\nPreserve this fixture instruction.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_CODER_40",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000040\", \"id\": \"00000007-0000-4000-8000-000000000040\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Implement only this repository's issue: GH-7 synthetic validation.\nPreserve this fixture instruction.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 665,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 843,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1002,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1146,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_CODER_40",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1353,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    },
+    "00000007-0000-4000-8000-000000000041": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000041",
+        "role": "Review",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Independently review GH-7: synthetic validation.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_REVIEWER_41",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000041\", \"id\": \"00000007-0000-4000-8000-000000000041\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Independently review GH-7: synthetic validation.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 611,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 789,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 948,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1092,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_REVIEWER_41",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1302,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    },
+    "00000007-0000-4000-8000-000000000042": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000042",
+        "role": "Review",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Independently review GH-7: synthetic validation.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_REVIEWER_42",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000042\", \"id\": \"00000007-0000-4000-8000-000000000042\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Independently review GH-7: synthetic validation.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 611,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 789,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 948,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1092,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_REVIEWER_42",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1302,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    },
+    "00000007-0000-4000-8000-000000000043": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000043",
+        "role": "Review",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Independently review GH-7: synthetic validation.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_REVIEWER_43",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000043\", \"id\": \"00000007-0000-4000-8000-000000000043\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Independently review GH-7: synthetic validation.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 611,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 789,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 948,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1092,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_REVIEWER_43",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1302,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    },
+    "00000007-0000-4000-8000-000000000044": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000044",
+        "role": "Review",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Independently review GH-7: synthetic validation.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_REVIEWER_44",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000044\", \"id\": \"00000007-0000-4000-8000-000000000044\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Independently review GH-7: synthetic validation.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 611,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 789,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 948,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1092,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_REVIEWER_44",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1302,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    },
+    "00000007-0000-4000-8000-000000000049": {
+      "status": "ok",
+      "session": {
+        "id": "00000007-0000-4000-8000-000000000049",
+        "role": "Review",
+        "issue": "GH-7",
+        "source": {
+          "kind": "codex_rollout",
+          "runtime": "fixture",
+          "name": "fixture.jsonl"
+        },
+        "issuedInstruction": "Independently review GH-7: synthetic validation.",
+        "issuedInstructionTruncated": false,
+        "model": "fixture-model",
+        "modelEvidence": "turn_context.model",
+        "workdir": "/workspace",
+        "workdirEvidence": "turn_context.cwd",
+        "counts": {
+          "reasoning": 1,
+          "tool": 1,
+          "assistant": 1,
+          "user": 0,
+          "developer": 0
+        },
+        "entries": 3,
+        "tokens": null,
+        "statsEvidence": "rollout parser",
+        "firstTs": "2026-09-30T01:02:03Z",
+        "lastTs": "2026-09-30T01:02:03Z"
+      },
+      "latestAssistant": {
+        "timestamp": "2026-09-30T01:02:03Z",
+        "text": "FIXTURE_UNASSIGNED_49",
+        "truncated": false
+      },
+      "entries": [
+        {
+          "index": 0,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "session_meta",
+          "text": "{\"session_id\": \"00000007-0000-4000-8000-000000000049\", \"id\": \"00000007-0000-4000-8000-000000000049\", \"cli_version\": \"fixture\"}",
+          "source": "session_meta",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 267,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "meta",
+          "role": "meta",
+          "name": "turn_context",
+          "text": "{\"model\": \"fixture-model\"}",
+          "source": "turn_context",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 389,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "user",
+          "name": "UserMessage",
+          "text": "Independently review GH-7: synthetic validation.",
+          "source": "event_msg",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 611,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "reasoning",
+          "role": "reasoning",
+          "name": "reasoning",
+          "text": "(no visible summary)",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 789,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "fixture_tool",
+          "text": "FIXTURE_TOOL_INPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 948,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "tool",
+          "role": "tool",
+          "name": "custom_tool_call_output",
+          "text": "FIXTURE_TOOL_OUTPUT",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        },
+        {
+          "index": 1092,
+          "timestamp": "2026-09-30T01:02:03Z",
+          "type": "message",
+          "role": "assistant",
+          "name": "final_answer",
+          "text": "FIXTURE_UNASSIGNED_49",
+          "source": "response_item",
+          "truncated": false,
+          "matchBeyondPreview": false
+        }
+      ],
+      "page": {
+        "limit": 100,
+        "nextBefore": null,
+        "hasOlder": false,
+        "scannedBytes": 1304,
+        "truncated": false,
+        "filter": {
+          "type": "all",
+          "q": ""
+        }
+      }
+    }
+  },
+  "html_sha256": {
+    "context-00000007-0000-4000-8000-000000000040.html": "3f86eda954b54004e9eb4f66a4e6684ed010b3f8e0e1a4bdd5fe79c058c59148",
+    "context-00000007-0000-4000-8000-000000000041.html": "f49d337ae0b0660e78e0e215e00bd9f59b5ec0f701467b804327d3aa47e80f4b",
+    "context-00000007-0000-4000-8000-000000000042.html": "6a9462fb0c07405a31363237dad020d14e6c16cb03835cc506e2e7f976769a90",
+    "context-00000007-0000-4000-8000-000000000043.html": "c7ad48acfbc2177017fc5a8aa2c513494d59bc5024dd506857dc141136464a66",
+    "context-00000007-0000-4000-8000-000000000044.html": "4a383aac380082ffc0c753e4875719dd22e4dc812227abe873a7d8dba0c81287",
+    "context-00000007-0000-4000-8000-000000000049.html": "d79b8835f8c4a9a25f393db5ee148e22756b0f23faf886ebcd09d15d4af96da2"
+  }
+}
