@@ -195,6 +195,9 @@ def load_sessions(snapshot, publish=True):
             local = copy_session(remote, item.get("bytes") or 0, transport, item.get("mtime_ns"), runtime.get("root"))
             if not local or not os.path.exists(local):
                 continue
+            if transport == "wsl" and not publish:
+                from .runtime_source import pin_context_session
+                local = pin_context_session(local, remote, BUILD_ROLLOUTS)
             # Legacy WSL parsing keeps its tolerant behavior; local failures
             # abort publication so the last successful context stays readable.
             try:

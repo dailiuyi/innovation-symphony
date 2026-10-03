@@ -127,3 +127,35 @@ def copy_session(remote, size, cache, transport="wsl", mtime_ns=None, root=None)
     if mtime_ns is not None:
         _atomic_write(metadata, lambda handle: handle.write(json.dumps([size, int(mtime_ns)]).encode("utf-8")))
     return local
+
+
+def pin_context_session(path, remote, cache):
+    """Keep a WSL context version immutable while preserving legacy cache keys.
+
+    Canonical WSL files remain reusable through copy_session's public contract.
+    Published contexts use pinned copies so a later partial cycle cannot change
+    the bytes behind an older snapshot. No old cache or version is removed.
+    """
+    with open(path, "rb") as source:
+        info = os.fstat(source.fileno())
+        version = "wsl\0" + remote + "\0" + str(info.st_size) + "\0" + str(info.st_mtime_ns)
+        key = hashlib.sha256(version.encode("utf-8", "replace")).hexdigest()
+        pinned = os.path.join(cache, "published", key + ".jsonl")
+        if os.path.isfile(pinned) and os.path.getsize(pinned) == info.st_size:
+            return pinned
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        def writer(handle):
+            copied = 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("WSL context pin timed out")
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                handle.write(chunk)
+            final = os.fstat(source.fileno())
+            if copied != info.st_size or (final.st_size, final.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
+                raise RuntimeError("WSL cache changed while pinning context")
+        _atomic_write(pinned, writer)
+    return pinned

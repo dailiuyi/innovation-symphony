@@ -280,7 +280,7 @@ def to_wsl_path(path):
 
 def remote_script(globs, local=False):
     listed = json.dumps(list(globs or [DEFAULT_GLOB]))
-    return REMOTE_SCRIPT.replace("__GLOBS__", listed).replace("__LOCAL__", repr(local))
+    return REMOTE_SCRIPT.replace("__LOCAL__", repr(local)).replace("__GLOBS__", listed)
 
 
 def pull_snapshot(globs=None):

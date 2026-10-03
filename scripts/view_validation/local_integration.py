@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -72,8 +73,17 @@ def integration(stage, output):
     from symphony_board.config import BoardConfig
     from symphony_board.state import BoardState
     from symphony_board.store import BoardStore
+    # Linux-specific descriptor tests live outside cross-platform frozen discovery.
+    sys.path.insert(0, str(stage / 'tests'))
+    from local_runtime_cases import LocalRuntimeSourceTests
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LocalRuntimeSourceTests)
+    identities = [test.id() for test in suite]
+    units = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
+    require(units.testsRun == len(identities) and units.testsRun > 0 and units.wasSuccessful()
+            and not units.skipped, 'independent Linux unit cases must all execute successfully')
     report = {'passed': False, 'fixture_only': True, 'formal_acceptance': False,
-              'real_windows_wsl': False, 'browser_ui': False, 'commands': [], 'checks': []}
+              'real_windows_wsl': False, 'browser_ui': False, 'commands': [], 'checks': [],
+              'local_unit_tests': {'tests': units.testsRun, 'identities': identities, 'skipped': [], 'passed': True}}
     with tempfile.TemporaryDirectory(prefix='view-linux-source-') as directory:
         private = Path(directory)
         fixtures = private / "fixtures 中文 'space"
@@ -100,6 +110,12 @@ def integration(stage, output):
                 patch.object(entry, 'enrich_pulls'), \
                 patch.object(source.subprocess, 'run', side_effect=allowed_scan):
             try:
+                literal_root, decoy_root = private / '__LOCAL__', private / 'True'
+                literal_root.mkdir(); decoy_root.mkdir()
+                literal = source.pull_snapshot([str(literal_root)], 'local')
+                require([runtime['root'] for runtime in literal['runtimes']] == [str(literal_root)],
+                        'literal template-marker root must not select its True decoy')
+                report['checks'].append('literal __LOCAL__ root survives real subprocess template generation')
                 result = entry.run_cycle(cfg, store, state, raw)
                 require(len(result[2]) == 2 and len(result[1]) == 2, 'both Linux runtimes must derive tasks/sessions')
                 require(raw.health['status'] == 'ok' and raw.health['source'] == 'local', 'actual source health')
