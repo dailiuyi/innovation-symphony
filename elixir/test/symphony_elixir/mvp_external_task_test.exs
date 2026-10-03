@@ -7,6 +7,7 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixir.Workflow
+  alias SymphonyElixir.WorkflowStore
 
   setup do
     root = Path.join(System.tmp_dir!(), "symphony-external-cli-#{System.unique_integer([:positive])}")
@@ -416,20 +417,55 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
     assert {:error, :tracker_binding_mismatch} = External.resume(f.workflow, f.receipt, f.request, mismatched_binding)
   end
 
-  test "resume verifies the default tracker binding without changing workflow configuration", %{fixture: f} do
-    delegate = fn _, _, _ -> {:error, {:mvp_awaiting_external, "bound"}} end
-    opts = resume_opts(delegate, f) |> Keyword.delete(:tracker_binding)
+  test "resume verifies matching and mismatched default tracker bindings without changing workflow configuration", %{root: root, fixture: f} do
     original = Application.fetch_env(:symphony_elixir, :workflow_file_path)
+    store = Process.whereis(WorkflowStore)
+    original_state = if store, do: :sys.get_state(store)
 
-    result = External.resume(f.workflow, f.receipt, f.request, opts)
+    on_exit(fn ->
+      case original do
+        {:ok, path} -> Application.put_env(:symphony_elixir, :workflow_file_path, path)
+        :error -> Application.delete_env(:symphony_elixir, :workflow_file_path)
+      end
 
-    if Process.whereis(SymphonyElixir.WorkflowStore) do
-      assert {:error, :tracker_binding_mismatch} = result
-    else
-      assert {:error, {:mvp_awaiting_external, "bound"}} = result
+      if store, do: :sys.replace_state(store, fn _ -> original_state end)
+    end)
+
+    # A live store can retain any previous test's last valid tracker. Its presence
+    # alone does not imply a mismatch: establish both configurations explicitly.
+    Workflow.set_workflow_file_path(f.workflow)
+    store = store || start_supervised!(WorkflowStore)
+    assert :ok = WorkflowStore.force_reload()
+    assert {:ok, settings} = WorkflowStore.settings()
+    assert settings.tracker == tracker_settings(f.workflow)
+
+    parent = self()
+
+    delegate = fn context, _, _ ->
+      send(parent, {:bound_tracker, Keyword.fetch!(context.opts, :tracker_settings)})
+      {:error, {:mvp_awaiting_external, "bound"}}
     end
 
-    assert Application.fetch_env(:symphony_elixir, :workflow_file_path) == original
+    opts = resume_opts(delegate, f) |> Keyword.delete(:tracker_binding)
+    assert {:error, {:mvp_awaiting_external, "bound"}} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert_received {:bound_tracker, tracker}
+    assert tracker == settings.tracker
+    assert Application.fetch_env(:symphony_elixir, :workflow_file_path) == {:ok, f.workflow}
+    assert Process.whereis(WorkflowStore) == store
+
+    mismatched = Path.join(root, "MISMATCHED_WORKFLOW.md")
+    SymphonyElixir.TestSupport.write_workflow_file!(mismatched, tracker_kind: "memory")
+    Workflow.set_workflow_file_path(mismatched)
+    assert :ok = WorkflowStore.force_reload()
+    assert {:ok, mismatched_settings} = WorkflowStore.settings()
+    assert mismatched_settings.tracker.kind == "memory"
+
+    assert {:error, :tracker_binding_mismatch} = External.resume(f.workflow, f.receipt, f.request, opts)
+    refute_received {:bound_tracker, _}
+
+    assert Application.fetch_env(:symphony_elixir, :workflow_file_path) == {:ok, mismatched}
+    assert Process.whereis(WorkflowStore) == store
+    assert {:ok, ^mismatched_settings} = WorkflowStore.settings()
   end
 
   test "resume reports missing request runtime and distinguishes malformed runtime results", %{fixture: f} do

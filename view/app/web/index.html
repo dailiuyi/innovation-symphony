@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>innovation-view · 任务看板</title>
+<script>document.documentElement.dataset.theme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';</script>
+<link rel="stylesheet" href="/assets/css/theme.css">
+<link rel="stylesheet" href="/assets/css/app.css">
+<link rel="stylesheet" href="/assets/css/workspace.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="sb-workspace">
+      <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="sb-ws-text"><b id="ws-title">innovation-view</b><small>Symphony 监控 · DEMO</small></span>
+    </div>
+    <nav class="sb-nav" id="sb-nav">
+      <a class="nav-item" href="#/board" data-view="board">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="5" height="9" rx="1.5"/><rect x="9.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1.5"/></svg>
+        <span>任务看板</span>
+      </a>
+      <a class="nav-item" href="#/agents" data-view="agents">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8l-3.2 2.6a.5.5 0 0 1-.8-.4V11.5h-1.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg>
+        <span>Agent 上下文</span>
+        <em class="nav-count" id="nav-sessions-count"></em>
+      </a>
+      <a class="nav-item" href="#/settings" data-view="settings">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4" fill="none" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <span>设置</span>
+      </a>
+    </nav>
+    <div class="sb-section">
+      <div class="sb-section-title">仓库</div>
+      <div id="sb-repos"></div>
+    </div>
+    <div class="sb-section" id="sb-pending-section" hidden>
+      <div class="sb-section-title">待接入 <em id="sb-pending-count"></em></div>
+      <div id="sb-pending"></div>
+    </div>
+    <div class="sb-foot">
+      <span class="live"><i class="dot" id="node-dot"></i><span id="live-label">WSL · 实时</span></span>
+      <span class="sb-root" id="sb-root" title=""></span>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <div class="tb-left">
+        <h1 id="crumb">任务看板</h1>
+        <span class="tb-sub" id="crumb-sub">全部仓库</span>
+      </div>
+      <nav class="chips" id="rt-nav" aria-label="运行时"></nav>
+      <div class="tb-right">
+        <span class="tb-stamp" id="gen-stamp"></span>
+        <button class="btn icon" type="button" id="theme-toggle" title="切换亮色/暗色主题">
+          <svg class="icon-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 .8v2M8 13.2v2M.8 8h2M13.2 8h2M2.9 2.9l1.4 1.4M11.7 11.7l1.4 1.4M13.1 2.9l-1.4 1.4M4.3 11.7l-1.4 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>
+          <svg class="icon-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a.55.55 0 0 0-.7-.7 6.3 6.3 0 1 0 8.6 8.6.55.55 0 0 0-.7-.7Z"/></svg>
+        </button>
+        <button class="btn" type="button" id="refresh-now">刷新</button>
+      </div>
+    </header>
+
+    <section class="view" id="view-board">
+      <div class="page-heading"><div><span class="eyebrow">WORKSPACE / ISSUES</span><h2>任务看板</h2><p>跟进任务进度，沿着证据找到需要关注的上下文。</p></div><span class="scope-tag">只读看板</span></div>
+      <div class="stats" id="stats"></div>
+      <div id="board-tools"></div>
+      <div class="board" id="board" aria-label="任务看板"></div>
+      <p class="board-note" id="board-note"></p>
+    </section>
+
+    <section class="view" id="view-agents" hidden>
+      <div class="page-heading"><div><span class="eyebrow">WORKSPACE / AGENTS</span><h2>Agent 上下文</h2><p>从下发指令到最近输出，查看每次会话发生了什么。</p></div><span class="scope-tag">运行时原始记录</span></div>
+      <div class="agent-search-row"><label class="search-field"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="agent-search" type="search" placeholder="搜索 Issue、指令、输出或会话 ID" aria-label="搜索 Agent 会话"><kbd>/</kbd></label><label class="sort-field">排序 <select id="agent-sort"><option value="recent">最近会话优先</option><option value="oldest">按发生顺序</option></select></label></div>
+      <div class="page-tools" id="agent-tools"></div>
+      <div class="session-groups" id="agent-groups"></div>
+      <p class="board-note" id="agent-note"></p>
+    </section>
+
+    <section class="view" id="view-settings" hidden>
+      <div class="settings" id="settings-body"></div>
+    </section>
+  </main>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<div class="overlay" id="detail-overlay" hidden>
+  <aside class="pane" id="detail-pane" aria-label="任务详情"></aside>
+</div>
+<div class="overlay" id="session-overlay" hidden>
+  <aside class="pane pane-wide" id="session-pane" role="dialog" aria-modal="true" aria-labelledby="session-pane-title">
+    <div class="session-pane-head">
+      <b id="session-pane-title"></b>
+      <span class="pane-tools">
+        <a class="btn" id="session-pane-open" href="#" target="_blank" rel="noopener">完整记录 ↗</a>
+        <button class="btn" type="button" id="session-pane-close">关闭</button>
+      </span>
+    </div>
+    <div class="session-content" id="session-content" aria-live="polite"></div>
+  </aside>
+</div>
+
+<div id="boot-empty" hidden>
+  <div class="boot-card">
+    <h2>还没有可展示的数据</h2>
+    <p id="boot-empty-reason">采集循环可能还没有完成第一拍，等几秒会自动出现。</p>
+  </div>
+</div>
+
+<script type="module" src="/assets/js/main.js"></script>
+</body>
+</html>

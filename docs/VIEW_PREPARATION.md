@@ -1,5 +1,7 @@
 # Issue #7 无人值守前置准备
 
+> 以下为 IS-044 准备阶段的历史记录。当前用户另行授权 GH-7 离线合仓实现，`view/` 已导入候选工作区；见 [迁移说明](../view/docs/MIGRATION.md) 与 [本轮验证](VALIDATION_VIEW.md)。历史未授权范围不能作为本轮已完成声明。
+
 本分支只准备固定来源制品、独立检查候选代码和脱敏夹具，不提前执行 [Issue #7](https://github.com/dailiuyi/innovation-symphony/issues/7) 的 View 合仓。`view/` 尚未导入，现有 View checkout、控制器、可信安装和运行配置均不由这些脚本改动。源码保存、本地提交、门禁安装、真实验收和远端发布是不同状态。
 
 ## 授权及来源
