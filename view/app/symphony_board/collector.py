@@ -4,7 +4,6 @@
 Ported from build/symphony-watch.py.
 """
 import json
-import hashlib
 import os
 import re
 import threading
@@ -177,26 +176,15 @@ def parse_log(text):
     return entries, levels, kind_list
 
 
-def copy_session(remote, size):
-    os.makedirs(BUILD_ROLLOUTS, exist_ok=True)
-    base = os.path.basename(remote)
-    # Several runtime roots can contain the same rollout basename. Keep their
-    # local copies distinct so a context id can never resolve to another root's
-    # file merely because the byte sizes happen to match.
-    key = hashlib.sha256(remote.encode("utf-8", "replace")).hexdigest()[:16]
-    local = os.path.join(BUILD_ROLLOUTS, f"{key}-{base}")
-    if os.path.exists(local) and os.path.getsize(local) == int(size):
-        return local
-    from .wslpull import wsl
-    data = wsl(f"cat '{remote}'")
-    if not data.strip():
-        return local if os.path.exists(local) else None
-    with open(local, "w", encoding="utf-8", newline="") as handle:
-        handle.write(data)
-    return local
+def copy_session(remote, size, transport="wsl", mtime_ns=None, root=None):
+    from .runtime_source import copy_session as copy
+    return copy(remote, size, BUILD_ROLLOUTS, transport, mtime_ns, root)
 
 
-def load_sessions(snapshot):
+def load_sessions(snapshot, publish=True):
+    transport = snapshot.get("_transport", "wsl")
+    if transport not in ("local", "wsl"):
+        raise ValueError("invalid snapshot transport")
     seen, sessions = set(), []
     for runtime in snapshot.get("runtimes", []):
         for item in runtime.get("sessions", []):
@@ -204,13 +192,18 @@ def load_sessions(snapshot):
             if not remote or remote in seen:
                 continue
             seen.add(remote)
-            local = copy_session(remote, item.get("bytes") or 0)
+            local = copy_session(remote, item.get("bytes") or 0, transport, item.get("mtime_ns"), runtime.get("root"))
             if not local or not os.path.exists(local):
                 continue
-            # 一条 rollout 解析失败只跳过它自己，不能卡死整个采集循环
+            # Legacy WSL parsing keeps its tolerant behavior; local failures
+            # abort publication so the last successful context stays readable.
             try:
                 parsed = parse_rollout(local)
+                if transport == "local" and not parsed.get("meta", {}).get("session_id"):
+                    raise ValueError("local rollout has no valid session metadata")
             except Exception as exc:
+                if transport == "local":
+                    raise
                 print(f"skip rollout {os.path.basename(remote)}: {type(exc).__name__}: {exc}")
                 continue
             parsed["remote"] = remote
@@ -218,6 +211,12 @@ def load_sessions(snapshot):
             parsed["local"] = local
             sessions.append(parsed)
     sessions.sort(key=lambda item: item.get("first_ts") or "")
+    if publish:
+        publish_context_sources(sessions)
+    return sessions
+
+
+def publish_context_sources(sessions):
     sources = {}
     for session in sessions:
         meta = session.get("meta") or {}
@@ -231,7 +230,6 @@ def load_sessions(snapshot):
     with _CONTEXT_SOURCES_LOCK:
         _CONTEXT_SOURCES.clear()
         _CONTEXT_SOURCES.update({key: tuple(value) for key, value in sources.items()})
-    return sessions
 
 
 def context_sources(session_id):

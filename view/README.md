@@ -22,10 +22,13 @@
 
 ## 运行
 
-真实采集需要 Windows + WSL（可访问配置的 Symphony 运行目录）；Windows Python
-通过 `wsl.exe` 调用 WSL Python 3 读取文件。Python 语法最低 3.11，实际离线验证
-组合为 Python 3.12.3、Node 24.19.0、`codex-transcript-viewer==0.5.0`。
-准备阶段 Windows 曾验证 Python 3.12.5 的代码检查；本轮没有真实 WSL 条件。
+真实采集支持 Windows + WSL，以及 Linux（包括直接在 WSL 内运行 Python）。
+`board.transport` 默认 `auto`：Windows Python 通过 `wsl.exe` 调用 WSL Python 3；
+Linux Python 使用同一解释器启动固定只读扫描脚本并直接复制配置运行根内发现的 rollout。
+显式 `local` 仅支持 Linux，显式 `wsl` 仅支持 Windows；无效值或不支持的组合报错，
+不会静默改用其他来源。缺少该项的旧配置无需修改。Python 最低 3.11；本轮 Linux
+合成集成使用 Python 3.12.14、Node 24.19.0、`codex-transcript-viewer==0.5.0`。
+真实 Windows＋WSL 和浏览器 UI 仍须在可用环境另行验收。
 如需 PR 状态，另需可用的 `gh` CLI；没有它时看板仍可运行，但 PR 状态可能未知。
 Node 用于 JS 和浏览器检查，正常 Python 看板启动不需要 Node。
 
@@ -66,6 +69,7 @@ title = "innovation-view"
 interval = 5
 port = 8613
 runtime_glob = "/var/tmp/innovation-symphony-v0*"
+transport = "auto"  # Windows -> wsl；Linux/WSL 内 -> local
 
 [[repos]]
 name = "dailiuyi/innovation-symphony"  # 与回执中的 repository 字段一致
@@ -74,6 +78,17 @@ enabled = true
 ```
 
 不配置 `[[repos]]` 时显示回执中发现的仓库。配置后，未登记的仓库会出现在“待接入”提醒中；`enabled = false` 会隐藏对应任务。修改配置后重启服务生效。
+
+本地模式只读取 `runtime_glob` 和已启用仓库追加 glob 匹配的运行根，包含顶层
+`codex-home/sessions` 与 `sandboxes/*/codex-home/sessions`；相对运行根 glob 保留调用
+cwd 语义。扫描与复制拒绝越界、符号链接和非普通 rollout，不执行回执中的命令。
+扫描子进程及复制有 30 秒超时边界；失败显示采集错误，保留上次成功快照和上下文，
+下一拍成功后恢复发布。未匹配运行目录才显示空态。
+
+Linux 缓存按 `local` 来源、规范化绝对路径、大小和纳秒修改时间隔离，因此同长度
+更新也会重新复制；使用完整临时文件和原子替换。旧 WSL 缓存文件名不变，新扫描的
+WSL 列表带纳秒修改时间。Linux 已发布缓存版本保持只读且不被后续失败覆盖，不自动
+删除旧版本或移动旧数据。数据库结构、页面、接口、隐藏推理过滤、ETag 和分页不变。
 
 ## 验证
 
@@ -86,7 +101,11 @@ python -B scripts/run_view_checks.py --output view/build/checks
 它执行全部 Python unittest、10 项 JS 轮次测试、实际 self_check 会话解析与第三方 HTML
 生成，以及迁移前固定结果的逐值比较；首次目录、配置路径、重叠采集及异常清理回归
 包含在 Python suite 中。缺依赖、零执行、skip、解析或渲染失败均返回非零。
-该命令只证明代码与固定夹具检查，报告明确列出未执行的浏览器和真实 Windows＋WSL。
+Linux 上该命令另在独立复制目录和解释器执行真实本地子进程扫描、复制、解析、SQLite、
+loopback HTTP/context/HTML 合成集成，以及坏 JSON、权限、消失、超时和恢复检查；前后
+源文件 SHA256 必须一致，临时 HTTP 服务收尾停止。冻结 worker 继续禁止真实子进程，
+没有放宽原门禁或更新迁移预期。该命令不证明真实运行接入，报告列出未执行的浏览器
+UI 和真实 Windows＋WSL；非 Linux 平台明确记录未执行 Linux 集成。
 主仓 CI 独立 View job 另执行下述浏览器检查，不改变 Elixir 或隔离门禁。
 
 检查准备交给控制器的候选时，将 `--output` 指向仓库外尚不存在的临时目录，
@@ -141,7 +160,7 @@ node tests/browser-smoke.cjs --url http://127.0.0.1:8614 --chrome "<Chrome 可�
 
 ```text
 app/run.py               采集循环与 HTTP 服务入口
-app/symphony_board/      运行时读取、数据派生、SQLite 状态与只读 API
+app/symphony_board/      local/WSL 只读来源适配、数据派生、SQLite 状态与 API
 app/web/                 页面壳、原生 ES modules 与 CSS
 tests/                   Python API 测试与浏览器烟雾检查
 docs/DEMO-SCOPE.md       Demo 边界、接口草案与手工验收清单

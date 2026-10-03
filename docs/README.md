@@ -2,6 +2,7 @@
 
 | 内容 | 文档 |
 | --- | --- |
+| Linux/WSL 来源分流、只读采集与独立合成验证 | [LINUX-SOURCE.md](../view/docs/LINUX-SOURCE.md) |
 | GH-7 View 安装、配置、独立检查与运行 | [view/README.md](../view/README.md) |
 | GH-7 来源、迁移差异与固定兼容性夹具 | [MIGRATION.md](../view/docs/MIGRATION.md) |
 | GH-7 本轮检查与外部停点 | [VALIDATION_VIEW.md](VALIDATION_VIEW.md) |

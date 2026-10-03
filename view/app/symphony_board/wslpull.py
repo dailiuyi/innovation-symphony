@@ -17,6 +17,29 @@ DEFAULT_GLOB = "/var/tmp/innovation-symphony-v0*"
 REMOTE_SCRIPT = r"""
 import glob, json, os, re
 
+LOCAL = __LOCAL__
+if LOCAL:
+    from symphony_board.local_files import normalized, open_artifact, list_directory, walk_directory, glob_directories
+
+def _read(path):
+    if LOCAL:
+        with open_artifact(root, path) as handle:
+            return handle.read().decode("utf-8", "replace")
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+def _info(path):
+    if LOCAL:
+        with open_artifact(root, path) as handle:
+            return os.fstat(handle.fileno())
+    return os.stat(path)
+
+def _list(path):
+    return list_directory(root, path) if LOCAL else os.listdir(path)
+
+def _walk(path):
+    return walk_directory(root, path) if LOCAL else os.walk(path)
+
 UUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 SID_RE = re.compile(r"^" + UUID + r"(?:-(?:turn-?)?" + UUID + r")?$")
 THREAD_RE = re.compile(r"^" + UUID + r"$")
@@ -28,7 +51,9 @@ def _session_started(messages_path):
     if not os.path.isfile(messages_path):
         return ""
     remaining = MAX_MESSAGES_BYTES
-    with open(messages_path, encoding="utf-8", errors="replace") as handle:
+    with (open_artifact(root, messages_path) if LOCAL else open(messages_path, "rb")) as binary:
+        import io
+        handle = io.TextIOWrapper(binary, encoding="utf-8", errors="replace")
         while remaining > 0:
             line = handle.readline(min(remaining, 16_384))
             if not line:
@@ -158,21 +183,28 @@ def _agent_attempts(receipt, evidence_dir):
                                   item["session_id"]))
     return result
 
-roots = sorted({p for pattern in __GLOBS__ for p in glob.glob(pattern) if os.path.isdir(p)})
+roots = sorted({p for pattern in __GLOBS__ for p in (glob_directories(pattern) if LOCAL else glob.glob(pattern)) if os.path.isdir(p)})
+if LOCAL:
+    roots = [normalized(path) for path in roots]
+    # Validate every root even if it contains no known artifact directories.
+    for path in roots:
+        list_directory(path, path)
 out = {"runtimes": []}
 for root in roots:
     rt = {"root": root, "receipts": [], "evidence": [], "logs": [], "sessions": []}
     state = os.path.join(root, "state")
     if os.path.isdir(state):
-        for dirpath, dirnames, filenames in os.walk(state):
+        for dirpath, dirnames, filenames in _walk(state):
             dirnames[:] = [d for d in dirnames if not d.endswith(".evidence")]
             for name in filenames:
                 if not name.endswith(".json"):
                     continue
                 path = os.path.join(dirpath, name)
                 try:
-                    rec = json.load(open(path, encoding="utf-8"))
+                    rec = json.loads(_read(path))
                 except Exception:
+                    if LOCAL:
+                        raise
                     continue
                 if not isinstance(rec, dict) or "issue" not in rec:
                     continue
@@ -184,7 +216,7 @@ for root in roots:
                 if not os.path.isdir(ev_dir):
                     continue
                 def add_evidence(directory, prefix):
-                    for ev in sorted(os.listdir(directory)):
+                    for ev in sorted(_list(directory)):
                         fp = os.path.join(directory, ev)
                         rel = ev if not prefix else prefix + "/" + ev
                         if os.path.isdir(fp) and ev.startswith("round-"):
@@ -194,56 +226,61 @@ for root in roots:
                             continue
                         if not ((ev.startswith("check-") and ev.endswith(".log")) or ev == "review.json"):
                             continue
-                        if os.path.getsize(fp) <= 2_000_000:
+                        if _info(fp).st_size <= 2_000_000:
                             rt["evidence"].append({
                                 "receipt": path,
                                 "name": rel,
                                 "path": fp,
-                                "bytes": os.path.getsize(fp),
-                                "text": open(fp, encoding="utf-8", errors="replace").read(),
+                                "bytes": _info(fp).st_size,
+                                "text": _read(fp),
                             })
                 add_evidence(ev_dir, "")
     logdir = os.path.join(root, "logs", "log")
     if os.path.isdir(logdir):
-        for name in sorted(os.listdir(logdir)):
+        for name in sorted(_list(logdir)):
             if not name.startswith("symphony.log") or name.endswith((".siz", ".idx")):
                 continue
             fp = os.path.join(logdir, name)
-            if os.path.isfile(fp) and os.path.getsize(fp) <= 8_000_000:
+            if os.path.isfile(fp) and _info(fp).st_size <= 8_000_000:
                 rt["logs"].append({
                     "path": fp,
-                    "bytes": os.path.getsize(fp),
-                    "text": open(fp, encoding="utf-8", errors="replace").read(),
+                    "bytes": _info(fp).st_size,
+                    "text": _read(fp),
                 })
     sess_bases = [os.path.join(root, "codex-home", "sessions")]
     # 新版控制器把每次 run 的 codex-home 放进 sandboxes/run-*/，顶层目录可能已删
-    for sb in sorted(glob.glob(os.path.join(root, "sandboxes", "*", "codex-home"))):
+    for sb in sorted(glob_directories(os.path.join(root, "sandboxes", "*", "codex-home")) if LOCAL else glob.glob(os.path.join(root, "sandboxes", "*", "codex-home"))):
         sess_bases.append(os.path.join(sb, "sessions"))
     for sess in sess_bases:
         if os.path.isdir(sess):
-            for dirpath, _, filenames in os.walk(sess):
+            for dirpath, _, filenames in _walk(sess):
                 for name in filenames:
                     if name.startswith("rollout-") and name.endswith(".jsonl"):
                         fp = os.path.join(dirpath, name)
-                        rt["sessions"].append({"path": fp, "bytes": os.path.getsize(fp)})
+                        info = _info(fp)
+                        rt["sessions"].append({"path": fp, "bytes": info.st_size, "mtime_ns": info.st_mtime_ns})
     out["runtimes"].append(rt)
 print(json.dumps(out, ensure_ascii=False))
 """
 
 
 def wsl(cmd):
-    r = subprocess.run(["wsl.exe", "-e", "bash", "-c", cmd], capture_output=True)
+    r = subprocess.run(["wsl.exe", "-e", "bash", "-c", cmd], capture_output=True, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode("utf-8", "replace")[-1500:] or "WSL read failed")
     return r.stdout.decode("utf-8", "replace").replace("\x00", "")
 
 
 def to_wsl_path(path):
     drive, rest = os.path.splitdrive(os.path.abspath(path))
+    if not drive:
+        raise RuntimeError("WSL transport requires a Windows host path")
     return "/mnt/" + drive[0].lower() + rest.replace("\\", "/")
 
 
-def remote_script(globs):
+def remote_script(globs, local=False):
     listed = json.dumps(list(globs or [DEFAULT_GLOB]))
-    return REMOTE_SCRIPT.replace("__GLOBS__", listed)
+    return REMOTE_SCRIPT.replace("__GLOBS__", listed).replace("__LOCAL__", repr(local))
 
 
 def pull_snapshot(globs=None):
@@ -255,7 +292,7 @@ def pull_snapshot(globs=None):
         # Close before wsl.exe reads the file (also required on Windows).
         with script:
             script.write(remote_script(globs))
-        r = subprocess.run(["wsl.exe", "-e", "python3", to_wsl_path(script.name)], capture_output=True)
+        r = subprocess.run(["wsl.exe", "-e", "python3", to_wsl_path(script.name)], capture_output=True, timeout=30)
         raw = r.stdout.decode("utf-8", "replace").replace("\x00", "")
         if r.returncode != 0 or "{" not in raw:
             err = r.stderr.decode("utf-8", "replace")[-1500:]
