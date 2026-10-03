@@ -6,6 +6,8 @@
 title = "innovation-view"          # 侧栏与浏览器标题
 interval = 5                        # 采集间隔（秒），采集周期对齐
 port = 8613                         # 服务端口
+transport = "auto"                  # auto：Windows -> wsl；Linux（含 WSL 内）-> local
+# transport = "local"                # 仅 Linux；wsl 仅 Windows，不支持的组合报错
 runtime_glob = "/var/tmp/innovation-symphony-v0*"   # 默认扫描的运行时目录 glob
 stall_hours = 24                    # 等人任务停滞告警阈值（小时）
 

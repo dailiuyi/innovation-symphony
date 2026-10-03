@@ -24,22 +24,31 @@ if APP_DIR not in sys.path:
 from symphony_board import common
 from symphony_board.api import serve
 from symphony_board.api import RawRef
-from symphony_board.collector import load_sessions, public_session
+from symphony_board.collector import load_sessions, public_session, publish_context_sources
 from symphony_board.common import cycle_pause, listed_runtimes, token_cost
 from symphony_board.config import load_config
 from symphony_board.derive import build_logs, build_stories, build_tasks, enrich_pulls
 from symphony_board.selfcheck import self_check
 from symphony_board.state import BoardState
 from symphony_board.store import BoardStore
-from symphony_board.wslpull import pull_snapshot
+from symphony_board.runtime_source import pull_snapshot, resolve_transport
 
 DATA_DIR = os.path.join(ROOT, "data")
 
 
 def run_cycle(config, store, state, raw_ref):
-    snapshot = pull_snapshot(config.globs())
-    raw_ref.raw = snapshot
-    sessions = load_sessions(snapshot)
+    try:
+        return _run_cycle(config, store, state, raw_ref)
+    except Exception as exc:
+        raw_ref.health = {**raw_ref.health, "status": "error",
+                          "source": resolve_transport(config.transport),
+                          "lastError": f"{type(exc).__name__}: {exc}"}
+        raise
+
+
+def _run_cycle(config, store, state, raw_ref):
+    snapshot = pull_snapshot(config.globs(), transport=config.transport)
+    sessions = load_sessions(snapshot, publish=False)
     logs = build_logs(snapshot)
     by_runtime = {}
     for log in logs:
@@ -79,7 +88,9 @@ def run_cycle(config, store, state, raw_ref):
         "runtimes": listed_runtimes(snapshot),
     }
     state.publish(payload)
-    raw_ref.health = {"status": "ok" if snapshot.get("runtimes") else "empty", "source": "wsl", "lastSuccess": datetime.datetime.now(datetime.timezone.utc).isoformat(), "lastError": ""}
+    publish_context_sources(sessions)
+    raw_ref.raw = snapshot
+    raw_ref.health = {"status": "ok" if snapshot.get("runtimes") else "empty", "source": resolve_transport(config.transport), "lastSuccess": datetime.datetime.now(datetime.timezone.utc).isoformat(), "lastError": ""}
     changed = state.rev
     return changed, public_tasks, session_rows, public_logs, stories, sessions
 
@@ -140,7 +151,7 @@ def main():
     store = BoardStore(os.path.join(DATA_DIR, "board.db"))
     state = BoardState()
     raw_ref = RawRef()
-    raw_ref.health = {"status": "waiting", "source": "wsl", "lastSuccess": None, "lastError": ""}
+    raw_ref.health = {"status": "waiting", "source": resolve_transport(config.transport), "lastSuccess": None, "lastError": ""}
 
     if once:
         _changed, tasks, sessions, logs, stories, _raw = run_cycle(config, store, state, raw_ref)

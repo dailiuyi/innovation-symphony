@@ -59,7 +59,7 @@ def copy_view(source, destination):
 def entrypoint(stage, mode):
     """Execute app/run.py as __main__; only the external collector is simulated."""
     sys.path.insert(0, str(stage / "app"))
-    from symphony_board import api, wslpull
+    from symphony_board import api, runtime_source
     cwd = stage.parent if mode.startswith("root") else stage
     os.chdir(cwd)
     script = os.path.relpath(stage / "app/run.py", cwd)
@@ -74,7 +74,7 @@ def entrypoint(stage, mode):
     def serve(state, cfg, raw, store, **kwargs):
         seen.append((cfg.interval, cfg.port))
         return type("FixtureHTTP", (), {"serve_forever": lambda self: None})()
-    with patch.object(sys, "argv", args), patch.object(wslpull, "pull_snapshot", return_value={"runtimes": []}), \
+    with patch.object(sys, "argv", args), patch.object(runtime_source, "pull_snapshot", return_value={"runtimes": []}), \
             patch.object(api, "serve", side_effect=serve), patch("time.sleep", side_effect=StopIteration("end fixture cycle")):
         try:
             runpy.run_path(script, run_name="__main__")
@@ -146,6 +146,21 @@ def main():
                 report["commands"].append(cmd)
                 subprocess.run(cmd, check=True, timeout=120)
                 report["entrypoints"].append(mode)
+            # Real Linux collection is deliberately a separate interpreter and
+            # stage; the frozen worker still forbids every real subprocess.
+            if sys.platform.startswith("linux"):
+                private_view = Path(directory) / "local-integration" / "view"
+                copy_view(ROOT / "view", private_view)
+                cmd = [sys.executable, "-I", "-B", str(ROOT / "scripts/view_validation/local_integration.py"),
+                       "--stage", str(private_view), "--output", str(output / "local-integration")]
+                report["commands"].append(cmd)
+                subprocess.run(cmd, check=True, timeout=120)
+                integration_report = json.loads((output / "local-integration/local-integration-result.json").read_text())
+                if not integration_report.get("passed") or not integration_report.get("loopback_service_stopped"):
+                    raise AssertionError("isolated Linux integration failed or left its service running")
+                report["linux_integration"] = integration_report
+            else:
+                report["linux_integration"] = "not executed: requires Linux"
             report["python_version"] = sys.version
             report["node_version"] = subprocess.check_output([args.node, "--version"], text=True, timeout=15).strip()
             report["passed"] = True

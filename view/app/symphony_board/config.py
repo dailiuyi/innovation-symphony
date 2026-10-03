@@ -50,6 +50,7 @@ class BoardConfig:
     exists: bool = False
     stall_hours: float = 24.0
     cost: CostCfg = field(default_factory=CostCfg)
+    transport: str = "auto"
 
     def has_repo_entries(self):
         return bool(self.repos)
@@ -106,6 +107,9 @@ def _from_dicts(data, path, exists):
             glob=str(item.get("glob") or item.get("runtime_glob") or "").strip(),
             enabled=item.get("enabled", True) is not False,
         ))
+    from .runtime_source import resolve_transport
+    transport = board.get("transport", "auto")
+    resolve_transport(transport)
     stall_raw = board.get("stall_hours")
     return BoardConfig(
         title=str(board.get("title") or "innovation-view"),
@@ -117,6 +121,7 @@ def _from_dicts(data, path, exists):
         exists=exists,
         stall_hours=24.0 if stall_raw is None else float(stall_raw),
         cost=cost,
+        transport=transport,
     )
 
 

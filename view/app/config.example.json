@@ -3,6 +3,7 @@
     "title": "innovation-view",
     "interval": 5,
     "port": 8613,
+    "transport": "auto",
     "runtime_glob": "/var/tmp/innovation-symphony-v0*",
     "stall_hours": 24
   },
