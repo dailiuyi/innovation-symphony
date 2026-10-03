@@ -359,3 +359,37 @@ Playwright 1.62.1／配套Chromium没有在此沙箱中预置，完整浏览器�
 Windows＋WSL新候选复验、控制器启停隔离及只读外部状态对照、GH7-A15的实施前
 远端核查记录或所有者例外决定仍未完成。6项live及2项宿主集成skip不算通过。
 本轮未运行routing marker代替可信入口，没有提交、发布、PR、安装或服务切换。
+
+## 外部复检计时失败后的迁移回归（2026-10-03）
+
+本会话 base HEAD 为 `8148011a335e21171baa3e7c2a015b8bcd04a917`；新增修改未提交，
+该 SHA 不是包含本轮回归的最终候选。环境仍是离线 Linux，Python 3.12.3、Node
+24.19.0、viewer 0.5.0、Elixir 1.19.5／OTP 28.5。
+
+只读外部复检日志 `/evidence/operator-rechecks/gh7-external-v2-1791007253535111464/check-1.log`
+显示原看门狗打包测试耗时1606ms、上限1600ms；其余阶段通过。本轮 candidate
+完整检查未复现该失败；没有修改看门狗实现、计时断言、覆盖率或冻结检查政策。
+
+新增一项 View 回归：一个配置仍在采集时，另一个配置失败并重试，逐次断言失败及
+重试脚本已清理、在途脚本字节不变、各配置结果正确、三次路径不同，最终无残留。
+在仓库外私有副本移除清理语句后，同一用例明确拒绝残留脚本；不是仅以不抛异常通过。
+原始来源、迁移黄金预期及展示语义保持原样。
+
+| 本次命令／诊断 | 结果／原始记录 |
+| --- | --- |
+| `/opt/toolchain/view-validation/python/bin/python -I -B view/tests/test_migration.py -v` | 退出0；11项迁移回归；`/tmp/gh7-overlap-targeted.log` |
+| `/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node --output /tmp/gh7-overlap-view` | 退出0；27项Python、10项JS，无skip；实际self_check、6份HTML完整比较及8种入口通过；`/tmp/gh7-overlap-view.log`及输出目录的`code-check-result.json` |
+| 私有副本移除临时脚本清理，再运行新增用例 | 诊断退出0；用例预期失败于残留脚本断言；`/tmp/gh7-overlap-negative.log`；未改工作区实现 |
+| `PATH=/opt/toolchain/view-validation/node/bin:/opt/toolchain/view-validation/python/bin:$PATH VIEW_TEST_SOURCE_PACKAGE=/opt/symphony/scripts/view_validation/source/view-source.zip VIEW_TEST_SOURCE_MANIFEST=/opt/symphony/scripts/view_validation/source/source-manifest.json /opt/toolchain/view-validation/python/bin/python -B -m unittest discover -s scripts/view_validation/tests -v` | 退出0；24项，无skip；`/tmp/gh7-overlap-validator.log` |
+| `/opt/toolchain/view-validation/node/bin/node --test scripts/view_validation/tests/browser_binding.test.cjs` | 退出0；16项，无skip；`/tmp/gh7-overlap-browser-binding.log` |
+| `RUN_MIX_INTEGRATION=1 python3 -B -m unittest discover -s scripts/tests -v` | 退出0；58项，56通过、原2项宿主隔离集成skip；Mix真实集成已执行；`/tmp/gh7-overlap-scripts.log` |
+| 固定包verify、逐文件来源摘要、三个浏览器脚本Node语法检查、Python AST与`git diff --check` | 通过；36个原始文件及manifest核对通过，仅原已登记的6个来源文件有迁移差异，无真实配置或嵌套Git |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出0；全部6阶段通过，652项ExUnit、0失败、6项原live skip，seed 424187，100%覆盖率；`/tmp/gh7-current-candidate.log`、`.check-evidence/candidate-zbrhjyzb/` |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出0；652项ExUnit、0失败、6项原live skip，seed 840468；`/tmp/gh7-current-baseline.log`、`.check-evidence/baseline-phypftax/`；与candidate串行运行，无需重跑 |
+| `/opt/toolchain/view-validation/node/bin/node view/tests/browser-fixture.cjs /tmp/gh7-overlap-view/fixture` | 退出1；`Cannot find module 'playwright/package.json'`、`MODULE_NOT_FOUND`；`/tmp/gh7-overlap-browser.log`；UI断言未执行 |
+
+完整浏览器及CI浏览器验证、Windows＋WSL真实采集、真实控制器启停隔离和只读状态
+对照、实施前远端核查历史记录或所有者明确例外决定仍待外部验收。当前环境没有
+`wsl.exe`，也没有宿主集成需要的`/sys/fs/cgroup`。原6项live测试需要真实平台凭据，
+原2项宿主隔离集成需要获准的cgroup与挂载，均不算通过。上述代码检查不替代这些验收，
+候选冻结及独立Review仍归控制器。本轮未提交、发布、创建PR、安装或切换服务。

@@ -142,6 +142,53 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(wslpull.pull_snapshot(["/fixture/retry"]), {"runtimes": []})
         self.assertTrue(all(not path.exists() for path in paths))
 
+    def test_failed_call_and_retry_leave_overlapping_call_intact(self):
+        started, release = threading.Event(), threading.Event()
+        paths = []
+        def fake_run(argv, **kwargs):
+            script = Path(argv[-1])
+            paths.append(script)
+            text = script.read_text()
+            if 'for pattern in ["/fixture/active"]' in text:
+                started.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("overlapping fixture was not released")
+                # The other call's failure and retry must not replace this script.
+                self.assertEqual(script.read_text(), text)
+                root = "/fixture/active"
+            elif 'for pattern in ["/fixture/failed"]' in text:
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=b"fixture failed")
+            else:
+                self.assertIn('for pattern in ["/fixture/retry"]', text)
+                root = "/fixture/retry"
+            return SimpleNamespace(returncode=0, stderr=b"", stdout=json.dumps({
+                "runtimes": [{"root": root}]}).encode())
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(wslpull.tempfile, "tempdir", directory), \
+                patch.object(wslpull, "to_wsl_path", side_effect=lambda path: path), \
+                patch.object(wslpull.subprocess, "run", side_effect=fake_run):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                active = pool.submit(wslpull.pull_snapshot, ["/fixture/active"])
+                try:
+                    self.assertTrue(started.wait(timeout=10))
+                    active_path = paths[0]
+                    active_script = active_path.read_bytes()
+                    with self.assertRaisesRegex(RuntimeError, "fixture failed"):
+                        wslpull.pull_snapshot(["/fixture/failed"])
+                    self.assertFalse(paths[1].exists())
+                    self.assertEqual(active_path.read_bytes(), active_script)
+                    retry = wslpull.pull_snapshot(["/fixture/retry"])
+                    self.assertEqual(retry["runtimes"][0]["root"], "/fixture/retry")
+                    self.assertFalse(paths[2].exists())
+                    self.assertEqual(active_path.read_bytes(), active_script)
+                    self.assertEqual(set(Path(directory).iterdir()), {active_path})
+                finally:
+                    release.set()
+                self.assertEqual(active.result(timeout=10)["runtimes"][0]["root"], "/fixture/active")
+            self.assertEqual(len(set(paths)), 3)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_script_generation_failure_removes_allocated_file(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(wslpull.tempfile, "tempdir", directory), \
