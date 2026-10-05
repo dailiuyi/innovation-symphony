@@ -146,15 +146,18 @@ provider/model、有效参数、连接、适配身份、执行命令、凭据引
 仍检查 Issue 范围、ready、原资源/检查/审计合同及当前访问条件。
 
 未配置新注册表的工作流和旧评论沿用白名单，领取时标记 legacy_migration，冻结旧
-模型、现有 Codex 命令，以及控制器 CODEX_HOME（隔离时 auth_home）中 config.toml
-的有效 model_provider、provider base_url/wire_api/env_key 和 model_reasoning_effort。
-自定义 HTTPS Responses 渠道及环境凭据引用保留；内置 OpenAI 仍按旧
-CODEX_API_KEY / OPENAI_API_KEY 或 auth_home 取认证，支持 OPENAI_BASE_URL。
-普通非隔离配置未指定 effort 时不强加 high；原隔离路径缺省 high 保留。能力证据
+模型、现有 Codex 命令及旧执行路径的有效配置。非隔离路径读取控制器 CODEX_HOME
+中 config.toml 的 model_provider、provider base_url/wire_api/env_key 和
+model_reasoning_effort，保留自定义 HTTPS Responses 渠道及环境凭据引用；
+未指定 effort 时不强加 high。隔离路径原本自行生成配置，固定内置 OpenAI 和
+high，仅从 sandbox.auth_home 取得 auth.json；该目录 config.toml 的 low、
+自定义 provider、profiles 或不可解析内容均不影响冻结或调用，不能引入迁移阻塞。
+内置 OpenAI 保留原 CODEX_API_KEY / OPENAI_API_KEY 优先级、auth_home 认证后备及
+OPENAI_BASE_URL 环境连接覆盖。能力证据
 仍未知，不宣称旧白名单已完成真实验证。已冻结的地址/参数不再读取后来变动的
 config.toml。管理员仍可用 disabled_models 禁用历史型号。
 
-兼容读取仅接受可无歧义映射的单行标量 TOML（字符串、布尔、非负整数和普通表）；
+非隔离兼容读取仅接受可无歧义映射的单行标量 TOML（字符串、布尔、非负整数和普通表）；
 profile、复杂/重复赋值、额外 provider 参数/headers、未知推理参数、非 Responses
 协议、非 HTTPS 地址等返回 legacy_model_service_migration_required。不能用固定
 地址或 high 冒充未知有效值。遇到停点，由管理员从旧版本、原启动参数和原配置核对
@@ -206,14 +209,24 @@ operator_recheck 及更新时间；候选/base、旧 rounds、不可变外部 ha
 
 模型未知、未验证、参数不支持、协议不兼容、管理员禁用、凭据缺失/失效/变更及证据
 过期在调用前给出具体原因；真实服务端 401/403、429、余额不足、型号不存在和服务
-故障分别分类，包括 TurnError.codexErrorInfo 中的 httpStatusCode 和 usageLimitExceeded。
+故障分别分类，包括 TurnError.codexErrorInfo 中的 httpStatusCode 及正式字符串
+枚举：unauthorized 为权限停点、usageLimitExceeded 为额度停点、rateLimitExceeded
+为限流、serverOverloaded/internalServerError 为暂时服务故障。其余枚举保留原错误，
+不笼统归为可重试；阶段、总次数和墙钟额度分别约束重试。
 turn/completed 的 Turn 必须为 completed 且无 error；failed/interrupted、未知状态或
 格式错误均拒绝，即使此前已输出合法批准或探测 JSON。旧版本省略整个 params 或整个 Turn 的
 通知兼容，显式 null Turn 或省略 Turn 却携带 error 不视为旧版本成功。限流、暂时服务故障和超时只按原有 stage/总次数/墙钟预算重试，权限
 及余额停点不切换模型或服务商。Review 结构错误保留原文并有限重试，不能计为通过。
 
 每次模型尝试记录请求配置和 requested provider/model，明确 actual_model 为服务端
-显式确认值或 null（未知），不把请求值冒充实际值。token/费用缺失仍为未知，不记零。完整服务任务在 max_rework=0 且 recovery
+确认值或 null（未知），不把请求值冒充实际值。当前受支持的 Codex 协议未提供逐轮
+实际型号遥测，AppServer 结果的 actual_model 始终为 null；Thread.model 明确仅为
+当前配置/持久配置，不是逐轮执行遥测，未经协议定义的 params.actualModel 也不作为
+确认依据。依据为本地安装 Codex 生成的 ThreadStartResponse.json 中 Thread/Turn
+定义（控制器只读协议证据，SHA-256
+`92f5ddc37717b922de1dc0b0405e9a6d463f370554e2091610c6e595bc2616d4`）；没有
+可据此构造的型号确认成功夹具。若以后渠道提供明确逐轮遥测，需另行实现采集及
+成功路径回归，不能用模拟扩展字段宣称本期已确认型号。token/费用缺失仍为未知，不记零。完整服务任务在 max_rework=0 且 recovery
 关闭时同样保存一轮调用溯源，不依赖返工开关。模型时限沿用任务剩余预算或
 Codex 原 turn_timeout_ms；正式检查仍独立受 check_timeout_ms 限制。
 AppServer 输出、事件和诊断日志对该调用凭据值脱敏，快照仅含引用/指纹。

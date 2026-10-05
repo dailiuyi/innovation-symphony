@@ -206,6 +206,76 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "legacy isolated claims ignore auth home configuration and freeze the generated baseline routing", c do
+    home = Path.join(c.root, "isolated-legacy-home")
+    File.mkdir!(home)
+    auth = Jason.encode!(%{"OPENAI_API_KEY" => "synthetic-legacy-auth"})
+    File.write!(Path.join(home, "auth.json"), auth)
+    settings = c.settings |> Map.put(:model_services, nil) |> Map.put(:sandbox, %{:enabled => true, "auth_home" => home})
+    assert {:ok, models} = Intake.resolve_comments([F.comment(1, "/symphony models reviewer=gpt-test")], settings)
+
+    for raw <- [
+          ~s(model_reasoning_effort = "low"\n),
+          ~s(model_provider = "company"\n[model_providers.company]\nbase_url = "https://ignored.example/v1"\nenv_key = "GH12_CODER_KEY"\n),
+          ~s(profile = "production"\n[profiles.production]\nmodel_reasoning_effort = "low"\n)
+        ] do
+      File.write!(Path.join(home, "config.toml"), raw)
+      assert {:ok, services} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+      # Even unreadable or malformed later config cannot alter the frozen services.
+      File.write!(Path.join(home, "config.toml"), "not valid TOML")
+
+      for role <- ~w(coder reviewer) do
+        service = services[role]
+        assert service["parameters"] == %{"reasoning_effort" => "high"}
+        assert service["connection"] == %{"base_url" => "https://api.openai.com/v1", "protocol" => "responses"}
+        assert service["credential_ref"] == "auth_home:" <> home
+        assert service["source"] == "legacy_migration"
+        assert is_nil(service["capability_evidence"])
+        trace = Path.join(c.root, "isolated-legacy-#{role}.json")
+        service = Map.put(service, "command", "python3 #{c.binary} #{trace} success")
+        assert {:ok, _} = ModelServices.run(c.workspace, "test", c.issue, model: models[String.to_existing_atom(role)], model_service: service, read_only: role == "reviewer")
+        data = trace |> File.read!() |> Jason.decode!()
+        assert data["config"] =~ ~s(model_provider = "openai")
+        assert data["config"] =~ "https://api.openai.com/v1"
+        refute data["config"] =~ "ignored.example"
+        assert data["credential_hash"] == hash(auth)
+        assert data["credential_hash"] != hash("synthetic-route-coder")
+        turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))
+        assert turn["params"]["effort"] == "high"
+        assert turn["params"]["model"] == service["model"]
+      end
+    end
+  end
+
+  test "unsupported model confirmation fields remain unknown through repeated turns and persisted requests", c do
+    alias SymphonyElixir.Mvp.{Receipt, Usage}
+    trace = Path.join(c.root, "telemetry.json")
+    {:ok, service} = ModelServices.snapshot(c.settings, "coding", :coder, "fixture")
+    service = Map.put(service, "command", "python3 #{c.binary} #{trace} telemetry")
+    receipt = Path.join(c.root, "telemetry-receipt.json")
+    File.write!(receipt, Jason.encode!(%{"status" => "coding", "services" => %{"coder" => service}, "rounds" => [%{"usage" => %{}}]}))
+    assert {:ok, session} = AppServer.start_session(c.workspace, model: "gpt-test", model_service: service, tools: false)
+
+    try do
+      for index <- 1..3 do
+        assert {:ok, result} = AppServer.run_turn(session, "test", c.issue)
+        assert is_nil(result.actual_model)
+        Usage.request(receipt, "coder_#{index}", service, result.actual_model)
+        Usage.record(receipt, "coder_#{index}", result)
+        round = List.last(Receipt.read(receipt)["rounds"])
+        request = round["model_requests"]["coder_#{index}"]
+        assert request == Map.take(service, ~w(id version provider model credential_ref source)) |> Map.put("actual_model", nil)
+        assert round["usage"]["coder_#{index}"] == Usage.empty()
+      end
+    after
+      AppServer.stop_session(session)
+    end
+
+    requests = trace |> File.read!() |> Jason.decode!() |> Map.fetch!("requests")
+    assert Enum.count(requests, &(&1["method"] == "thread/start")) == 1
+    assert Enum.count(requests, &(&1["method"] == "turn/start")) == 3
+  end
+
   test "routing overrides cannot start either role or bypass the frozen home", c do
     for suffix <- [
           ~s(--config 'model_providers.symphony.base_url="https://wrong.example"'),
@@ -238,6 +308,13 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
           {"429", :model_rate_limited},
           {"503", :model_service_unavailable},
           {"quota", :model_quota_exhausted},
+          {"unauthorized", :model_account_forbidden},
+          {"usageLimitExceeded", :model_quota_exhausted},
+          {"rateLimitExceeded", :model_rate_limited},
+          {"serverOverloaded", :model_service_unavailable},
+          {"internalServerError", :model_service_unavailable},
+          {"badRequest", :unclassified},
+          {"other", :unclassified},
           {"interrupted", :interrupted},
           {"malformed-turn", :malformed},
           {"null-turn", :malformed},
@@ -253,6 +330,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       case category do
         :interrupted -> assert {:error, {:turn_cancelled, _}} = result
         :malformed -> assert {:error, :invalid_turn_completion} = result
+        :unclassified -> assert {:error, {:turn_failed, %{"codexErrorInfo" => ^mode}}} = result
         _ -> assert result == {:error, {:model_call_failed, category}}
       end
     end
@@ -279,17 +357,28 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   test "execution attempts stop on protocol permissions and quota but retry transient errors within original budgets", c do
     alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
 
-    for {mode, category, calls} <- [
-          {"401", :model_account_forbidden, 1},
-          {"quota", :model_quota_exhausted, 1},
-          {"429", :model_rate_limited, 2},
-          {"503", :model_service_unavailable, 2}
-        ] do
-      receipt = Path.join(c.root, "attempts-#{mode}.json")
+    cases = [
+      {"401", :model_account_forbidden, 1},
+      {"quota", :model_quota_exhausted, 1},
+      {"unauthorized", :model_account_forbidden, 1},
+      {"usageLimitExceeded", :model_quota_exhausted, 1},
+      {"rateLimitExceeded", :model_rate_limited, 2},
+      {"serverOverloaded", :model_service_unavailable, 2},
+      {"internalServerError", :model_service_unavailable, 2},
+      {"badRequest", :unclassified, 1},
+      {"other", :unclassified, 1},
+      {"429", :model_rate_limited, 2},
+      {"503", :model_service_unavailable, 2}
+    ]
+
+    budgets = [{"stage", 2, 4}, {"total", 4, 2}, {"wall", 4, 4}]
+
+    for {mode, category, calls} <- cases, {budget, stage, total} <- budgets do
+      receipt = Path.join(c.root, "attempts-#{mode}-#{budget}.json")
       evidence = receipt <> ".evidence"
       File.mkdir_p!(evidence)
       settings = %{c.settings | model_command: "python3 #{c.binary} #{c.root}/attempt-#{mode}.json #{mode}"}
-      {:ok, recovery} = Recovery.settings(%{"enabled" => true, "stage_attempts" => 2, "max_agent_attempts" => 2})
+      {:ok, recovery} = Recovery.settings(%{"enabled" => true, "stage_attempts" => stage, "max_agent_attempts" => total, "max_elapsed_ms" => 10_000})
       settings = Map.put(settings, :recovery, recovery)
       # The execution command is part of the binding; independently authorize this fixture.
       {:ok, service} = ModelServices.snapshot(settings, "reviewing", :reviewer, "fixture")
@@ -297,6 +386,17 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       settings = %{settings | model_services: registry}
       {:ok, service} = ModelServices.snapshot(settings, "reviewing", :reviewer, "fixture")
       started = DateTime.to_iso8601(DateTime.utc_now())
+      {:ok, start_time, _} = DateTime.from_iso8601(started)
+      clock = :atomics.new(1, [])
+      :atomics.put(clock, 1, DateTime.to_unix(start_time, :millisecond))
+      parent = self()
+
+      agent = fn workspace, prompt, issue, options ->
+        send(parent, {:attempt_options, options})
+        result = ModelServices.run(workspace, prompt, issue, options)
+        :atomics.add(clock, 1, if(budget == "wall", do: 10_000, else: 100))
+        result
+      end
 
       File.write!(
         receipt,
@@ -312,18 +412,38 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
         services: %{"reviewer" => service},
         models: %{reviewer: "gpt-test"},
         limit: 0,
-        opts: []
+        opts: [agent: agent, now_ms: fn -> :atomics.get(clock, 1) end]
       }
 
-      assert {:error, {:model_call_failed, ^category}} = Attempts.run(context, :reviewer, "review", fn -> :ok end)
+      failure =
+        if category == :unclassified do
+          {:turn_failed, %{"codexErrorInfo" => mode, "message" => "protocol failure"}}
+        else
+          {:model_call_failed, category}
+        end
+
+      expected = if budget == "wall" or (budget == "total" and calls == 2), do: :mvp_recovery_resource_exhausted, else: failure
+      assert {:error, ^expected} = Attempts.run(context, :reviewer, "review", fn -> :ok end)
       data = Receipt.read(receipt)
-      assert data["recovery"]["agent_attempts"] == calls
+      assert data["recovery"]["agent_attempts"] == if(budget == "wall", do: 1, else: calls)
       assert data["recovery"]["started_at"] == started
       assert Enum.all?(data["recovery"]["events"], &(&1["outcome"] != "passed"))
+      assert_receive {:attempt_options, first_options}
+      assert first_options[:wall_timeout_ms] == 10_000
+      assert first_options[:model_service] == service
+      assert first_options[:read_only]
+
+      if calls == 2 and budget != "wall" do
+        assert_receive {:attempt_options, next_options}
+        assert next_options[:wall_timeout_ms] == 9900
+        assert next_options[:model_service] == service
+      end
+
+      refute_receive {:attempt_options, _}, 0
 
       for path <- Path.wildcard(Path.join(evidence, "agent-attempt-*/outcome.json")) do
         outcome = File.read!(path)
-        assert outcome =~ Atom.to_string(category)
+        assert outcome =~ if(category == :unclassified, do: mode, else: Atom.to_string(category))
         refute outcome =~ "synthetic-route-reviewer"
       end
     end
@@ -344,9 +464,12 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     import sys, os, json, pathlib, hashlib, re
     trace, mode = sys.argv[1:]
     home = os.environ['CODEX_HOME']
+    credential = os.environ.get('SYMPHONY_MODEL_KEY')
+    credential = credential.encode() if credential else pathlib.Path(home, 'auth.json').read_bytes()
     data = {'home': home, 'config': pathlib.Path(home, 'config.toml').read_text(),
-            'credential_hash': hashlib.sha256(os.environ['SYMPHONY_MODEL_KEY'].encode()).hexdigest(),
+            'credential_hash': hashlib.sha256(credential).hexdigest(),
             'base_url_environment': os.environ.get('OPENAI_BASE_URL'), 'requests': []}
+    turns = 0
     def write_trace(): pathlib.Path(trace).write_text(json.dumps(data))
     def send(obj): print(json.dumps(obj), flush=True)
     for line in sys.stdin:
@@ -362,8 +485,9 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                       'nextCursor': 'page-two' if cursor is None or mode == 'cycle' else None}})
         elif method == 'environment/status': send({'id': rid, 'result': {'status': 'unknown'}})
         elif method == 'environment/info': send({'id': rid, 'result': {'cwd': 'file:///workspace'}})
-        elif method == 'thread/start': send({'id': rid, 'result': {'thread': {'id': 'thread'}}})
+        elif method == 'thread/start': send({'id': rid, 'result': {'thread': {'id': 'thread', 'model': 'gpt-configured'}}})
         elif method == 'turn/start':
+            turns += 1
             send({'id': rid, 'result': {'turn': {'id': 'turn'}}})
             if mode == 'error':
                 print('error ' + os.environ['SYMPHONY_MODEL_KEY'], file=sys.stderr, flush=True)
@@ -382,6 +506,9 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                     status = 'failed'
                     info = 'usageLimitExceeded' if terminal_mode == 'quota' else {'httpConnectionFailed': {'httpStatusCode': int(terminal_mode)}}
                     error = {'message': 'failure ' + os.environ['SYMPHONY_MODEL_KEY'], 'codexErrorInfo': info, 'additionalDetails': None}
+                elif terminal_mode in ('unauthorized', 'usageLimitExceeded', 'rateLimitExceeded', 'serverOverloaded', 'internalServerError', 'badRequest', 'other'):
+                    status = 'failed'
+                    error = {'message': 'protocol failure', 'codexErrorInfo': terminal_mode}
                 elif terminal_mode == 'interrupted': status = 'interrupted'
                 elif terminal_mode == 'malformed-turn': status = 'inProgress'
                 elif terminal_mode in ('completed-error', 'legacy-error'):
@@ -390,6 +517,8 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                 if terminal_mode == 'null-turn': turn = None
                 elif terminal_mode == 'missing-status': turn = {'id': 'turn'}
                 params = {'threadId': 'thread', 'turn': turn}
+                if mode == 'telemetry' and turns == 1: params['actualModel'] = 'gpt-unconfirmed'
+                elif mode == 'telemetry' and turns == 2: params['actualModel'] = {'invalid': 'gpt-invalid'}
                 if terminal_mode == 'bad-params': params = []
                 elif terminal_mode == 'legacy-error': params = {'error': error}
                 send({'method': 'turn/completed', 'params': params})

@@ -405,6 +405,22 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert ModelServices.failure_reason({:turn_failed, %{"codexErrorInfo" => "unauthorized"}}) ==
              {:model_call_failed, :model_account_forbidden}
 
+    for {info, expected} <- [
+          {"usageLimitExceeded", :model_quota_exhausted},
+          {"rateLimitExceeded", :model_rate_limited},
+          {"serverOverloaded", :model_service_unavailable},
+          {"internalServerError", :model_service_unavailable}
+        ],
+        kind <- [:turn_failed, :response_error] do
+      assert ModelServices.failure_reason({kind, %{"codexErrorInfo" => info}}) == {:model_call_failed, expected}
+    end
+
+    for info <- ~w(contextWindowExceeded sessionBudgetExceeded flexUnavailable cyberPolicy misalignmentPolicyViolation tooManyDenials badRequest threadRollbackFailed sandboxError other unknown),
+        kind <- [:turn_failed, :response_error] do
+      reason = {kind, %{"codexErrorInfo" => info}}
+      assert ModelServices.failure_reason(reason) == reason
+    end
+
     rpc = %{"code" => -32_603, "codexErrorInfo" => %{"httpConnectionFailed" => %{"httpStatusCode" => 403}}}
     assert ModelServices.failure_reason({:response_error, rpc}) == {:model_call_failed, :model_account_forbidden}
     unknown = %{"codexErrorInfo" => %{"other" => %{"detail" => "unsupported"}}}

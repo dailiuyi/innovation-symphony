@@ -242,7 +242,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         {:ok,
          %{
-           actual_model: Process.get({__MODULE__, turn_state.port, :actual_model}),
+           # Supported Codex Turn messages expose no actual-model telemetry.
+           # Thread.model is configured state, not confirmation of inference.
+           actual_model: nil,
            result: :turn_completed,
            output_text: output_text,
            session_id: session_id,
@@ -739,8 +741,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_turn(port, thread_id, options) do
-    Process.delete({__MODULE__, port, :actual_model})
-
     params = %{
       "threadId" => thread_id,
       "input" => [
@@ -839,15 +839,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp observe_actual_model(port, %{"params" => %{"actualModel" => actual}}) do
-    if ModelServices.identifier?(actual), do: Process.put({__MODULE__, port, :actual_model}, actual)
-  end
-
-  defp observe_actual_model(_, _), do: :ok
-
   defp handle_decoded_incoming(port, on_message, %{"method" => "turn/completed"} = payload, raw, state) do
-    observe_actual_model(port, payload)
-
     case completion_outcome(payload) do
       :ok ->
         emit_turn_event(on_message, :turn_completed, payload, raw, port, payload)
@@ -1429,7 +1421,6 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp stop_port(port) when is_port(port) do
     Process.delete({__MODULE__, port})
-    Process.delete({__MODULE__, port, :actual_model})
 
     case :erlang.port_info(port) do
       :undefined ->

@@ -544,6 +544,8 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp codex_error_code("usageLimitExceeded"), do: "insufficient_quota"
+  defp codex_error_code("rateLimitExceeded"), do: "rate_limit_exceeded"
+  defp codex_error_code(info) when info in ["serverOverloaded", "internalServerError"], do: "server_error"
   defp codex_error_code("unauthorized"), do: "unauthorized"
   defp codex_error_code(_), do: nil
 

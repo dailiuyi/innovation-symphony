@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
 
   @spec read(Path.t(), map(), (String.t() -> String.t() | nil)) :: {:ok, map()} | {:error, atom()}
   def read(home, sandbox, environment) do
-    with {:ok, config} <- read_config(Path.join(home, "config.toml")),
+    with {:ok, config} <- effective_config(home, sandbox),
          {:ok, provider} <- provider(config),
          {:ok, reference} <- reference(provider, home, environment),
          parameters = parameters(config, sandbox),
@@ -29,6 +29,11 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
       _ -> {:error, :legacy_model_service_migration_required}
     end
   end
+
+  # Legacy ExecutionSandbox generated its own config; auth_home supplied auth.json
+  # only. Importing that home's provider, profiles or effort changes old execution.
+  defp effective_config(_home, %{enabled: true}), do: {:ok, %{}}
+  defp effective_config(home, _sandbox), do: read_config(Path.join(home, "config.toml"))
 
   defp read_config(path) do
     case File.read(path) do
