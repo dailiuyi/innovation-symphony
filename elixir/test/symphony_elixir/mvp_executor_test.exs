@@ -40,35 +40,48 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
 
   test "revoked reviewer service stops a checked candidate before Review or publish" do
     alias SymphonyElixir.ModelServicesFixture, as: Fixture
-    alias SymphonyElixir.Mvp.Intake
-    context = execution_context!()
-    System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
-    System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
 
-    on_exit(fn ->
-      System.delete_env("GH12_CODER_KEY")
-      System.delete_env("GH12_REVIEWER_KEY")
-      File.rm_rf!(context.root)
-    end)
+    for revocation <- [:credential, :workflow] do
+      context = execution_context!()
+      System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
+      System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
 
-    services = Fixture.settings(Path.join(context.root, "state"))
-    settings = Map.merge(services, Map.put(check_settings([["true"]]), :max_rework, 1))
-    {:ok, selected} = Intake.resolve_comments([], services)
+      on_exit(fn ->
+        System.delete_env("GH12_CODER_KEY")
+        System.delete_env("GH12_REVIEWER_KEY")
+        File.rm_rf!(context.root)
+      end)
 
-    agent = fn workspace, _, _, opts ->
-      assert opts[:model_service] == selected.services["coder"]
-      File.write!(Path.join(workspace, "candidate.txt"), "checked candidate")
-      System.delete_env("GH12_REVIEWER_KEY")
-      {:ok, %{output_text: "done"}}
+      services = Fixture.settings(Path.join(context.root, "state"))
+      Workflow.set_workflow_file_path(services.workflow_path)
+      assert :ok = WorkflowStore.force_reload()
+      settings = Map.merge(services, Map.put(check_settings([["true"]]), :max_rework, 1))
+      {:ok, selected} = Intake.resolve_comments([], services)
+
+      agent = fn workspace, _, _, opts ->
+        assert opts[:model_service] == selected.services["coder"]
+        File.write!(Path.join(workspace, "candidate.txt"), "checked candidate")
+
+        if revocation == :credential do
+          System.delete_env("GH12_REVIEWER_KEY")
+        else
+          revoked = put_in(services.model_services, ["catalog", "reviewing", "models", "gpt-test", "disabled"], true)
+          Fixture.write_authority!(%{services | model_services: revoked})
+          assert :ok = WorkflowStore.force_reload()
+        end
+
+        {:ok, %{output_text: "done"}}
+      end
+
+      opts = executor_opts(context, agent: agent, publish: fn _, _, _, _, _, _, _ -> flunk("must not publish without review") end)
+      error = if revocation == :credential, do: :model_credential_missing, else: :model_disabled
+      assert {:error, ^error} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, opts)
+      receipt = Receipt.read(context.receipt)
+      assert receipt["status"] == "blocked"
+      assert receipt["services"] == selected.services
+      assert List.last(receipt["rounds"])["model_requests"]["coder"]["actual_model"] == nil
+      assert receipt["review"] == nil
     end
-
-    opts = executor_opts(context, agent: agent, publish: fn _, _, _, _, _, _, _ -> flunk("must not publish without review") end)
-    assert {:error, :model_credential_missing} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, opts)
-    receipt = Receipt.read(context.receipt)
-    assert receipt["status"] == "blocked"
-    assert receipt["services"] == selected.services
-    assert List.last(receipt["rounds"])["model_requests"]["coder"]["actual_model"] == nil
-    assert receipt["review"] == nil
   end
 
   test "zero rework persists complete service provenance and unknown usage without enabling recovery" do

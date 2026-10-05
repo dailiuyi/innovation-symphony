@@ -444,6 +444,17 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     models = %{coder: "gpt-6.1-sol", reviewer: "gpt-6.1-sol"}
     settings = Map.merge(settings, %{state_dir: Path.join(root, "state"), model_services: nil, allowed_models: ["gpt-6.1-sol"]})
 
+    settings =
+      Map.merge(settings, %{
+        workflow_path: Path.join(root, "MODEL-WORKFLOW.md"),
+        model_command: "codex app-server",
+        coder_model: "gpt-6.1-sol",
+        reviewer_model: "gpt-6.1-sol",
+        allowed_actors: ["owner"]
+      })
+
+    SymphonyElixir.ModelServicesFixture.write_authority!(settings)
+
     models =
       if with_services do
         System.put_env("GH12_TIMEOUT_KEY", "synthetic-timeout-key")

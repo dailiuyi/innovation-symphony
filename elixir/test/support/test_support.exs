@@ -378,7 +378,30 @@ defmodule SymphonyElixir.ModelServicesFixture do
         acc
       end)
 
-    %{settings | model_services: registry}
+    settings = settings |> Map.put(:model_services, registry) |> Map.put(:workflow_path, Path.join(root, "MODEL-WORKFLOW.md"))
+    write_authority!(settings)
+    settings
+  end
+
+  def write_authority!(settings) do
+    config = %{
+      "tracker" => %{"kind" => "linear", "api_key" => "synthetic", "project_slug" => "fixture", "required_labels" => ["ready"]},
+      "workspace" => %{"root" => settings.state_dir <> "-workspaces"},
+      "codex" => %{"command" => settings.model_command},
+      "mvp" => %{
+        "enabled" => true,
+        "coder_model" => settings.coder_model,
+        "reviewer_model" => settings.reviewer_model,
+        "allowed_models" => settings.allowed_models,
+        "allowed_actors" => settings.allowed_actors,
+        "checks" => [["true"]],
+        "state_dir" => settings.state_dir,
+        "model_services" => Map.get(settings, :model_services)
+      }
+    }
+
+    File.mkdir_p!(Path.dirname(settings.workflow_path))
+    File.write!(settings.workflow_path, "---\n" <> Jason.encode!(config) <> "\n---\nfixture")
   end
 
   def proof(role) do

@@ -573,6 +573,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       {:ok, service} = ModelServices.snapshot(settings, "reviewing", :reviewer, "fixture")
       {:ok, registry} = ModelCatalog.attest(settings.model_services, service, F.proof(:reviewer))
       settings = %{settings | model_services: registry}
+      F.write_authority!(settings)
       {:ok, service} = ModelServices.snapshot(settings, "reviewing", :reviewer, "fixture")
       started = DateTime.to_iso8601(DateTime.utc_now())
       {:ok, start_time, _} = DateTime.from_iso8601(started)

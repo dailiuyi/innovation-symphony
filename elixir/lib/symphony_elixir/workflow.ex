@@ -28,9 +28,10 @@ defmodule SymphonyElixir.Workflow do
   end
 
   @type loaded_workflow :: %{
-          config: map(),
-          prompt: String.t(),
-          prompt_template: String.t()
+          optional(:path) => Path.t(),
+          required(:config) => map(),
+          required(:prompt) => String.t(),
+          required(:prompt_template) => String.t()
         }
 
   @spec current() :: {:ok, loaded_workflow()} | {:error, term()}
@@ -53,7 +54,7 @@ defmodule SymphonyElixir.Workflow do
   def load(path) when is_binary(path) do
     case File.read(path) do
       {:ok, content} ->
-        parse(content)
+        with {:ok, workflow} <- parse(content), do: {:ok, Map.put(workflow, :path, Path.expand(path))}
 
       {:error, reason} ->
         {:error, {:missing_workflow_file, path, reason}}

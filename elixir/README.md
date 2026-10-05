@@ -424,6 +424,9 @@ The optional `mvp.model_services` registry separates coder/reviewer provider, mo
 parameters, connection and credential references. Local management uses
 `mix mvp.models`; persisted state overrides the workflow seed and is loaded for
 new claims. Tasks retain full service snapshots through retry and audited recovery.
+Each invocation reads current authorization from the task's bound workflow and
+original persistent registry; revoked access or unreadable authorization stops the
+call without replacing frozen routing or using the workflow store's stale cache.
 See [MODEL_SERVICES](../docs/MODEL_SERVICES.md) for schema, discovery versus
 capability evidence, administrator commands, legacy migration and rollback.
 Terminal historical receipts can be enriched with `mix mvp.models migrate` using

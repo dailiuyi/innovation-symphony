@@ -56,5 +56,6 @@ python -m http.server 43221 --bind 127.0.0.1 --directory prototypes
 后续继续逐步确认需求，架构建议不自动视为已批准实现。项目从博客讨论中独立出来；不会继承博客的 ready 队列、凭据、固定 Reviewer 或部署授权。
 
 GH-12 在原 Elixir 执行器中增加 coder/reviewer 服务预设、账号绑定的 GPT 目录及
-持久默认管理；领取冻结完整配置。评论兼容、后台入口与迁移边界见
+持久默认管理；领取冻结完整配置，每次调用仍核验原 WORKFLOW 的当前授权。
+评论兼容、后台入口与迁移边界见
 [角色模型服务](docs/MODEL_SERVICES.md)。本轮离线测试不代表真实 GPT、安装或交付验收。

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Mvp.Config do
 
   @type settings :: %{
           configured: boolean(),
+          workflow_path: Path.t() | nil,
           enabled: boolean(),
           coder_model: String.t() | nil,
           reviewer_model: String.t() | nil,
@@ -41,7 +42,10 @@ defmodule SymphonyElixir.Mvp.Config do
              workflow.config,
              workflow_dir
            ) do
-      {:ok, Map.put(settings, :configured, Map.has_key?(workflow.config, "mvp"))}
+      {:ok,
+       settings
+       |> Map.put(:configured, Map.has_key?(workflow.config, "mvp"))
+       |> Map.put(:workflow_path, Map.get(workflow, :path))}
     end
   end
 

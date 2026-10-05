@@ -194,3 +194,55 @@ AppServer 的实际 turn/start 仍采用冻结配置。另覆盖原生 API 地�
 以及 Linear 本地/SSH worker。本轮中途还完整运行过恢复的五份改动，candidate
 退出 0（725 项、719 通过、6 跳过），证据 `.check-evidence/candidate-vg2arg_d/`；
 此记录早于补充的 `-c=...` 与隔离诊断回归，不代替最终代码的检查结果。
+
+## 2026-10-06：在途任务 WORKFLOW 撤权修复
+
+本轮只修复 GH12-A10 的当前授权读取：保留领取时 context 和完整执行快照，绑定
+原 WORKFLOW 绝对路径，每次调用直接重新读取并校验当前授权。原 state_dir 的
+持久注册表优先；没有持久文件时用当前内嵌注册表和当前旧白名单，读取失败不回退
+到领取时设置或 WorkflowStore 的旧缓存。配置损坏的错误不携带原始文件内容。
+角色默认、版本、连接、参数、凭据引用、命令、Review 权限和恢复预算不随之替换。
+
+新回归实际使用 WorkflowStore 成功重载同一文件，分别撤销两个角色的非默认预设、
+禁用型号、删除/过期能力证据，以及删除旧路径中非默认型号的白名单权限；保留原
+context，断言下一次编码、Review、只读诊断或重试拒绝且不调用执行适配器。
+另覆盖默认与路由变化、全局切换到其他 WORKFLOW、原持久路径优先，以及缺失、
+损坏、禁用和缺少绑定的授权。执行器回归在编码和正式检查后撤销 reviewer，确认
+不运行 Review、不发布；审计恢复在准备原 context 后撤权，同样停止并保留快照。
+现有各恢复入口、外部管理入口、评论、目录、路由、结构和候选 SHA 绑定由完整门禁
+复验。此前仅替换内存设置的撤权测试改为修改真实授权文件，保持原拒绝断言。
+
+定向自检：授权套件 6 项通过；路由套件 21 项通过；执行器/审计恢复/中断恢复
+103 项通过。初次迭代出现旧夹具仅改内存和漏写新命令能力证据的失败，修复夹具后
+重跑通过；没有删去失败用例、改写控制器证据或降低检查政策。
+
+真实 GPT 推理未执行：本环境没有外部服务与真实凭据。内核预检退出 2，原始错误
+为 `execution_sandbox: cgroup v2 is required`；Python 沙盒 CLI 两项通过，两项
+受管内核集成跳过，未启用集成开关。GH12-A04 真实双角色推理、GH12-A11 准确候选
+内核隔离及控制器独立 Review 仍需外部验收；未使用旧候选证据替代本次验证。
+本轮只保存本地改动，不提交、推送、创建 PR、合并、安装、部署或升级服务。
+
+首轮完整 candidate 记录保留于 `.check-evidence/candidate-jlguwlfb/`：format、
+specs.check、严格 Credo、732 项测试（726 通过、0 失败、6 跳过，覆盖率 100%）
+及 escript.build 通过；Dialyzer 因新增 workflow_path 未同步 settings 类型声明
+产生 102 项连锁告警，整体退出 10。已补齐该字段类型，最终代码重新完整运行门禁；
+首轮结果不代替最终代码验证，未添加 ignore 或修改检查政策。
+
+| 本轮最终检查 | 结果 |
+| --- | --- |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出 0；format、specs.check、严格 Credo、覆盖率测试、Dialyzer、escript.build 全部通过。733 项中 727 通过、0 失败、6 跳过、0 排除、0 无效；覆盖率 100%，Dialyzer 0 错误。 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出 0；669 项中 663 通过、0 失败、6 跳过、0 排除、0 无效。 |
+| `ERL_FLAGS='+S 2:2' MIX_ENV=dev MIX_BUILD_PATH=/workspace/.local/gh12-build mix dialyzer --format short`（补充诊断） | 退出 0；类型声明修正后 0 错误，不替代最终冻结门禁。 |
+| `python3 -B -m unittest scripts.tests.test_execution_sandbox -v` | 退出 0；2 项 CLI 回归通过，2 项受管内核集成跳过。 |
+| `bash scripts/execution_sandbox.sh --check` | 退出 2；`execution_sandbox: cgroup v2 is required`，内核集成未执行。 |
+| `git diff --check` | 通过。 |
+
+最终 candidate 证据为 `.check-evidence/candidate-gsn038yf/`，baseline 为
+`.check-evidence/baseline-n98i2m9j/`，两者 policy_changes 均为空。baseline 在
+类型声明修正前取得源码快照，运行逻辑与最终代码相同；最终 candidate 使用修正
+后的类型和全部新增回归重新验证。两套 Elixir 测试的 6 项跳过仍为未启用 live
+开关的 GitHub、GitLab、Jira、Asana 和 Linear 本地/SSH worker E2E。
+
+以上为未提交工作树的本地结果；检查报告中的 candidate_sha 仍为原 Git HEAD，
+不代表包含修复的最终提交。控制器另行固定完整候选、执行完整验证和独立 Review。
+未取得本轮真实 GPT 推理或受管内核证据，不能据此宣称 GH-12 全部验收完成。

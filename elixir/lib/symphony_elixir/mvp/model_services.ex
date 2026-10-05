@@ -4,8 +4,11 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   import Kernel, except: [binding: 1]
 
   alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Config, as: RuntimeConfig
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Mvp.Config
   alias SymphonyElixir.Mvp.{LegacyModelService, ModelCatalog}
-  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.{PathSafety, Workflow}
 
   @roles ~w(coder reviewer)
   @preset_keys ~w(version provider adapter model parameters connection credential_ref)
@@ -369,11 +372,27 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
       with :ok <- validate_snapshot(service),
            :ok <- credential_boundary(service, [Map.get(context, :workspace), Map.get(context, :evidence)]),
-           {:ok, registry} <- load(path(context.settings), Map.get(context.settings, :model_services)),
-           :ok <- current_permission(registry, service, context.settings),
+           {:ok, current} <- current_authorization(context.settings),
+           :ok <- current_permission(current.model_services, service, current),
            :ok <- credential_ready(service) do
         {:ok, [model: service["model"], model_service: service]}
       end
+    end
+  end
+
+  defp current_authorization(settings) do
+    # Read the task's original workflow directly: the store deliberately keeps
+    # last-known-good settings on reload failure, which is unsafe for revocation.
+    with workflow_path when is_binary(workflow_path) <- Map.get(settings, :workflow_path),
+         {:ok, workflow} <- Workflow.load(workflow_path),
+         {:ok, runtime} <- Schema.parse(workflow.config),
+         :ok <- RuntimeConfig.validate_settings(runtime),
+         {:ok, %{enabled: true} = current} <- Config.settings(workflow, Path.dirname(workflow_path)),
+         # Keep the original persistent authority location even if state_dir changes.
+         {:ok, registry} <- load(path(settings), get_in(workflow.config, ["mvp", "model_services"])) do
+      {:ok, Map.put(current, :model_services, registry)}
+    else
+      _ -> {:error, :model_service_authorization_unavailable}
     end
   end
 

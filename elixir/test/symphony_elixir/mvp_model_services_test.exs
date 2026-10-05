@@ -368,6 +368,7 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:error, :invalid_model_service_snapshot} = ModelServices.validate_snapshot(Map.put(service, "credential_identity", "bad"))
     assert {:error, :invalid_model_service_snapshot} = ModelServices.validate_snapshot(Map.put(service, "capability_evidence", []))
     context = %{settings: %{s | model_services: nil}, services: %{"coder" => service}}
+    F.write_authority!(context.settings)
     assert {:error, :model_services_not_configured} = ModelServices.options(context, :coder)
     assert {:error, :invalid_model_services} = ModelServices.validate(put_in(registry, ["presets", "coding", "version"], 1.0))
     unverified = put_in(s, [:model_services, "validations"], %{})
@@ -631,9 +632,11 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:ok, options} = ModelServices.options(context, :coder)
     assert options[:model_service] == service
     assert {:ok, _} = ModelServices.options(put_in(context.settings.model_services, nil), :coder)
-    assert {:error, :model_service_revoked} = ModelServices.options(put_in(context.settings.allowed_models, []), :coder)
+    F.write_authority!(%{s | allowed_models: ["other-model"], coder_model: "other-model", reviewer_model: "other-model"})
+    assert {:error, :model_service_revoked} = ModelServices.options(context, :coder)
     disabled = put_in(context.settings.model_services["disabled_models"], ["gpt-test"])
-    assert {:error, :model_disabled} = ModelServices.options(disabled, :coder)
+    F.write_authority!(disabled.settings)
+    assert {:error, :model_disabled} = ModelServices.options(context, :coder)
     assert {:ok, env} = ModelServices.freeze(models, s, environment: fn name -> if name == "OPENAI_API_KEY", do: "synthetic", else: nil end)
     assert env["coder"]["credential_ref"] == "env:OPENAI_API_KEY"
     assert :ok = ModelServices.credential_boundary(service, [nil, Path.join(root, "workspace")])

@@ -65,6 +65,44 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
     assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
   end
 
+  test "audited recovery refuses embedded revocation reloaded after its context was prepared" do
+    alias SymphonyElixir.ModelServicesFixture, as: Fixture
+    alias SymphonyElixir.Mvp.Intake
+    System.put_env("GH12_CODER_KEY", "recovery-synthetic-coder")
+    System.put_env("GH12_REVIEWER_KEY", "recovery-synthetic-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    context = context!()
+    settings = Map.merge(settings(), Fixture.settings(Path.join(context.root, "state")))
+    Workflow.set_workflow_file_path(settings.workflow_path)
+    assert :ok = WorkflowStore.force_reload()
+    {:ok, selected} = Intake.resolve_comments([], settings)
+
+    assert {:error, :mvp_recovery_resource_exhausted} =
+             Executor.run(context.workspace, context.issue, settings, selected, context.receipt, options(context, :dirty_repair))
+
+    prepare_gh5_history!(context, settings)
+    {resume, auth} = resume_inputs!(context, settings, "embedded-revoked")
+
+    opts =
+      resume.opts
+      |> Keyword.put(:agent, fn _, _, _, _ -> flunk("revoked model must not start") end)
+      |> Keyword.put(:publish, fn _, _, _, _, _, _, _ -> flunk("must not publish") end)
+
+    resume = %{resume | models: Map.take(selected, [:coder, :reviewer]), services: selected.services, opts: opts}
+    revoked = put_in(settings.model_services, ["catalog", "coding", "models", "gpt-test", "disabled"], true)
+    Fixture.write_authority!(%{settings | model_services: revoked})
+    assert :ok = WorkflowStore.force_reload()
+    assert {:error, :model_disabled} = Executor.resume_recovery(resume, digest(File.read!(context.receipt)), auth)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "blocked"
+    assert data["services"] == selected.services
+  end
+
   test "audited resume continues a synthetic GH5-shaped dirty coder receipt and adds only wall time" do
     context = context!()
     sandbox = sandbox_profile!(context)
