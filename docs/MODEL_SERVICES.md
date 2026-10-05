@@ -73,7 +73,10 @@ Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
 登录采用内置 OpenAI provider；旧 API 默认地址在领取时解析为
 `https://chatgpt.com/backend-api/codex` 并冻结。ChatGPT OAuth 不发往 API key 的
 `api.openai.com/v1` 路由或其他连接。环境变量 API key 保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
-`codex.command`，冻结为执行适配身份，评论无法设置它。每次 AppServer 使用独立
+`codex.command`，冻结为执行适配身份，评论无法设置它。含 `--config`/`-c`、
+`--profile`/`-p`、`--model`/`-m` 或 CODEX_HOME、provider/base_url/env_key
+覆盖及 shell 变量/命令展开的启动命令在冻结与启动前拒绝（包括看似无害的 config 参数），避免 Codex
+命令行优先级覆盖角色路由；改用预设字段。受管进程清除继承的 OPENAI_BASE_URL。每次 AppServer 使用独立
 0700 主机配置目录和进程环境；沙盒中的模型主机目录包含隔离环境定义，凭据不进任务
 执行环境。既有安全功能开关及 reviewer 的内核只读挂载保留，不修改共享 Codex 配置。
 
@@ -142,14 +145,57 @@ provider/model、有效参数、连接、适配身份、执行命令、凭据引
 身份绑定比较完整快照，不能仅比较模型名。外部恢复对**新完整快照**不重新解析评论，
 仍检查 Issue 范围、ready、原资源/检查/审计合同及当前访问条件。
 
-未配置新注册表的工作流和旧评论无需修改，领取时标记 legacy_migration，冻结旧模型、
-现有 Codex 命令、旧参数 high，以及原 CODEX_API_KEY / OPENAI_API_KEY 环境引用
-或控制器 auth_home，能力证据为未知。此兼容路径不宣称账号的所有 GPT 都已验证，
-仍使用旧 allowed_models；已有冻结兼容任务不会因启用新注册表改变来源，管理员可用
-注册表可选字段 disabled_models 明确禁用历史型号。新领取采用上述严格验证。历史回执没有连接/凭据/能力信息时不补造快照：保留旧外部审计比较，
-受管执行适配器明确拒绝缺失完整服务快照的真实推理。必须通过操作者审计记录取得的
-旧运行配置及新验证证据后显式迁移，不能用今天的默认解释历史，也不能手改回执绕过
-已有审计/预算规则。无法取回历史配置时保持停点。
+未配置新注册表的工作流和旧评论沿用白名单，领取时标记 legacy_migration，冻结旧
+模型、现有 Codex 命令，以及控制器 CODEX_HOME（隔离时 auth_home）中 config.toml
+的有效 model_provider、provider base_url/wire_api/env_key 和 model_reasoning_effort。
+自定义 HTTPS Responses 渠道及环境凭据引用保留；内置 OpenAI 仍按旧
+CODEX_API_KEY / OPENAI_API_KEY 或 auth_home 取认证，支持 OPENAI_BASE_URL。
+普通非隔离配置未指定 effort 时不强加 high；原隔离路径缺省 high 保留。能力证据
+仍未知，不宣称旧白名单已完成真实验证。已冻结的地址/参数不再读取后来变动的
+config.toml。管理员仍可用 disabled_models 禁用历史型号。
+
+兼容读取仅接受可无歧义映射的单行标量 TOML（字符串、布尔、非负整数和普通表）；
+profile、复杂/重复赋值、额外 provider 参数/headers、未知推理参数、非 Responses
+协议、非 HTTPS 地址等返回 legacy_model_service_migration_required。不能用固定
+地址或 high 冒充未知有效值。遇到停点，由管理员从旧版本、原启动参数和原配置核对
+有效值，按本页示例将连接、env_key→credential_ref、model_reasoning_effort→parameters
+映射成有版本的预设；无法表示的额外参数继续保持停点。登记全部目标型号，再分别
+执行 verify 或导入已核对的 attest 证据，最后以当前 revision 保存两个角色默认。
+历史任务不得使用这一新默认重新解释。
+
+### 历史回执的本地审计迁移
+
+没有 services 的历史回执默认停止受管推理。资料齐全时提供本地入口：
+
+```text
+mix mvp.models migrate WORKFLOW.md /controlled/state/RECEIPT.json MIGRATION.json
+```
+
+此入口只补充冻结信息，不派发任务或恢复执行。回执须为配置 state_dir 中的普通文件，
+处于 blocked 或 awaiting_external，且保留非空原 rounds（没有历史轮次或原身份资料
+的回执继续停点，不能凭今日默认补造）。操作者确认原任务执行者已停止，按既有
+OperatorRecheck 合同提供 id、authorization、runtime_version（操作者运行版本完整
+SHA）、command（实际管理员入口 argv）、predecessor、legacy_closures。追加字段：
+
+- receipt_sha256：操作前回执原始字节 SHA-256；变化后请求作废。
+- historical_config：仅有 path、sha256，指向操作者核对的脱敏历史有效配置 JSON。
+  JSON 顶层 coder/reviewer，各自严格含 provider、adapter、model、parameters、
+  connection、credential_ref、command；不得含秘密或按新默认生成。
+- services：coder/reviewer 两个完整 ModelServices.snapshot 输出。必须与上述历史
+  有效字段及原回执 models 一致，source 为 historical_migration:<id>，并且当前目录、
+  账号指纹和独立角色验证有效；preset ID/version 是这次明确登记的受控身份。
+
+操作者通过 ModelServices.snapshot(settings, id, role, source) 取得完整安全快照，
+核对历史字段后填入请求，不直接编辑原回执。新证据描述当前可继续执行的能力，
+不追认历史调用已验证。校验失败不改回执。写入或进程中断保留原审计链及锁，
+需由操作者核查，不能删锁重领或继续推理。成功在原执行审计互斥下保存 receipt-before、
+authorization、completion 和审计链 head，只添加顶层 services、model_service_migration、
+operator_recheck 及更新时间；候选/base、旧 rounds、不可变外部 handoff、原证据、
+开始时间、用量、次数和预算均保留。恢复入口通过审计前回执核验旧轮及 handoff 的
+服务映射，不重解析现有评论。真正续跑时，当前执行轮添加本次 services，旧轮、原始回执
+和外部 handoff 的历史副本保持不变。然后使用**原恢复入口**，以新回执摘要和该迁移 id
+作为 predecessor 请求继续；该操作不自动授予续跑或预算扩充。缺少旧有效值、
+授权、证据或当前权限时保持停点。审计文件缺失/变动同样拒绝历史映射。
 
 回滚前暂停新领取、备份注册表和回执，再还原旧代码及原 WORKFLOW；新快照任务保持
 停点，不能在不认识完整配置的旧执行器中自动继续。只改变新领取默认时可用当前
@@ -160,11 +206,16 @@ provider/model、有效参数、连接、适配身份、执行命令、凭据引
 
 模型未知、未验证、参数不支持、协议不兼容、管理员禁用、凭据缺失/失效/变更及证据
 过期在调用前给出具体原因；真实服务端 401/403、429、余额不足、型号不存在和服务
-故障分别分类。限流、暂时服务故障和超时只按原有 stage/总次数/墙钟预算重试，权限
+故障分别分类，包括 TurnError.codexErrorInfo 中的 httpStatusCode 和 usageLimitExceeded。
+turn/completed 的 Turn 必须为 completed 且无 error；failed/interrupted、未知状态或
+格式错误均拒绝，即使此前已输出合法批准或探测 JSON。旧版本省略整个 params 或整个 Turn 的
+通知兼容，显式 null Turn 或省略 Turn 却携带 error 不视为旧版本成功。限流、暂时服务故障和超时只按原有 stage/总次数/墙钟预算重试，权限
 及余额停点不切换模型或服务商。Review 结构错误保留原文并有限重试，不能计为通过。
 
 每次模型尝试记录请求配置和 requested provider/model，明确 actual_model 为服务端
-显式确认值或 null（未知），不把请求值冒充实际值。token/费用缺失仍为未知，不记零。
+显式确认值或 null（未知），不把请求值冒充实际值。token/费用缺失仍为未知，不记零。完整服务任务在 max_rework=0 且 recovery
+关闭时同样保存一轮调用溯源，不依赖返工开关。模型时限沿用任务剩余预算或
+Codex 原 turn_timeout_ms；正式检查仍独立受 check_timeout_ms 限制。
 AppServer 输出、事件和诊断日志对该调用凭据值脱敏，快照仅含引用/指纹。
 
 本轮自动化覆盖评论兼容/恶意输入、角色/账号/连接/参数绑定、并发 AppServer 子进程、

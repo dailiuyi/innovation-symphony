@@ -431,7 +431,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp service_port_env(nil), do: []
 
   defp service_port_env(runtime) do
-    common = [{~c"CODEX_HOME", String.to_charlist(runtime.home)}, {~c"OPENAI_API_KEY", false}, {~c"CODEX_API_KEY", false}]
+    common = [{~c"CODEX_HOME", String.to_charlist(runtime.home)}, {~c"OPENAI_API_KEY", false}, {~c"CODEX_API_KEY", false}, {~c"OPENAI_BASE_URL", false}]
 
     case runtime.credential do
       {:env, name, value} -> common ++ [{String.to_charlist(name), false}, {~c"SYMPHONY_MODEL_KEY", String.to_charlist(value)}]
@@ -839,15 +839,30 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp observe_actual_model(port, payload) do
-    actual = get_in(payload, ["params", "actualModel"])
+  defp observe_actual_model(port, %{"params" => %{"actualModel" => actual}}) do
     if ModelServices.identifier?(actual), do: Process.put({__MODULE__, port, :actual_model}, actual)
   end
 
+  defp observe_actual_model(_, _), do: :ok
+
   defp handle_decoded_incoming(port, on_message, %{"method" => "turn/completed"} = payload, raw, state) do
     observe_actual_model(port, payload)
-    emit_turn_event(on_message, :turn_completed, payload, raw, port, payload)
-    {:ok, state.output_text}
+
+    case completion_outcome(payload) do
+      :ok ->
+        emit_turn_event(on_message, :turn_completed, payload, raw, port, payload)
+        {:ok, state.output_text}
+
+      {:error, {:turn_failed, error}} ->
+        failed_turn(port, on_message, payload, raw, error)
+
+      {:error, {:turn_cancelled, turn}} = error ->
+        emit_turn_event(on_message, :turn_cancelled, payload, raw, port, turn)
+        error
+
+      error ->
+        error
+    end
   end
 
   defp handle_decoded_incoming(port, on_message, %{"method" => "item/completed"} = payload, raw, state) do
@@ -874,6 +889,29 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp handle_decoded_incoming(port, on_message, payload, raw, state) do
     emit_message(on_message, :other_message, %{payload: payload, raw: raw}, metadata_from_message(port, payload))
     continue_receive(port, on_message, state)
+  end
+
+  defp completion_outcome(payload) when not is_map_key(payload, "params"), do: :ok
+  defp completion_outcome(%{"params" => %{"turn" => turn}}), do: turn_outcome(turn)
+
+  defp completion_outcome(%{"params" => %{"error" => error}}) when not is_nil(error),
+    do: {:error, {:turn_failed, error}}
+
+  # Older versions omit the entire Turn; explicit null/malformed Turns fail closed.
+  defp completion_outcome(%{"params" => params}) when is_map(params), do: :ok
+  defp completion_outcome(_), do: {:error, :invalid_turn_completion}
+
+  defp turn_outcome(%{"status" => "completed", "error" => error}) when not is_nil(error),
+    do: {:error, {:turn_failed, error}}
+
+  defp turn_outcome(%{"status" => "completed"}), do: :ok
+  defp turn_outcome(%{"status" => "failed"} = turn), do: {:error, {:turn_failed, turn["error"] || turn}}
+  defp turn_outcome(%{"status" => "interrupted"} = turn), do: {:error, {:turn_cancelled, turn}}
+  defp turn_outcome(_), do: {:error, :invalid_turn_completion}
+
+  defp failed_turn(port, on_message, payload, raw, error) do
+    emit_turn_event(on_message, :turn_failed, payload, raw, port, error)
+    {:error, {:turn_failed, error}}
   end
 
   defp handle_malformed_incoming(port, on_message, raw, state) do

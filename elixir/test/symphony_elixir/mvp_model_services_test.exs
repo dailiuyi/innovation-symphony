@@ -35,6 +35,42 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:ok, ^initial} = Intake.resolve_comments([F.comment(1, "/symphony configs coder=bad", "stranger"), F.comment(2, "> /symphony configs coder=bad")], s)
   end
 
+  test "nondefault presets persist complete role overrides and mixed syntax has deterministic precedence", %{settings: s} do
+    registry =
+      Enum.reduce([{:coder, "reviewing"}, {:reviewer, "coding"}], s.model_services, fn {role, id}, registry ->
+        {:ok, service} = ModelServices.snapshot(%{s | model_services: registry}, id, role, "fixture")
+        {:ok, updated} = ModelCatalog.attest(registry, service, F.proof(role))
+        updated
+      end)
+
+    s = %{s | model_services: registry}
+
+    for assignments <- ["coder=reviewing", "reviewer=coding", "coder=reviewing reviewer=coding"] do
+      assert {:ok, selected} = Intake.resolve_comments([F.comment(10, "/symphony configs " <> assignments)], s)
+
+      for {role, id} <- [{:coder, "reviewing"}, {:reviewer, "coding"}], String.contains?(assignments, "#{role}=") do
+        service = selected.services[Atom.to_string(role)]
+        assert Map.take(service, ~w(version provider adapter model parameters connection credential_ref)) == registry["presets"][id]
+        assert service["id"] == id
+        assert service["source"] == "issue_comment:10:owner:configs"
+      end
+    end
+
+    commands = [F.comment(10, "/symphony configs coder=reviewing reviewer=coding"), F.comment(20, "/symphony configs coder=default")]
+    assert {:ok, selected} = Intake.resolve_comments(commands, s)
+    assert selected.services["coder"]["id"] == "coding"
+    assert selected.services["reviewer"]["id"] == "coding"
+    assert selected.services["reviewer"]["credential_ref"] == "env:GH12_CODER_KEY"
+    assert selected.services["reviewer"]["source"] == "issue_comment:10:owner:configs"
+
+    assert {:ok, selected} = Intake.resolve_comments(commands ++ [F.comment(30, "/symphony models reviewer=gpt-test")], s)
+    assert selected.services["reviewer"]["id"] == "reviewing"
+    assert selected.services["reviewer"]["source"] == "issue_comment:30:owner:models"
+    assert {:ok, selected} = Intake.resolve_comments([F.comment(1, "/symphony models reviewer=gpt-test"), F.comment(2, "/symphony configs reviewer=coding")], s)
+    assert selected.services["reviewer"]["id"] == "coding"
+    assert selected.services["reviewer"]["parameters"] == %{"reasoning_effort" => "medium"}
+  end
+
   test "malformed authorized selections stop intake, including earlier errors followed by defaults", %{settings: s} do
     for body <- [
           "/symphony configs",
@@ -365,6 +401,14 @@ defmodule SymphonyElixir.MvpModelServicesTest do
 
     assert ModelServices.failure_reason({:response_error, %{"code" => "unknown"}}) == {:response_error, %{"code" => "unknown"}}
     assert ModelServices.failure_reason({:turn_failed, %{"error" => "permission denied"}}) == {:turn_failed, %{"error" => "permission denied"}}
+
+    assert ModelServices.failure_reason({:turn_failed, %{"codexErrorInfo" => "unauthorized"}}) ==
+             {:model_call_failed, :model_account_forbidden}
+
+    rpc = %{"code" => -32_603, "codexErrorInfo" => %{"httpConnectionFailed" => %{"httpStatusCode" => 403}}}
+    assert ModelServices.failure_reason({:response_error, rpc}) == {:model_call_failed, :model_account_forbidden}
+    unknown = %{"codexErrorInfo" => %{"other" => %{"detail" => "unsupported"}}}
+    assert ModelServices.failure_reason({:turn_failed, unknown}) == {:turn_failed, unknown}
     assert ModelServices.failure_reason(:turn_timeout) == :turn_timeout
   end
 
@@ -592,6 +636,140 @@ defmodule SymphonyElixir.MvpModelServicesTest do
       assert {:ok, refused} = ModelServices.read(unsafe)
       assert refused["availability"]["coding"]["gpt-test"]["coder"]["reason"] == "model_service_command_unsafe"
     end
+  end
+
+  test "conservative legacy reader refuses ambiguous authentication and unsupported TOML without inventing effective values", %{root: root, settings: s} do
+    home = Path.join(root, "legacy-reader")
+    File.mkdir!(home)
+    s = Map.put(s, :sandbox, %{"auth_home" => home})
+    models = %{coder: "gpt-test", reviewer: "gpt-test"}
+    config = Path.join(home, "config.toml")
+
+    for raw <- [
+          "model_reasoning_effort = 'low' # old custom effort\n[features]\nshell_snapshot = false\ncount = 2\n",
+          "# no explicit effort\n"
+        ] do
+      File.write!(config, raw)
+      assert {:ok, services} = ModelServices.freeze(models, s, environment: fn _ -> nil end)
+      assert services["coder"]["parameters"] in [%{"reasoning_effort" => "low"}, %{}]
+    end
+
+    for raw <- [
+          "[model_providers.openai]\nenv_key = 12",
+          "model_provider = 'custom'\n[model_providers.custom]\nenv_key = 12",
+          "[model_providers.openai]\nenv_key = 'GH12_CODER_KEY'\nrequires_openai_auth = true",
+          "[model_providers.openai]\nrequires_openai_auth = false",
+          "[features]\na = true\n[features]\nb = false",
+          "model_provider = 'missing'",
+          "[model_providers.openai]\nwire_api = 'chat'",
+          "[model_providers.openai.http_headers]\nAuthorization = 'secret'",
+          "unknown_field = true",
+          "model_reasoning_effort = \"high\" trailing",
+          "model_reasoning_effort = \"bad\\q\""
+        ] do
+      File.write!(config, raw)
+      assert {:error, :legacy_model_service_migration_required} = ModelServices.freeze(models, s, environment: fn _ -> nil end)
+    end
+
+    File.rm!(config)
+    File.mkdir!(config)
+    assert {:error, :legacy_model_service_migration_required} = ModelServices.freeze(models, s)
+    File.rmdir!(config)
+    assert {:ok, services} = ModelServices.freeze(models, put_in(s.sandbox[:enabled], true), environment: fn _ -> nil end)
+    assert services["coder"]["parameters"] == %{"reasoning_effort" => "high"}
+  end
+
+  test "historical receipt migration is audited and preserves history budgets and explicit routing", %{root: root, settings: s} do
+    alias SymphonyElixir.Mvp.{ModelServiceMigration, Receipt}
+    receipt = Path.join(root, "historical.json")
+    evidence = receipt <> ".evidence"
+    File.mkdir_p!(Path.join(evidence, "round-1"))
+
+    old = %{
+      "status" => "blocked",
+      "models" => %{"coder" => "gpt-test", "reviewer" => "gpt-test"},
+      "issue" => "12",
+      "repository" => "owner/repo",
+      "workspace" => Path.join(root, "workspace"),
+      "base_sha" => "base",
+      "candidate_sha" => "candidate",
+      "max_rework" => 2,
+      "rework_count" => 1,
+      "recovery" => %{"started_at" => "2026-09-01", "agent_attempts" => 5},
+      "rounds" => [%{"round" => 1, "evidence" => Path.join(evidence, "round-1"), "checks" => [["true"]], "usage" => %{}, "models" => %{"coder" => "gpt-test", "reviewer" => "gpt-test"}}]
+    }
+
+    File.write!(receipt, Jason.encode!(old))
+    raw = File.read!(receipt)
+    assert {:ok, nil} = ModelServiceMigration.services(old, hd(old["rounds"]), receipt)
+    sha = fn value -> :crypto.hash(:sha256, value) |> Base.encode16(case: :lower) end
+
+    services =
+      Map.new([{:coder, "coding"}, {:reviewer, "reviewing"}], fn {role, id} ->
+        {:ok, service} = ModelServices.snapshot(s, id, role, "historical_migration:historical-12")
+        {Atom.to_string(role), service}
+      end)
+
+    historical = Map.new(services, fn {role, service} -> {role, Map.take(service, ~w(provider adapter model parameters connection credential_ref command))} end)
+    historical_file = Path.join(root, "historical-config.json")
+    File.write!(historical_file, Jason.encode!(historical))
+
+    request = %{
+      "id" => "historical-12",
+      "authorization" => "explicit historical config verified by local administrator",
+      "runtime_version" => String.duplicate("a", 40),
+      "command" => ["mix", "mvp.models", "migrate"],
+      "predecessor" => nil,
+      "legacy_closures" => [],
+      "receipt_sha256" => sha.(raw),
+      "historical_config" => %{"path" => historical_file, "sha256" => sha.(File.read!(historical_file))},
+      "services" => services
+    }
+
+    input = Path.join(root, "migration.json")
+
+    for invalid <- [
+          Map.put(request, "receipt_sha256", "wrong"),
+          Map.put(request, "historical_config", nil),
+          put_in(request, ["services", "coder", "connection", "base_url"], "https://today.example/v1"),
+          Map.put(request, "secret", "refuse"),
+          Map.put(request, "legacy_closures", false)
+        ] do
+      File.write!(input, Jason.encode!(invalid))
+      assert {:error, :model_service_migration_refused} = Models.execute("migrate", s, [receipt, input])
+      assert File.read!(receipt) == raw
+    end
+
+    result = ModelServiceMigration.migrate(%{s | state_dir: nil}, receipt, request)
+    assert result == {:error, :model_service_migration_refused}
+    assert File.read!(receipt) == raw
+    changed_defaults = put_in(s.model_services["defaults"]["coder"], "reviewing")
+    File.write!(input, Jason.encode!(request))
+    assert {:ok, migrated} = Models.execute("migrate", changed_defaults, [receipt, input])
+    data = Receipt.read(receipt)
+    assert Map.drop(data, ~w(services model_service_migration operator_recheck updated_at)) == old
+    assert data["services"] == migrated["services"]
+    assert data["services"]["coder"]["id"] == "coding"
+    audit = Path.join([evidence, "operator-rechecks", "historical-12"])
+    assert File.read!(Path.join(audit, "receipt-before.json")) == raw
+    assert File.regular?(Path.join(audit, "completion.json"))
+    assert {:ok, resolved} = ModelServiceMigration.services(Receipt.read(receipt), hd(old["rounds"]), receipt)
+    assert resolved == services
+    altered = Map.put(hd(old["rounds"]), "usage", %{"fabricated" => 0})
+    assert {:error, :model_service_migration_audit_mismatch} = ModelServiceMigration.services(data, altered, receipt)
+    assert {:error, :frozen_services_mismatch} = ModelServiceMigration.services(data, %{"services" => %{}}, receipt)
+    assert {:error, :model_service_migration_refused} = Models.execute("migrate", s, [receipt, input])
+    audit_path = Path.join(audit, "authorization.json")
+    audit_bytes = File.read!(audit_path)
+    File.write!(audit_path, "[]")
+    original_round = hd(old["rounds"])
+    result = ModelServiceMigration.services(data, original_round, receipt)
+    assert result == {:error, :model_service_migration_audit_mismatch}
+    File.write!(audit_path, audit_bytes)
+    File.write!(Path.join(audit, "receipt-before.json"), "changed")
+    original_round = hd(old["rounds"])
+    result = ModelServiceMigration.services(data, original_round, receipt)
+    assert result == {:error, :model_service_migration_audit_mismatch}
   end
 
   test "new channel discovery cannot alter a frozen channel's supported parameters", %{settings: s} do

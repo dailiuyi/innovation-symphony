@@ -37,12 +37,13 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   @spec agent(map(), atom(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def agent(context, role, prompt, options) do
     config = role_config(context.settings.sandbox, Keyword.get(options, :model_service))
-    timeout = min(Keyword.get(options, :wall_timeout_ms, context.settings.check_timeout_ms), context.settings.check_timeout_ms)
+    timeout = Keyword.get(options, :wall_timeout_ms, SymphonyElixir.Config.settings!().codex.turn_timeout_ms)
     import_options = Keyword.put(context.opts, :sandbox_max_bytes, config["disk_mb"] * 1_048_576)
 
     read_only = role != :coder
 
-    with {:ok, run} <- prepare(config, context, timeout, read_only),
+    with true <- (is_integer(timeout) and timeout > 0) or {:error, :invalid_wall_timeout},
+         {:ok, run} <- prepare(config, context, timeout, read_only),
          :ok <- prepare_home(run, config, Keyword.get(options, :model_service)),
          {:ok, before} <- source_files(context.workspace, import_options[:sandbox_max_bytes]) do
       environment = %{id: "task", cwd: "/workspace", codex_home: run.home, read_only: read_only}

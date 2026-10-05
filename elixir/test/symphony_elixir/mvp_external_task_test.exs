@@ -537,6 +537,70 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
     assert {:error, :frozen_services_mismatch} = External.resume(f.workflow, f.receipt, f.request, resume_opts(delegate, f))
   end
 
+  test "audited historical migration supplies external recovery without changing immutable handoff or budget", %{fixture: f} do
+    alias Mix.Tasks.Mvp.Models
+    alias SymphonyElixir.Mvp.{ModelServices, Receipt}
+    System.put_env("GH12_CODER_KEY", "external-test-coder")
+    System.put_env("GH12_REVIEWER_KEY", "external-test-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    s = ModelFixture.settings(Path.dirname(f.receipt))
+    record = Map.put(f.record, "models", %{"coder" => "gpt-test", "reviewer" => "gpt-test"})
+    f = rewrite_handoff_record(f, record)
+    data = Receipt.read(f.receipt)
+    evidence = f.receipt <> ".evidence"
+    File.mkdir_p!(Path.join(evidence, "round-1"))
+    data = Map.put(data, "rounds", [%{"round" => 1, "evidence" => Path.join(evidence, "round-1"), "checks" => record["checks"], "models" => record["models"]}])
+    File.write!(f.receipt, Jason.encode!(data))
+    original_handoff = File.read!(f.record_path)
+
+    services =
+      Map.new([{:coder, "coding"}, {:reviewer, "reviewing"}], fn {role, id} ->
+        {:ok, service} = ModelServices.snapshot(s, id, role, "historical_migration:migration-12")
+        {Atom.to_string(role), service}
+      end)
+
+    historical = Map.new(services, fn {role, service} -> {role, Map.take(service, ~w(provider adapter model parameters connection credential_ref command))} end)
+    historical_path = Path.join(f.root, "historical-routing.json")
+    File.write!(historical_path, Jason.encode!(historical))
+
+    migration = %{
+      "id" => "migration-12",
+      "authorization" => "local operator historical audit",
+      "runtime_version" => String.duplicate("a", 40),
+      "command" => ["mix", "mvp.models", "migrate"],
+      "predecessor" => nil,
+      "legacy_closures" => [],
+      "receipt_sha256" => digest(File.read!(f.receipt)),
+      "historical_config" => %{"path" => historical_path, "sha256" => digest(File.read!(historical_path))},
+      "services" => services
+    }
+
+    input = Path.join(f.root, "migration.json")
+    File.write!(input, Jason.encode!(migration))
+    assert {:ok, _} = Models.execute("migrate", s, [f.receipt, input])
+    migrated = Receipt.read(f.receipt)
+    assert migrated["recovery"] == data["recovery"]
+    assert migrated["rounds"] == data["rounds"]
+    assert File.read!(f.record_path) == original_handoff
+    write_request(f, digest(File.read!(f.receipt)))
+    write_workflow(f.workflow, put_in(f.config, ["mvp", "model_services"], s.model_services))
+
+    delegate = fn context, _, _ ->
+      assert context.services == services
+      assert context.services["coder"]["source"] == "historical_migration:migration-12"
+      {:ok, "historical-frozen"}
+    end
+
+    opts = resume_opts(delegate, f, resolve_models: fn _, _, _ -> flunk("history must not use current comments") end)
+    assert {:ok, "historical-frozen"} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert File.read!(f.record_path) == original_handoff
+  end
+
   defp resume_opts(delegate, fixture, overrides \\ []) do
     issue = Keyword.get(overrides, :issue, fixture.issue)
     resolve_models = Keyword.get(overrides, :resolve_models, fn _, _, _ -> {:ok, %{coder: "coder-model", reviewer: "reviewer-model"}} end)

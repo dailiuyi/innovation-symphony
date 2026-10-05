@@ -426,4 +426,8 @@ parameters, connection and credential references. Local management uses
 new claims. Tasks retain full service snapshots through retry and audited recovery.
 See [MODEL_SERVICES](../docs/MODEL_SERVICES.md) for schema, discovery versus
 capability evidence, administrator commands, legacy migration and rollback.
+Terminal historical receipts can be enriched with `mix mvp.models migrate` using
+explicit historical routing and current role evidence under the existing audit lock;
+this does not resume execution or add budget. Unsupported legacy Codex settings
+stop with a migration error instead of adopting a new address or effort.
 No network configuration write endpoint or View settings page is introduced.

@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Mvp.Models do
   @moduledoc "Local administrator model-service registry; never starts the scheduler or writes View data."
   use Mix.Task
 
-  alias SymphonyElixir.Mvp.{Config, ModelCatalog, ModelServices}
+  alias SymphonyElixir.Mvp.{Config, ModelCatalog, ModelServiceMigration, ModelServices}
   alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @shortdoc "Read, save, discover or verify controlled role model services"
@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Mvp.Models do
     end
   end
 
-  def run(_), do: Mix.raise("Usage: mix mvp.models show|save|refresh|register|attest|verify WORKFLOW.md [arguments]")
+  def run(_), do: Mix.raise("Usage: mix mvp.models show|save|refresh|register|attest|verify|migrate WORKFLOW.md [arguments]")
 
   defp safe_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp safe_reason(_), do: "invalid_model_service_operation"
@@ -31,6 +31,12 @@ defmodule Mix.Tasks.Mvp.Models do
   @spec execute(String.t(), map(), [String.t()]) :: {:ok, map()} | {:error, term()}
   def execute(action, settings, args) do
     if is_map(Map.get(settings, :model_services)) and is_binary(Map.get(settings, :state_dir)), do: operation(action, settings, args), else: {:error, :model_services_not_configured}
+  end
+
+  defp operation("migrate", settings, [receipt, input]) do
+    with {:ok, raw} <- File.read(input), {:ok, request} <- Jason.decode(raw) do
+      ModelServiceMigration.migrate(settings, receipt, request)
+    end
   end
 
   defp operation("show", settings, []), do: ModelServices.read(settings)

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   import Kernel, except: [binding: 1]
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.ModelCatalog
+  alias SymphonyElixir.Mvp.{LegacyModelService, ModelCatalog}
   alias SymphonyElixir.PathSafety
 
   @roles ~w(coder reviewer)
@@ -319,8 +319,11 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp command_safe?(command) when is_binary(command) do
-    command != "" and not String.contains?(command, [<<0>>, "\n", "\r"]) and
-      not Regex.match?(~r/(?i)(?:[a-z0-9_]*(?:api_key|token|secret|password)\s*=|--(?:api-key|token|password)\b)/, command)
+    normalized = String.replace(command, ~r/['"\\]/, "")
+
+    command != "" and not String.contains?(command, [<<0>>, "\n", "\r", "$", "`"]) and
+      not Regex.match?(~r/(?i)(?:[a-z0-9_]*(?:api_key|token|secret|password)\s*=|--(?:api-key|token|password)\b)/, normalized) and
+      not Regex.match?(~r/(?i)(?:CODEX_HOME|model_provider|base_url|env_key|(?:^|\s)(?:--(?:config|profile|model)(?:\b|=)|-[cpm]))/, normalized)
   end
 
   defp command_safe?(_), do: false
@@ -484,35 +487,25 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     command = Map.get(settings, :model_command, SymphonyElixir.Config.settings!().codex.command)
     home = get_in(settings, [:sandbox, "auth_home"]) || System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
 
-    reference = legacy_credential(home, Keyword.get(opts, :environment, &System.get_env/1))
+    with true <- command_safe?(command) or {:error, :model_service_command_unsafe},
+         {:ok, preset} <- LegacyModelService.read(home, Map.get(settings, :sandbox, %{}), Keyword.get(opts, :environment, &System.get_env/1)) do
+      services =
+        Map.new([:coder, :reviewer], fn role ->
+          service =
+            Map.merge(preset, %{
+              "id" => "legacy-#{role}",
+              "model" => models[role],
+              "credential_identity" => safe_identity(preset["credential_ref"]),
+              "capability_evidence" => nil,
+              "command" => command,
+              "source" => "legacy_migration",
+              "role" => Atom.to_string(role)
+            })
 
-    services =
-      Map.new([:coder, :reviewer], fn role ->
-        {Atom.to_string(role),
-         effective_connection(%{
-           "id" => "legacy-#{role}",
-           "version" => 1,
-           "provider" => "openai",
-           "adapter" => "codex_app_server",
-           "model" => models[role],
-           "parameters" => %{"reasoning_effort" => "high"},
-           "connection" => %{"base_url" => "https://api.openai.com/v1", "protocol" => "responses"},
-           "credential_ref" => reference,
-           "credential_identity" => safe_identity(reference),
-           "capability_evidence" => nil,
-           "command" => command,
-           "source" => "legacy_migration",
-           "role" => Atom.to_string(role)
-         })}
-      end)
+          {Atom.to_string(role), effective_connection(service)}
+        end)
 
-    if command_safe?(command), do: {:ok, services}, else: {:error, :model_service_command_unsafe}
-  end
-
-  defp legacy_credential(home, environment) do
-    case Enum.find(~w(CODEX_API_KEY OPENAI_API_KEY), fn name -> environment.(name) not in [nil, ""] end) do
-      nil -> "auth_home:" <> home
-      name -> "env:" <> name
+      {:ok, services}
     end
   end
 
@@ -526,7 +519,8 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   def failure_reason(reason), do: reason
 
   defp error_category(error) when is_map(error) do
-    code = error["code"] || error["status"]
+    info = error["codexErrorInfo"]
+    code = codex_error_code(info) || error["code"] || error["status"]
 
     case code do
       value when value in [401, 403, "unauthorized", "permission_denied", "invalid_api_key"] -> :model_account_forbidden
@@ -539,6 +533,19 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp error_category(_), do: nil
+
+  defp codex_error_code(info) when is_map(info) do
+    info
+    |> Map.values()
+    |> Enum.find_value(fn
+      %{"httpStatusCode" => status} -> status
+      _ -> nil
+    end)
+  end
+
+  defp codex_error_code("usageLimitExceeded"), do: "insufficient_quota"
+  defp codex_error_code("unauthorized"), do: "unauthorized"
+  defp codex_error_code(_), do: nil
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, options) do

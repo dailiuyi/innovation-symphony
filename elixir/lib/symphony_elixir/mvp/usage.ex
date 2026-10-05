@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Mvp.Usage do
     data = Receipt.read(receipt)
     rounds = data["rounds"]
     round = List.last(rounds)
+    round = if data["services"], do: Map.put(round, "services", data["services"]), else: round
     descriptor = Map.take(service || %{}, ~w(id version provider model credential_ref source)) |> Map.put("actual_model", actual)
     requests = Map.put(Map.get(round, "model_requests", %{}), key, descriptor)
     updated = List.replace_at(rounds, -1, Map.put(round, "model_requests", requests))

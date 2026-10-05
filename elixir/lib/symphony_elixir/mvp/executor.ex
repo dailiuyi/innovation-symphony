@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     ExternalHandoff,
     Feedback,
     InterruptedCoder,
+    ModelServiceMigration,
     ModelServices,
     OperatorRecheck,
     Receipt,
@@ -1716,7 +1717,8 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp resume_round_shape_valid?({round, number}, context, data, mode, total_rounds) do
     is_map(round) and round["round"] == number and round["base_sha"] == context.base and
-      round["models"] == data["models"] and round["services"] == data["services"] and round_candidate_valid?(round, number, mode, total_rounds) and
+      round["models"] == data["models"] and ModelServiceMigration.services(data, round, context.receipt) == {:ok, data["services"]} and
+      round_candidate_valid?(round, number, mode, total_rounds) and
       round["evidence"] == Path.join(context.evidence, "round-#{number}")
   end
 
@@ -1873,10 +1875,10 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp start_round(%{limit: 0, evidence: evidence}, _number), do: evidence
+  defp start_round(%{limit: 0, services: nil, evidence: evidence}, _number), do: evidence
 
   defp start_round(context, number) do
-    evidence = Path.join(context.evidence, "round-#{number}")
+    evidence = if context.limit == 0, do: context.evidence, else: Path.join(context.evidence, "round-#{number}")
     File.mkdir_p!(evidence)
     data = Receipt.read(context.receipt)
 
@@ -1936,7 +1938,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp run_legacy_agent(context, role, prompt) do
     handler = fn message ->
-      if context.limit > 0, do: Usage.record(context.receipt, Atom.to_string(role), message)
+      if usage_recorded?(context), do: Usage.record(context.receipt, Atom.to_string(role), message)
       on_message(context).(message)
     end
 
@@ -1945,7 +1947,10 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     result =
       with {:ok, service_options} <- ModelServices.options(context, role) do
-        if context.limit > 0, do: Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service])
+        if usage_recorded?(context) do
+          Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service])
+        end
+
         result = Keyword.get(context.opts, :agent, &ModelServices.run/4).(context.workspace, prompt, context.issue, service_options ++ options)
 
         actual =
@@ -1954,13 +1959,18 @@ defmodule SymphonyElixir.Mvp.Executor do
             _ -> nil
           end
 
-        if context.limit > 0, do: Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service], actual)
+        if usage_recorded?(context) do
+          Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service], actual)
+        end
+
         result
       end
 
-    if context.limit > 0, do: Usage.record(context.receipt, Atom.to_string(role), result_usage(result))
+    if usage_recorded?(context), do: Usage.record(context.receipt, Atom.to_string(role), result_usage(result))
     result
   end
+
+  defp usage_recorded?(context), do: context.limit > 0 or not is_nil(context.services)
 
   defp result_usage({:ok, result}), do: result
   defp result_usage(_), do: %{}

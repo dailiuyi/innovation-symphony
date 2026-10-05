@@ -70,6 +70,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
     count = data["recovery"]["agent_attempts"] + 1
     key = "#{role}_attempt_#{count}"
     round = List.last(data["rounds"])
+    round = if data["services"], do: Map.put(round, "services", data["services"]), else: round
     evidence = Path.join(round["evidence"], "agent-attempt-#{count}")
 
     # An existing directory is prior evidence, never a retry scratch directory.

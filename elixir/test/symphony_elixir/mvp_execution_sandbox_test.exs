@@ -84,7 +84,7 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       refute prompt =~ context.workspace
       refute prompt =~ context.evidence
       assert options[:model] == "frozen-model"
-      assert options[:wall_timeout_ms] == context.settings.check_timeout_ms
+      assert options[:wall_timeout_ms] == 900
       environment = options[:execution_environment]
       assert environment.id == "task" and environment.cwd == "/workspace"
       refute String.starts_with?(environment.codex_home, context.workspace <> "/")
@@ -104,6 +104,43 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     refute File.exists?(Path.join(context.workspace, "remove.txt"))
     assert File.read!(Path.join(context.workspace, "elixir/_build/host-cache")) == "host"
     assert File.read!(Path.join(context.workspace, ".codex/host-config")) == "host"
+  end
+
+  test "model budgets for coder reviewer and diagnosis remain independent of formal check timeout" do
+    context = context!()
+
+    for role <- [:coder, :reviewer, :diagnosis] do
+      agent = fn _, _, _, options ->
+        assert options[:wall_timeout_ms] == 30_000
+        config = File.read!(Path.join(options[:execution_environment].codex_home, "environments.toml"))
+        assert config =~ ~s("--timeout-seconds","30")
+        if role == :coder, do: export!(scratch(options), %{"source.txt" => "original"})
+        result!(scratch(options))
+        {:ok, %{output_text: "done"}}
+      end
+
+      assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), role, "test", wall_timeout_ms: 30_000)
+    end
+
+    agent = fn _, _, _, options ->
+      assert options[:wall_timeout_ms] == Config.settings!().codex.turn_timeout_ms
+      export!(scratch(options), %{"source.txt" => "original"})
+      result!(scratch(options))
+      {:ok, %{output_text: "done"}}
+    end
+
+    assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), :coder, "test", [])
+  end
+
+  test "invalid model wall budgets refuse before preparing an executor" do
+    context = context!()
+
+    for timeout <- [nil, false, 0, -1, "30000"] do
+      assert {:error, :invalid_wall_timeout} =
+               ExecutionSandbox.agent(context, :coder, "test", wall_timeout_ms: timeout)
+
+      refute File.exists?(context.settings.sandbox["root"])
+    end
   end
 
   test "isolated homes use role services instead of shared auth and reasoning defaults" do

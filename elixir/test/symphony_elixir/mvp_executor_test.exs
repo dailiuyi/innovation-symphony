@@ -71,6 +71,49 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
     assert receipt["review"] == nil
   end
 
+  test "zero rework persists complete service provenance and unknown usage without enabling recovery" do
+    alias SymphonyElixir.ModelServicesFixture, as: Fixture
+
+    for actual <- ["gpt-confirmed", nil] do
+      context = execution_context!()
+      System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
+      System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
+
+      on_exit(fn ->
+        System.delete_env("GH12_CODER_KEY")
+        System.delete_env("GH12_REVIEWER_KEY")
+        File.rm_rf!(context.root)
+      end)
+
+      settings = Map.merge(Fixture.settings(Path.join(context.root, "state")), check_settings([["true"]])) |> Map.put(:max_rework, 0)
+      {:ok, selected} = Intake.resolve_comments([], settings)
+
+      agent = fn workspace, _, _, opts ->
+        role = opts[:model_service]["role"]
+        if role == "coder", do: File.write!(Path.join(workspace, "candidate.txt"), "candidate")
+        output = if role == "reviewer", do: Jason.encode!(%{"approved" => true, "summary" => "ok"}), else: "done"
+        {:ok, %{output_text: output, actual_model: actual}}
+      end
+
+      assert {:ok, _} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, executor_opts(context, agent: agent, publish: recording_publish(self())))
+      data = Receipt.read(context.receipt)
+      refute data["recovery"]["enabled"]
+      assert [round] = data["rounds"]
+
+      for role <- ~w(coder reviewer) do
+        request = round["model_requests"][role]
+        assert request["provider"] == "openai"
+        assert request["model"] == "gpt-test"
+        assert request["source"] == "project_default"
+        assert request["actual_model"] == actual
+        assert round["usage"][role]["total_tokens"] == nil
+        assert round["usage"][role]["cost"] == nil
+      end
+
+      assert data["usage"]["total_tokens"] == %{"observed" => nil, "complete" => false}
+    end
+  end
+
   test "creates a checked candidate and calls coder and reviewer independently before publish" do
     context = execution_context!()
     on_exit(fn -> File.rm_rf(context.root) end)

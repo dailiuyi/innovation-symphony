@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Mvp.External do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
-  alias SymphonyElixir.Mvp.{Executor, ExternalHandoff, Intake, ModelServices, Recovery}
+  alias SymphonyElixir.Mvp.{Executor, ExternalHandoff, Intake, ModelServiceMigration, ModelServices, Recovery}
 
   @shortdoc "Inspect or resume one external-condition handoff"
   @receipt_statuses ~w(awaiting_external awaiting_human blocked claimed preparing coding checking reviewing recovering publish_pending comment_pending)
@@ -94,7 +94,7 @@ defmodule Mix.Tasks.Mvp.External do
          :ok <- ensure_request_runtime(opts),
          {:ok, issue} <- fetch_frozen_issue(handoff, app_settings.tracker, opts),
          :ok <- current_scope_ready(issue, handoff, settings.ready_label),
-         :ok <- validate_service_binding(receipt, handoff, issue, settings, app_settings.tracker, opts),
+         :ok <- validate_service_binding(receipt_path, receipt, handoff, issue, settings, app_settings.tracker, opts),
          {:ok, tracker_settings} <- bound_tracker_settings(workflow_file, app_settings.tracker, opts),
          {:ok, context} <- frozen_context(receipt_file, receipt, handoff, issue, settings, tracker_settings, opts) do
       delegate_resume(context, expected_digest, authorization, opts)
@@ -372,11 +372,11 @@ defmodule Mix.Tasks.Mvp.External do
     end
   end
 
-  defp validate_service_binding(receipt, handoff, issue, settings, tracker, opts) do
-    if is_map(handoff["services"]) do
-      with true <- receipt["services"] == handoff["services"] or {:error, :frozen_services_mismatch},
-           true <- Enum.sort(Map.keys(handoff["services"])) == ~w(coder reviewer) or {:error, :invalid_frozen_services} do
-        validate_frozen_services(handoff, settings)
+  defp validate_service_binding(receipt_path, receipt, handoff, issue, settings, tracker, opts) do
+    if is_map(receipt["services"]) do
+      with {:ok, services} <- ModelServiceMigration.services(receipt, handoff, receipt_path),
+           true <- Enum.sort(Map.keys(services)) == ~w(coder reviewer) or {:error, :invalid_frozen_services} do
+        validate_frozen_services(Map.put(handoff, "services", services), settings)
       end
     else
       # Historical receipts have no connection or capability evidence to restore.
@@ -472,7 +472,8 @@ defmodule Mix.Tasks.Mvp.External do
          {:ok, baseline_digest} <- Base.decode16(record["baseline_sha256"], case: :lower),
          {:ok, metadata} <- restore_git_metadata(record["git_metadata"]),
          {:ok, models} <- frozen_models(record["models"]),
-         {:ok, repository} <- frozen_repository(record["repository"]) do
+         {:ok, repository} <- frozen_repository(record["repository"]),
+         {:ok, services} <- ModelServiceMigration.services(receipt, record, receipt_path) do
       evidence = receipt_path <> ".evidence"
       settings = Map.put(settings, :recovery, recovery_policy)
 
@@ -481,7 +482,7 @@ defmodule Mix.Tasks.Mvp.External do
         issue: issue,
         settings: settings,
         models: models,
-        services: record["services"],
+        services: services,
         receipt: receipt_path,
         opts:
           [tracker_settings: tracker_settings, ready_label: settings.ready_label]
