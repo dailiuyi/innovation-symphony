@@ -148,3 +148,49 @@ AppServer 的实际 turn/start 仍采用冻结配置。另覆盖原生 API 地�
 真实双角色 GPT 推理、准确候选的受管 Linux 内核隔离及独立交付 Review 未执行，
 不以本次模拟路由或离线客户端结果标记这些验收通过。改动仅本地保存，未提交、
 推送、创建 PR、合并、部署或升级运行服务；未修改控制器证据或运行凭据。
+
+## 2026-10-06：旧启动参数与项目表兼容修复
+
+继续核验工作区已恢复的五份改动，保留原失败历史和控制器边界。本轮修复仅涉及
+旧配置迁移解析与回归，不更改调度、模型目录、管理员授权、恢复预算或正式门禁。
+
+- A01/A04/A07：无新注册表时，旧 `--config` / `-c` 的
+  `model_reasoning_effort` 确定性解析并冻结；覆盖分离参数、附着参数、引号及
+  重复合法设置的最后值。另发现并补齐当前 Codex 支持的 `-c=...` 形式：补齐前
+  解析返回 `model_service_command_unsafe`，客户端接受该参数形式。两个角色真实
+  Codex 离线 `config/read` 保留 xhigh；随后修改启动默认与原 config.toml，
+  模拟 AppServer 重复调用仍核对原连接、认证指纹、请求模型和 xhigh。
+- A01：非隔离原 config.toml 包含双引号或单引号的项目表及 trust_level 时，
+  无需改写文件即可冻结两个角色的连接、认证引用和参数；领取不修改原文件，
+  后续原文件变化不影响调用。重复表以解码后的名称比较，引用形式变化不能绕过；
+  畸形引号、非法转义、歧义认证及不支持的路由继续拒绝。
+- A06/A11/A12：无效或缺失参数、任一早期无效值、连接/认证覆盖、profile/model、
+  shell 展开/组合/重定向，以及命令与快照参数不一致，均在调用前拒绝。兼容例外
+  只用于 legacy_migration；新预设依旧拒绝任何 config 启动参数覆盖。
+- A07/A11：补充 ExecutionSandbox 配置生成回归，分别对 coder、reviewer 和
+  继承 coder 的诊断重复调用；原命令、有效参数、连接、认证引用及只读属性保持。
+  此项使用注入执行适配器检查生成配置，不冒充内核隔离或真实推理证据。
+
+原目录刷新、保存失败/CAS、脱敏、并发路由、阶段/总次数/墙钟预算、外部/中断/审计
+恢复、Review 结构及候选 SHA 绑定合同由完整 candidate 和原 baseline 套件复验。
+真实 Codex 加载只使用合成认证，不发送 `turn/start`；真实双角色 GPT 推理未执行。
+内核预检仍退出 2：`execution_sandbox: cgroup v2 is required`，因此不能执行所需
+受管 Linux 内核集成。未修改隔离策略，也不复用旧候选或前置补丁的外部通过标记。
+当前改动未提交，检查报告中的 Git HEAD 不代表包含修复的最终候选 SHA；控制器
+另行固定候选、完整验证并独立 Review。没有提交、推送、PR、合并、安装、部署或
+升级运行服务，没有改写运行凭据、.git 或控制器证据。
+
+| 本轮检查 | 结果 |
+| --- | --- |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate`（最终代码） | 退出 0；format、specs.check、严格 Credo、覆盖率测试、Dialyzer、escript.build 全部通过。726 项中 720 通过、0 失败、6 跳过、0 排除、0 无效；冻结覆盖率报告 100%，Dialyzer 0 错误。 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出 0；669 项中 663 通过、0 失败、6 跳过、0 排除、0 无效。 |
+| `python3 -B -m unittest scripts.tests.test_execution_sandbox -v` | 退出 0；2 项 CLI 回归通过，2 项受管 Linux 内核集成跳过。 |
+| `bash scripts/execution_sandbox.sh --check` | 退出 2；`execution_sandbox: cgroup v2 is required`，内核集成未执行，不记为通过。 |
+| `git diff --check` | 通过。 |
+
+最终代码的 candidate 证据为 `.check-evidence/candidate-hszedqsn/`，baseline 为
+`.check-evidence/baseline-ci581ihq/`，两者 policy_changes 均为空。两套 Elixir 测试
+的 6 项跳过均为未启用 live 开关的真实外部平台 E2E：GitHub、GitLab、Jira、Asana
+以及 Linear 本地/SSH worker。本轮中途还完整运行过恢复的五份改动，candidate
+退出 0（725 项、719 通过、6 跳过），证据 `.check-evidence/candidate-vg2arg_d/`；
+此记录早于补充的 `-c=...` 与隔离诊断回归，不代替最终代码的检查结果。

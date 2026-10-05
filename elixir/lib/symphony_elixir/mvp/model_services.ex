@@ -314,8 +314,28 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp valid_snapshot_origin?(service) do
-    service["role"] in @roles and command_safe?(service["command"]) and
+    service["role"] in @roles and snapshot_command_safe?(service) and
       is_binary(service["source"])
+  end
+
+  defp snapshot_command_safe?(%{"source" => "legacy_migration"} = service) do
+    case legacy_command_config(service["command"]) do
+      {:ok, overrides} ->
+        not Map.has_key?(overrides, {"", "model_reasoning_effort"}) or
+          overrides[{"", "model_reasoning_effort"}] == service["parameters"]["reasoning_effort"]
+
+      _ ->
+        false
+    end
+  end
+
+  defp snapshot_command_safe?(service), do: command_safe?(service["command"])
+
+  defp legacy_command_config(command) do
+    with {:ok, clean, overrides} <- LegacyModelService.command_config(command),
+         true <- command_safe?(clean) or {:error, :model_service_command_unsafe} do
+      {:ok, overrides}
+    end
   end
 
   defp command_safe?(command) when is_binary(command) do
@@ -498,8 +518,8 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     command = Map.get(settings, :model_command, SymphonyElixir.Config.settings!().codex.command)
     home = get_in(settings, [:sandbox, "auth_home"]) || System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
 
-    with true <- command_safe?(command) or {:error, :model_service_command_unsafe},
-         {:ok, preset} <- LegacyModelService.read(home, Map.get(settings, :sandbox, %{}), Keyword.get(opts, :environment, &System.get_env/1)) do
+    with {:ok, overrides} <- legacy_command_config(command),
+         {:ok, preset} <- LegacyModelService.read(home, Map.get(settings, :sandbox, %{}), Keyword.get(opts, :environment, &System.get_env/1), overrides) do
       services =
         Map.new([:coder, :reviewer], fn role ->
           service =

@@ -204,6 +204,70 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "legacy quoted project tables preserve both roles' routing without editing the original config", c do
+    auth = %{"OPENAI_API_KEY" => "synthetic-native-api"}
+
+    for table <- [~s([projects."/controlled/repo"]), "[projects.'/controlled/repo'] # project trust"] do
+      assert_native_legacy_routing(c, auth, "openai_base_url", "https://native-api.example/v1", "low", table <> "\ntrust_level = 'trusted'\n")
+    end
+  end
+
+  test "legacy config flags freeze effective effort through later defaults and repeated role calls", c do
+    home = Path.join(c.root, "command-home")
+    File.mkdir!(home)
+    File.write!(Path.join(home, "auth.json"), Jason.encode!(%{"OPENAI_API_KEY" => "synthetic-command-auth"}))
+    codex = System.get_env("SYMPHONY_TEST_CODEX") || System.find_executable("codex") || "/opt/codex"
+    client_workflow(c.workspace)
+
+    for suffix <- [
+          "--config model_reasoning_effort=xhigh",
+          ~s(-c 'model_reasoning_effort="xhigh"'),
+          "--config=model_reasoning_effort=xhigh",
+          "-c=model_reasoning_effort=xhigh",
+          "-cmodel_reasoning_effort=xhigh",
+          "-c model_reasoning_effort=low --config model_reasoning_effort=xhigh"
+        ] do
+      File.write!(Path.join(home, "config.toml"), ~s(model_reasoning_effort = "low"\n))
+      settings = %{c.settings | model_services: nil, model_command: "env TOKIO_WORKER_THREADS=2 #{codex} #{suffix} app-server"}
+      settings = Map.put(settings, :sandbox, %{"auth_home" => home})
+      assert {:ok, models} = Intake.resolve_comments([F.comment(1, "/symphony models reviewer=gpt-test")], settings)
+      assert {:ok, services} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+      changed = %{settings | model_command: "codex -c model_reasoning_effort=high app-server"}
+      File.write!(Path.join(home, "config.toml"), ~s(model_reasoning_effort = "medium"\n))
+
+      for role <- [:coder, :reviewer] do
+        service = services[Atom.to_string(role)]
+        assert service["command"] == settings.model_command
+        assert service["parameters"] == %{"reasoning_effort" => "xhigh"}
+        assert client_config(c.workspace, service)["model_reasoning_effort"] == "xhigh"
+        context = %{models: models, services: services, settings: changed}
+        assert {:ok, options} = ModelServices.options(context, role)
+        assert options[:model_service] == service
+        trace = Path.join(home, "#{role}.json")
+        command = "python3 #{c.binary} #{trace} success #{suffix}"
+        simulated = Map.put(service, "command", command)
+
+        for _attempt <- 1..2 do
+          assert {:ok, _} = ModelServices.run(c.workspace, "test", c.issue, model: service["model"], model_service: simulated, read_only: role == :reviewer)
+          data = trace |> File.read!() |> Jason.decode!()
+          assert data["config"] =~ ~s(model_reasoning_effort = "xhigh")
+          assert data["config"] =~ ~s(openai_base_url = "https://api.openai.com/v1")
+          assert data["credential_hash"] == hash(File.read!(Path.join(home, "auth.json")))
+          turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
+          assert turn["model"] == service["model"]
+          assert turn["effort"] == "xhigh"
+          if role == :reviewer, do: assert(turn["sandboxPolicy"] == %{"type" => "readOnly"})
+        end
+
+        mismatch = put_in(service["parameters"]["reasoning_effort"], "high")
+        invalid_options = [model: service["model"], model_service: mismatch]
+        assert {:error, :invalid_model_service_snapshot} = AppServer.start_session(c.workspace, invalid_options)
+        registered = %{c.settings | model_command: settings.model_command}
+        assert {:error, :model_service_command_unsafe} = ModelServices.snapshot(registered, "coding", role, "fixture")
+      end
+    end
+  end
+
   test "legacy nonisolated native ChatGPT roots freeze the exact Codex suffix for both roles", c do
     token = "e30." <> Base.url_encode64(Jason.encode!(%{"sub" => "offline", "exp" => 4_102_444_800}), padding: false) <> ".synthetic"
     auth = %{"tokens" => %{"id_token" => token, "access_token" => token, "refresh_token" => "synthetic-refresh"}}
@@ -576,14 +640,15 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
   defp hash(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 
-  defp assert_native_legacy_routing(c, auth, field, route, effort) do
+  defp assert_native_legacy_routing(c, auth, field, route, effort, extra_config \\ "") do
     home = Path.join(c.root, "native-home-#{System.unique_integer([:positive])}")
     File.mkdir!(home)
     auth_json = Jason.encode!(auth)
     File.write!(Path.join(home, "auth.json"), auth_json)
     parameters = if effort, do: %{"reasoning_effort" => effort}, else: %{}
     effort_config = if effort, do: ~s(model_reasoning_effort = "#{effort}"\n), else: ""
-    File.write!(Path.join(home, "config.toml"), ~s(#{field} = "#{route}"\n) <> effort_config)
+    original_config = ~s(#{field} = "#{route}"\n) <> effort_config <> extra_config
+    File.write!(Path.join(home, "config.toml"), original_config)
     previous_home = System.get_env("CODEX_HOME")
     System.put_env("CODEX_HOME", home)
     on_exit(fn -> restore_env("CODEX_HOME", previous_home) end)
@@ -594,6 +659,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     # The native root field wins over OPENAI_BASE_URL; neither can replace ChatGPT's root.
     environment = fn name -> if name == "OPENAI_BASE_URL", do: "https://environment-wrong.example/v1" end
     assert {:ok, services} = ModelServices.freeze(models, settings, environment: environment)
+    assert File.read!(Path.join(home, "config.toml")) == original_config
     File.write!(Path.join(home, "config.toml"), ~s(#{field} = "https://changed-wrong.example/v1"\nmodel_reasoning_effort = "high"\n))
     effective_route = if field == "chatgpt_base_url", do: String.trim_trailing(route, "/") <> "/codex", else: route
     client_workflow(c.workspace)
@@ -693,7 +759,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   defp write_server(path) do
     File.write!(path, ~S"""
     import sys, os, json, pathlib, hashlib, re
-    trace, mode = sys.argv[1:]
+    trace, mode = sys.argv[1:3]
     home = os.environ['CODEX_HOME']
     credential = os.environ.get('SYMPHONY_MODEL_KEY')
     credential = credential.encode() if credential else pathlib.Path(home, 'auth.json').read_bytes()

@@ -7,8 +7,10 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
   @provider_keys ~w(name base_url wire_api env_key requires_openai_auth)
 
   @spec read(Path.t(), map(), (String.t() -> String.t() | nil)) :: {:ok, map()} | {:error, atom()}
-  def read(home, sandbox, environment) do
+  @spec read(Path.t(), map(), (String.t() -> String.t() | nil), map()) :: {:ok, map()} | {:error, atom()}
+  def read(home, sandbox, environment, overrides \\ %{}) do
     with {:ok, config} <- effective_config(home, sandbox),
+         config = Map.merge(config, overrides),
          true <- native_fields?(config),
          {:ok, provider} <- provider(config),
          {:ok, reference} <- reference(provider, home, environment),
@@ -28,6 +30,47 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
       {:ok, preset}
     else
       _ -> {:error, :legacy_model_service_migration_required}
+    end
+  end
+
+  @doc "Extract only representable legacy effort flags, leaving all other flags for the routing safety check."
+  @spec command_config(term()) :: {:ok, String.t(), map()} | {:error, atom()}
+  def command_config(command) when is_binary(command) do
+    # This command is later executed by a shell. Do not parse across another
+    # invocation, expansion or redirection and accidentally bless its flags.
+    if String.contains?(command, [<<0>>, "\n", "\r", "$", "`", "#", ";", "&", "|", "<", ">", "(", ")"]) do
+      {:error, :model_service_command_unsafe}
+    else
+      command |> OptionParser.split() |> command_config([], %{})
+    end
+  rescue
+    _error in [ArgumentError, RuntimeError] -> {:error, :model_service_command_unsafe}
+  end
+
+  def command_config(_), do: {:error, :model_service_command_unsafe}
+
+  defp command_config([], clean, overrides), do: {:ok, clean |> Enum.reverse() |> Enum.join(" "), overrides}
+
+  defp command_config([flag, value | rest], clean, overrides) when flag in ["--config", "-c"],
+    do: command_override(value, rest, clean, overrides)
+
+  defp command_config(["--config=" <> value | rest], clean, overrides), do: command_override(value, rest, clean, overrides)
+  defp command_config(["-c=" <> value | rest], clean, overrides), do: command_override(value, rest, clean, overrides)
+  defp command_config(["-c" <> value | rest], clean, overrides), do: command_override(value, rest, clean, overrides)
+  defp command_config(["--config"], _, _), do: {:error, :model_service_command_unsafe}
+  defp command_config([token | rest], clean, overrides), do: command_config(rest, [token | clean], overrides)
+
+  defp command_override(value, rest, clean, overrides) do
+    with [_, encoded] <- Regex.run(~r/\Amodel_reasoning_effort\s*=\s*(.+)\z/, value),
+         effort =
+           (case scalar(encoded) do
+              {:ok, decoded} -> decoded
+              _ -> encoded
+            end),
+         true <- effort in ~w(none minimal low medium high xhigh) do
+      command_config(rest, clean, Map.put(overrides, {"", "model_reasoning_effort"}, effort))
+    else
+      _ -> {:error, :model_service_command_unsafe}
     end
   end
 
@@ -68,46 +111,73 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
 
   # Unsupported TOML is a migration stop, never an invented effective default.
   defp parse(raw) do
-    tables = Regex.scan(~r/^\s*\[([a-zA-Z0-9_.-]+)\]\s*$/m, raw) |> Enum.map(&List.last/1)
-
-    if length(tables) == length(Enum.uniq(tables)) do
-      raw
-      |> String.split(~r/\r?\n/)
-      |> Enum.reduce_while({:ok, %{}, ""}, &line/2)
-      |> case do
-        {:ok, config, _} -> {:ok, config}
-        error -> error
-      end
-    else
-      {:error, :legacy_duplicate_table}
+    raw
+    |> String.split(~r/\r?\n/)
+    |> Enum.reduce_while({:ok, %{}, "", MapSet.new()}, &line/2)
+    |> case do
+      {:ok, config, _, _} -> {:ok, config}
+      error -> error
     end
   end
 
-  defp line(raw, {:ok, config, section}) do
+  defp line(raw, {:ok, config, section, tables}) do
     value = String.trim(raw)
 
     cond do
-      value == "" or String.starts_with?(value, "#") -> {:cont, {:ok, config, section}}
-      Regex.match?(~r/\A\[[a-zA-Z0-9_.-]+\]\z/, value) -> table(value, config)
-      true -> assignment(value, config, section)
+      value == "" or String.starts_with?(value, "#") -> {:cont, {:ok, config, section, tables}}
+      String.starts_with?(value, "[") -> table(value, config, tables)
+      true -> assignment(value, config, section, tables)
     end
   end
 
-  defp table(value, config) do
-    name = String.slice(value, 1..-2//1)
-
-    if name == "profiles" or String.starts_with?(name, "profiles."),
-      do: {:halt, {:error, :legacy_profile_unsupported}},
-      else: {:cont, {:ok, config, name}}
+  defp table(value, config, tables) do
+    with {:ok, name} <- table_name(value),
+         false <- name == "profiles" or String.starts_with?(name, "profiles."),
+         false <- MapSet.member?(tables, name) do
+      {:cont, {:ok, config, name, MapSet.put(tables, name)}}
+    else
+      _ -> {:halt, {:error, :legacy_table_unsupported}}
+    end
   end
 
-  defp assignment(value, config, section) do
+  defp table_name(value) do
+    case Regex.run(~r/\A\[\s*projects\s*\.\s*("(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[a-zA-Z0-9_-]+)\s*\]\s*(?:#.*)?\z/, value) do
+      [_, encoded] ->
+        project_table_name(encoded)
+
+      _ ->
+        simple_table_name(value)
+    end
+  end
+
+  defp project_table_name(encoded) do
+    # Canonicalize quoted and bare project keys so duplicate tables cannot
+    # evade detection by changing quotes. Project trust is unrelated to routing.
+    case scalar(encoded) do
+      {:ok, path} when is_binary(path) ->
+        {:ok, "projects." <> Jason.encode!(path)}
+
+      _ ->
+        if Regex.match?(~r/\A[a-zA-Z0-9_-]+\z/, encoded),
+          do: {:ok, "projects." <> Jason.encode!(encoded)},
+          else: {:error, :legacy_table_unsupported}
+    end
+  end
+
+  defp simple_table_name(value) do
+    case Regex.run(~r/\A\[([a-zA-Z0-9_.-]+)\]\s*(?:#.*)?\z/, value) do
+      [_, name] -> {:ok, name}
+      _ -> {:error, :legacy_table_unsupported}
+    end
+  end
+
+  defp assignment(value, config, section, tables) do
     with [_, key, encoded] <- Regex.run(~r/\A([a-zA-Z0-9_-]+)\s*=\s*(.+)\z/, value),
          {:ok, decoded} <- scalar(encoded),
          identity = {section, key},
          false <- Map.has_key?(config, identity),
          true <- section != "" or key in @root_keys do
-      {:cont, {:ok, Map.put(config, identity, decoded), section}}
+      {:cont, {:ok, Map.put(config, identity, decoded), section, tables}}
     else
       _ -> {:halt, {:error, :legacy_config_unsupported}}
     end

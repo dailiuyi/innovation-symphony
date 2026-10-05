@@ -79,7 +79,7 @@ Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
 环境变量 API key 使用非保留的 `symphony` provider，保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
 `codex.command`，冻结为执行适配身份，评论无法设置它。含 `--config`/`-c`、
 `--profile`/`-p`、`--model`/`-m` 或 CODEX_HOME、provider/base_url/env_key
-覆盖及 shell 变量/命令展开的启动命令在冻结与启动前拒绝（包括看似无害的 config 参数），避免 Codex
+覆盖及 shell 变量/命令展开的启动命令在新预设冻结与启动前拒绝（包括看似无害的 config 参数），避免 Codex
 命令行优先级覆盖角色路由；改用预设字段。受管进程清除继承的 OPENAI_BASE_URL。每次 AppServer 使用独立
 0700 主机配置目录和进程环境；沙盒中的模型主机目录包含隔离环境定义，凭据不进任务
 执行环境。既有安全功能开关及 reviewer 的内核只读挂载保留，不修改共享 Codex 配置。
@@ -170,7 +170,17 @@ OPENAI_BASE_URL 环境连接覆盖。能力证据
 仍未知，不宣称旧白名单已完成真实验证。已冻结的地址/参数不再读取后来变动的
 config.toml。管理员仍可用 disabled_models 禁用历史型号。
 
-非隔离兼容读取仅接受可无歧义映射的单行标量 TOML（字符串、布尔、非负整数和普通表）；
+旧工作流的 `codex.command` 可继续使用 `--config` / `-c` 设置
+`model_reasoning_effort`（支持分离或附着的参数值、`--config=...` / `-c=...` 及 shell 引号）。领取时确定性解析，
+命令行值优先于旧配置文件或隔离路径生成的 high，多个合法设置取最后一个，任一无效值均拒绝；
+冻结原命令和最终参数，两个角色、后续重试与恢复均沿用。启动前还会核对命令中的值
+与快照一致，不允许快照参数与命令互相覆盖。未知参数值、缺失值、profile/model、
+连接/认证覆盖及 shell 展开、组合命令或重定向仍拒绝。此兼容例外只用于
+legacy_migration，不允许新预设用启动参数覆盖已登记配置。
+
+非隔离兼容读取仅接受可无歧义映射的单行标量 TOML（字符串、布尔、非负整数和普通表，
+以及 `projects."/controlled/repo"` / 单引号项目表）；项目 trust_level 不改变服务路由，
+不需要修改旧文件。项目表按解码后的名称检测重复，换用单引号或裸键不能绕过检测；
 profile、复杂/重复赋值、额外 provider 参数/headers、未知推理参数、非 Responses
 协议、非 HTTPS 地址等返回 legacy_model_service_migration_required。不能用固定
 地址或 high 冒充未知有效值。遇到停点，由管理员从旧版本、原启动参数和原配置核对

@@ -175,6 +175,45 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     end
   end
 
+  test "legacy effort flags survive isolated role calls and diagnosis after configuration changes" do
+    context = context!()
+    home = context.settings.sandbox["auth_home"]
+    auth = Jason.encode!(%{"OPENAI_API_KEY" => "synthetic-legacy-sandbox"})
+    File.write!(Path.join(home, "auth.json"), auth)
+    command = ~s(codex -c 'model_reasoning_effort="xhigh"' app-server)
+    settings = Map.put(context.settings, :model_command, command)
+    models = %{coder: "gpt-test", reviewer: "gpt-review"}
+    assert {:ok, services} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+    File.write!(Path.join(home, "config.toml"), ~s(model_reasoning_effort = "low"\n))
+    changed = Map.put(settings, :model_command, "codex -c model_reasoning_effort=medium app-server")
+    context = %{context | settings: changed}
+
+    for role <- [:coder, :reviewer, :diagnosis] do
+      service = services[if(role == :reviewer, do: "reviewer", else: "coder")]
+
+      agent = fn _, _, _, options ->
+        environment = options[:execution_environment]
+        config = File.read!(Path.join(environment.codex_home, "config.toml"))
+        assert options[:model_service] == service
+        assert service["command"] == command
+        assert service["parameters"] == %{"reasoning_effort" => "xhigh"}
+        assert service["credential_ref"] == "auth_home:" <> home
+        assert config =~ ~s(model_reasoning_effort = "xhigh")
+        assert config =~ ~s(openai_base_url = "https://api.openai.com/v1")
+        refute config =~ ~s(model_reasoning_effort = "low")
+        assert File.read!(Path.join(environment.codex_home, "auth.json")) == auth
+        assert environment.read_only == (role != :coder)
+        if role == :coder, do: export!(scratch(options), %{"source.txt" => "original"})
+        result!(scratch(options))
+        {:ok, %{output_text: "frozen legacy routing"}}
+      end
+
+      for _attempt <- 1..2 do
+        assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), role, "test", model_service: service)
+      end
+    end
+  end
+
   test "a selected role auth home is isolated and may not overlap the task" do
     context = context!()
     System.put_env("GH12_CODER_KEY", "synthetic-coder")

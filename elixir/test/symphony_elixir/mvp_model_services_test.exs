@@ -2,7 +2,7 @@ defmodule SymphonyElixir.MvpModelServicesTest do
   use SymphonyElixir.TestSupport
   alias Mix.Tasks.Mvp.Models
   alias SymphonyElixir.ModelServicesFixture, as: F
-  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices}
+  alias SymphonyElixir.Mvp.{Intake, LegacyModelService, ModelCatalog, ModelServices}
 
   setup do
     root = Path.join(System.tmp_dir!(), "gh12-services-#{System.unique_integer([:positive])}")
@@ -686,6 +686,11 @@ defmodule SymphonyElixir.MvpModelServicesTest do
           "[model_providers.openai]\nenv_key = 'GH12_CODER_KEY'\nrequires_openai_auth = true",
           "[model_providers.openai]\nrequires_openai_auth = false",
           "[features]\na = true\n[features]\nb = false",
+          ~s([projects."/controlled/repo"]\ntrust_level = "trusted"\n[projects.'/controlled/repo']\ntrust_level = "untrusted"),
+          ~s([projects.repo]\ntrust_level = "trusted"\n[projects."repo"]\ntrust_level = "trusted"),
+          ~s([projects."/controlled/repo]\ntrust_level = "trusted"),
+          ~s([projects."/controlled/repo"] trailing\ntrust_level = "trusted"),
+          "[projects.\"/controlled/bad\\q\"]\ntrust_level = 'trusted'",
           "model_provider = 'missing'",
           "[model_providers.openai]\nwire_api = 'chat'",
           "[model_providers.openai.http_headers]\nAuthorization = 'secret'",
@@ -703,6 +708,52 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     File.rmdir!(config)
     assert {:ok, services} = ModelServices.freeze(models, put_in(s.sandbox[:enabled], true), environment: fn _ -> nil end)
     assert services["coder"]["parameters"] == %{"reasoning_effort" => "high"}
+  end
+
+  test "legacy command compatibility cannot admit malformed config, route overrides or shell execution", %{root: root, settings: s} do
+    home = Path.join(root, "legacy-command")
+    File.mkdir!(home)
+    models = %{coder: "gpt-test", reviewer: "gpt-test"}
+    settings = s |> Map.put(:model_services, nil) |> Map.put(:sandbox, %{"auth_home" => home})
+    assert {:ok, services} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+
+    assert {:error, :model_service_command_unsafe} =
+             ModelServices.freeze(models, %{settings | model_command: "codex app-server --config"})
+
+    File.write!(Path.join(home, "config.toml"), ~s(model_reasoning_effort = "low"\n))
+    assert {:ok, preset} = LegacyModelService.read(home, %{}, fn _ -> nil end)
+    assert preset["parameters"] == %{"reasoning_effort" => "low"}
+
+    for suffix <- [
+          "--config",
+          "--config=",
+          "-c=",
+          "-c",
+          "-c model_reasoning_effort",
+          ~s(--config 'model_reasoning_effort="xhigh"),
+          "-c model_reasoning_effort=ultra --config model_reasoning_effort=xhigh",
+          "--config model_reasoning_effort=xhigh -c model_provider=wrong",
+          "--config model_reasoning_effort=xhigh --profile wrong",
+          "--config model_reasoning_effort=xhigh --model wrong",
+          "--config model_reasoning_effort=xhigh ; codex app-server",
+          "--config model_reasoning_effort=xhigh && codex app-server",
+          "--config model_reasoning_effort=xhigh | codex app-server",
+          "--config model_reasoning_effort=xhigh > /tmp/output",
+          "app-server # --config model_reasoning_effort=xhigh"
+        ] do
+      command = "codex #{suffix} app-server"
+      assert {:error, :model_service_command_unsafe} = ModelServices.freeze(models, %{settings | model_command: command})
+      unsafe = Map.put(services["coder"], "command", command)
+      assert {:error, :invalid_model_service_snapshot} = ModelServices.validate_snapshot(unsafe)
+    end
+
+    invalid = %{settings | model_command: "codex -c model_reasoning_effort=ultra app-server"}
+    assert {:error, :model_service_command_unsafe} = ModelServices.freeze(models, invalid)
+
+    isolated = settings |> Map.put(:sandbox, %{:enabled => true, "auth_home" => home}) |> Map.put(:model_command, "codex -c model_reasoning_effort=xhigh app-server")
+    assert {:ok, services} = ModelServices.freeze(models, isolated, environment: fn _ -> nil end)
+    assert services["coder"]["parameters"] == %{"reasoning_effort" => "xhigh"}
+    assert services["reviewer"]["parameters"] == %{"reasoning_effort" => "xhigh"}
   end
 
   test "historical receipt migration is audited and preserves history budgets and explicit routing", %{root: root, settings: s} do
