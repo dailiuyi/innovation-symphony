@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Mvp.External do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
-  alias SymphonyElixir.Mvp.{Executor, ExternalHandoff, Intake, Recovery}
+  alias SymphonyElixir.Mvp.{Executor, ExternalHandoff, Intake, ModelServices, Recovery}
 
   @shortdoc "Inspect or resume one external-condition handoff"
   @receipt_statuses ~w(awaiting_external awaiting_human blocked claimed preparing coding checking reviewing recovering publish_pending comment_pending)
@@ -94,8 +94,7 @@ defmodule Mix.Tasks.Mvp.External do
          :ok <- ensure_request_runtime(opts),
          {:ok, issue} <- fetch_frozen_issue(handoff, app_settings.tracker, opts),
          :ok <- current_scope_ready(issue, handoff, settings.ready_label),
-         {:ok, current_models} <- resolve_current_models(issue, settings, app_settings.tracker, opts),
-         :ok <- current_models_match(current_models, handoff["models"]),
+         :ok <- validate_service_binding(receipt, handoff, issue, settings, app_settings.tracker, opts),
          {:ok, tracker_settings} <- bound_tracker_settings(workflow_file, app_settings.tracker, opts),
          {:ok, context} <- frozen_context(receipt_file, receipt, handoff, issue, settings, tracker_settings, opts) do
       delegate_resume(context, expected_digest, authorization, opts)
@@ -373,6 +372,40 @@ defmodule Mix.Tasks.Mvp.External do
     end
   end
 
+  defp validate_service_binding(receipt, handoff, issue, settings, tracker, opts) do
+    if is_map(handoff["services"]) do
+      with true <- receipt["services"] == handoff["services"] or {:error, :frozen_services_mismatch},
+           true <- Enum.sort(Map.keys(handoff["services"])) == ~w(coder reviewer) or {:error, :invalid_frozen_services} do
+        validate_frozen_services(handoff, settings)
+      end
+    else
+      # Historical receipts have no connection or capability evidence to restore.
+      # Retain the old audit gate; the managed adapter refuses inference until an
+      # explicit migration supplies evidence, rather than fabricating a snapshot.
+      with {:ok, current} <- resolve_current_models(issue, settings, tracker, opts),
+           do: current_models_match(current, handoff["models"])
+    end
+  end
+
+  defp validate_frozen_services(handoff, settings) do
+    Enum.reduce_while(handoff["services"], :ok, fn {role, service}, :ok ->
+      result = frozen_service_options(handoff, settings, role, service)
+
+      case result do
+        {:ok, _} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp frozen_service_options(handoff, settings, role, service) do
+    context = %{settings: settings, services: handoff["services"]}
+
+    if is_map(service) and service["role"] == role and service["model"] == handoff["models"][role],
+      do: ModelServices.options(context, String.to_existing_atom(role)),
+      else: {:error, :invalid_frozen_services}
+  end
+
   defp resolve_current_models(issue, mvp_settings, tracker_settings, opts) do
     resolve = Keyword.get(opts, :resolve_models, &Intake.resolve/3)
     request_fun = Keyword.get(opts, :request_fun)
@@ -448,6 +481,7 @@ defmodule Mix.Tasks.Mvp.External do
         issue: issue,
         settings: settings,
         models: models,
+        services: record["services"],
         receipt: receipt_path,
         opts:
           [tracker_settings: tracker_settings, ready_label: settings.ready_label]

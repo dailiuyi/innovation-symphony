@@ -215,7 +215,9 @@ def stable(before, after, label):
 
 
 def validate_python_report(report, minimum, expected_ids=()):
-    python = report.get('python', {})
+    if not isinstance(report, dict) or not isinstance(report.get('python'), dict):
+        raise ValueError('missing or malformed Python report')
+    python = report['python']
     if (report.get('passed') is not True or python.get('passed') is not True
             or not isinstance(python.get('tests'), int) or python['tests'] < minimum
             or len(python.get('identities', [])) != python['tests']

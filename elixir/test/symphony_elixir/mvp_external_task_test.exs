@@ -4,7 +4,9 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
 
   alias Mix.Tasks.Mvp.External
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.ModelServicesFixture, as: ModelFixture
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
+  alias SymphonyElixir.Mvp.Intake
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkflowStore
@@ -485,6 +487,56 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
     assert {:error, _reason} = External.resume(f.workflow, f.receipt, f.request, opts)
   end
 
+  test "frozen service recovery ignores later comments and defaults, but rejects current credential loss", %{fixture: f} do
+    System.put_env("GH12_CODER_KEY", "external-test-coder")
+    System.put_env("GH12_REVIEWER_KEY", "external-test-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    service_settings = ModelFixture.settings(Path.join(f.root, "state"))
+    {:ok, selected} = Intake.resolve_comments([], service_settings)
+    record = f.record |> Map.put("services", selected.services) |> Map.put("models", %{"coder" => "gpt-test", "reviewer" => "gpt-test"})
+    f = rewrite_handoff_record(f, record)
+    registry = put_in(service_settings.model_services, ["defaults", "coder"], "reviewing")
+    # This is a changed current workflow, not a fabricated old receipt.
+    config = put_in(f.config, ["mvp", "model_services"], registry)
+    write_workflow(f.workflow, config)
+    original = File.read!(f.receipt)
+
+    delegate = fn context, _, _ ->
+      assert context.services == selected.services
+      assert context.models == %{coder: "gpt-test", reviewer: "gpt-test"}
+      assert context.services["coder"]["connection"]["base_url"] == "https://coding.example/v1"
+      {:ok, "frozen"}
+    end
+
+    opts = resume_opts(delegate, f, resolve_models: fn _, _, _ -> flunk("must not reparse current comments") end)
+    assert {:ok, "frozen"} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert File.read!(f.receipt) == original
+    System.delete_env("GH12_REVIEWER_KEY")
+    assert {:error, :model_credential_missing} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert File.read!(f.receipt) == original
+    System.put_env("GH12_REVIEWER_KEY", "external-test-reviewer")
+    disabled = put_in(registry, ["catalog", "coding", "models", "gpt-test", "disabled"], true)
+    write_workflow(f.workflow, put_in(config, ["mvp", "model_services"], disabled))
+    assert {:error, :model_disabled} = External.resume(f.workflow, f.receipt, f.request, opts)
+    write_workflow(f.workflow, config)
+    malformed = put_in(record, ["services", "coder"], nil)
+    f = rewrite_handoff_record(f, malformed)
+    assert {:error, :invalid_frozen_services} = External.resume(f.workflow, f.receipt, f.request, resume_opts(delegate, f))
+    one_role = Map.put(record, "services", Map.take(selected.services, ["coder"]))
+    f = rewrite_handoff_record(f, one_role)
+    assert {:error, :invalid_frozen_services} = External.resume(f.workflow, f.receipt, f.request, resume_opts(delegate, f))
+    f = rewrite_handoff_record(f, record)
+    data = f.receipt |> File.read!() |> Jason.decode!()
+    File.write!(f.receipt, Jason.encode!(Map.put(data, "services", %{})))
+    write_request(f, digest(File.read!(f.receipt)))
+    assert {:error, :frozen_services_mismatch} = External.resume(f.workflow, f.receipt, f.request, resume_opts(delegate, f))
+  end
+
   defp resume_opts(delegate, fixture, overrides \\ []) do
     issue = Keyword.get(overrides, :issue, fixture.issue)
     resolve_models = Keyword.get(overrides, :resolve_models, fn _, _, _ -> {:ok, %{coder: "coder-model", reviewer: "reviewer-model"}} end)
@@ -656,6 +708,7 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
       "issue" => "12",
       "issue_scope" => f.record["issue_scope"],
       "models" => f.record["models"],
+      "services" => f.record["services"],
       "usage" => f.record["usage"],
       "rework_count" => f.record["rework_count"],
       "recovery" => f.recovery,

@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.Mvp.ModelServices
 
   @initialize_id 1
   @thread_start_id 2
@@ -27,6 +28,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           execution_environment: map() | nil,
           dynamic_tool_binding: map(),
           model: String.t() | nil,
+          service_runtime: map() | nil,
           tools_enabled: boolean()
         }
 
@@ -86,12 +88,15 @@ defmodule SymphonyElixir.Codex.AppServer do
     read_only = Keyword.get(opts, :read_only, false) == true
     tools_enabled = Keyword.get(opts, :tools, true) != false
     execution_environment = Keyword.get(opts, :execution_environment)
+    binding = DynamicTool.bind()
 
     with :ok <- validate_model_option(model),
          {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          :ok <- validate_execution_environment(execution_environment, worker_host, expanded_workspace),
-         dynamic_tool_binding = DynamicTool.bind(),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, execution_environment) do
+         service = Keyword.get(opts, :model_service),
+         :ok <- ModelServices.credential_boundary(service, [expanded_workspace]),
+         {:ok, service_runtime} <- prepare_service(service, execution_environment, worker_host, model),
+         {:ok, port} <- start_port(expanded_workspace, worker_host, binding, execution_environment, service_runtime) do
       metadata = port_metadata(port, worker_host)
       session_workspace = if execution_environment, do: execution_environment.cwd, else: expanded_workspace
 
@@ -103,7 +108,7 @@ defmodule SymphonyElixir.Codex.AppServer do
                port,
                session_workspace,
                session_policies,
-               dynamic_tool_binding,
+               binding,
                model,
                tools_enabled
              ) do
@@ -119,14 +124,16 @@ defmodule SymphonyElixir.Codex.AppServer do
            workspace: session_workspace,
            execution_environment: execution_environment,
            worker_host: worker_host,
-           dynamic_tool_binding: dynamic_tool_binding,
+           dynamic_tool_binding: binding,
            model: model,
+           service_runtime: service_runtime,
            tools_enabled: tools_enabled
          }}
       else
         {:error, reason} ->
           stop_port(port)
-          {:error, reason}
+          cleanup_service(service_runtime)
+          protected_result({:error, reason}, service_runtime)
       end
     end
   end
@@ -161,7 +168,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       thread_id: thread_id,
       workspace: workspace,
       model: model,
-      execution_environment: Map.get(session, :execution_environment)
+      execution_environment: Map.get(session, :execution_environment),
+      service_runtime: Map.get(session, :service_runtime)
     }
 
     callbacks = %{
@@ -171,7 +179,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     }
 
     if is_nil(output_schema) or is_map(output_schema) do
-      start_and_complete_turn(turn_state, callbacks, prompt, issue, output_schema)
+      service_runtime = Map.get(session, :service_runtime)
+      guarded_handler = fn message -> callbacks.on_message.(redact_service_error(message, service_runtime)) end
+      guarded = %{callbacks | on_message: guarded_handler}
+      result = start_and_complete_turn(turn_state, guarded, prompt, issue, output_schema)
+      protected_result(result, service_runtime)
     else
       {:error, :invalid_output_schema}
     end
@@ -198,7 +210,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       turn_sandbox_policy: turn_state.turn_sandbox_policy,
       model: turn_state.model,
       output_schema: output_schema,
-      execution_environment: turn_state.execution_environment
+      execution_environment: turn_state.execution_environment,
+      service_runtime: turn_state.service_runtime
     }
 
     case start_turn(turn_state.port, turn_state.thread_id, turn_options) do
@@ -229,6 +242,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         {:ok,
          %{
+           actual_model: Process.get({__MODULE__, turn_state.port, :actual_model}),
            result: :turn_completed,
            output_text: output_text,
            session_id: session_id,
@@ -242,12 +256,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp startup_failed(turn_state, on_message, issue, reason) do
+    reason = redact_service_error(reason, turn_state.service_runtime)
     Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
     emit_message(on_message, :startup_failed, %{reason: reason}, turn_state.metadata)
     {:error, reason}
   end
 
   defp turn_failed(turn_state, on_message, issue, session_id, reason) do
+    reason = redact_service_error(reason, turn_state.service_runtime)
     Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
 
     emit_message(
@@ -261,8 +277,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{port: port}) when is_port(port) do
+  def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
+    cleanup_service(Map.get(session, :service_runtime))
+    :ok
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
@@ -307,7 +325,134 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil, dynamic_tool_binding, execution_environment) do
+  @doc "Discover every page exposed by this account's AppServer, without starting an inference thread."
+  @spec list_models(map(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_models(service, opts \\ []) do
+    with_wall_timeout(Keyword.get(opts, :wall_timeout_ms, 60_000), fn ->
+      with {:ok, runtime} <- prepare_service(service, nil, nil, service["model"]) do
+        try do
+          protected_result(discover_models(runtime), runtime)
+        after
+          cleanup_service(runtime)
+        end
+      end
+    end)
+  end
+
+  defp discover_models(runtime) do
+    binding = DynamicTool.bind()
+
+    with {:ok, port} <- start_port(runtime.home, nil, binding, nil, runtime) do
+      try do
+        with :ok <- send_initialize(port), do: model_pages(port, nil, [], %{})
+      after
+        stop_port(port)
+      end
+    end
+  end
+
+  @spec model_pages(port(), String.t() | nil, [map()], map()) :: {:ok, [map()]} | {:error, term()}
+  defp model_pages(port, cursor, models, seen) do
+    send_message(port, %{"id" => 6, "method" => "model/list", "params" => %{"cursor" => cursor, "limit" => 100, "includeHidden" => true}})
+
+    case await_response(port, 6) do
+      {:ok, %{"data" => data} = page} when is_list(data) ->
+        next = page["nextCursor"]
+
+        cond do
+          is_nil(next) -> {:ok, models ++ data}
+          not is_binary(next) -> {:error, :model_catalog_pagination_invalid}
+          Map.has_key?(seen, next) -> {:error, :model_catalog_pagination_invalid}
+          true -> model_pages(port, next, models ++ data, Map.put(seen, next, true))
+        end
+
+      _ ->
+        {:error, :model_discovery_failed}
+    end
+  end
+
+  defp prepare_service(nil, _, _, _), do: {:ok, nil}
+
+  defp prepare_service(service, environment, host, model) do
+    with :ok <- ModelServices.validate_snapshot(service),
+         true <- (is_nil(host) and service["provider"] == "openai" and service["adapter"] == "codex_app_server") or {:error, :model_provider_not_supported},
+         true <- model == service["model"] or {:error, :model_service_model_mismatch},
+         :ok <- ModelServices.identity_matches(service),
+         {:ok, credential} <- ModelServices.credential(service["credential_ref"]) do
+      service_home(service, environment, credential)
+    end
+  end
+
+  defp service_home(service, environment, credential) when is_map(environment),
+    do: {:ok, service_runtime(service, environment.codex_home, false, credential)}
+
+  defp service_home(service, nil, credential) do
+    home = Path.join(System.tmp_dir!(), "symphony-model-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower))
+
+    with :ok <- File.mkdir(home), :ok <- File.chmod(home, 0o700), :ok <- ModelServices.write_home(home, service, credential) do
+      {:ok, service_runtime(service, home, true, credential)}
+    else
+      _ ->
+        File.rm_rf(home)
+        {:error, :model_service_home_failed}
+    end
+  end
+
+  defp service_runtime(service, home, temporary, credential) do
+    secrets = credential_secrets(credential)
+    %{service: service, home: home, temporary: temporary, credential: credential, secrets: secrets}
+  end
+
+  defp credential_secrets({:env, _, secret}), do: [secret]
+
+  defp credential_secrets({:home, home}) do
+    with {:ok, raw} <- File.read(Path.join(home, "auth.json")), {:ok, auth} <- Jason.decode(raw) do
+      secret_values(auth)
+    else
+      _ -> []
+    end
+  end
+
+  defp secret_values(value) when is_map(value), do: value |> Map.values() |> Enum.flat_map(&secret_values/1)
+  defp secret_values(value) when is_binary(value) and byte_size(value) >= 8, do: [value]
+  defp secret_values(_), do: []
+
+  defp protected_result(result, nil), do: result
+
+  defp protected_result(result, runtime) do
+    case redact_service_error(result, runtime) do
+      {:error, reason} -> {:error, ModelServices.failure_reason(reason)}
+      value -> value
+    end
+  end
+
+  defp cleanup_service(%{temporary: true, home: home}), do: File.rm_rf(home)
+  defp cleanup_service(_), do: :ok
+  defp service_port_env(nil), do: []
+
+  defp service_port_env(runtime) do
+    common = [{~c"CODEX_HOME", String.to_charlist(runtime.home)}, {~c"OPENAI_API_KEY", false}, {~c"CODEX_API_KEY", false}]
+
+    case runtime.credential do
+      {:env, name, value} -> common ++ [{String.to_charlist(name), false}, {~c"SYMPHONY_MODEL_KEY", String.to_charlist(value)}]
+      {:home, _} -> common ++ [{~c"SYMPHONY_MODEL_KEY", false}]
+    end
+  end
+
+  defp redact_service_error(value, %{secrets: secrets}), do: Enum.reduce(secrets, value, &redact_value(&2, &1))
+  defp redact_service_error(value, _), do: value
+  defp redact_value(value, secret) when is_binary(value), do: String.replace(value, secret, "[redacted]")
+  defp redact_value(%_{} = value, _secret), do: value
+  defp redact_value(value, secret) when is_map(value), do: Map.new(value, fn {key, item} -> {key, redact_value(item, secret)} end)
+  defp redact_value(value, secret) when is_list(value), do: Enum.map(value, &redact_value(&1, secret))
+  defp redact_value(value, secret) when is_tuple(value), do: value |> Tuple.to_list() |> Enum.map(&redact_value(&1, secret)) |> List.to_tuple()
+  defp redact_value(value, _), do: value
+
+  defp port_env(binding, environment, runtime) do
+    tracker_secret_port_env(binding) ++ execution_environment_port_env(environment) ++ service_port_env(runtime)
+  end
+
+  defp start_port(workspace, nil, dynamic_tool_binding, execution_environment, runtime) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -320,26 +465,27 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
-            cd: String.to_charlist(host_config_cwd(workspace, execution_environment)),
-            env: tracker_secret_port_env(dynamic_tool_binding) ++ execution_environment_port_env(execution_environment),
+            args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding, runtime))],
+            cd: String.to_charlist(if(runtime, do: runtime.home, else: host_config_cwd(workspace, execution_environment))),
+            env: port_env(dynamic_tool_binding, execution_environment, runtime),
             line: @port_line_bytes
           ]
         )
 
+      if runtime, do: Process.put({__MODULE__, port}, runtime)
       {:ok, port}
     end
   end
 
-  defp start_port(workspace, worker_host, dynamic_tool_binding, nil) when is_binary(worker_host) do
+  defp start_port(workspace, worker_host, dynamic_tool_binding, nil, nil) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, dynamic_tool_binding)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp local_launch_command(dynamic_tool_binding) do
+  defp local_launch_command(dynamic_tool_binding, runtime) do
     [
       tracker_secret_unset_command(dynamic_tool_binding),
-      "exec #{Config.settings!().codex.command}"
+      "exec #{if runtime, do: runtime.service["command"], else: Config.settings!().codex.command}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
@@ -422,6 +568,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
+  defp apply_read_only_policy(%{execution_environment: %{read_only: true}} = session_policies, true), do: session_policies
+
   defp apply_read_only_policy(session_policies, true) do
     %{
       session_policies
@@ -438,7 +586,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp validate_execution_environment(%{id: id, cwd: cwd, codex_home: home} = environment, nil, workspace)
        when is_binary(id) and is_binary(cwd) and is_binary(home) do
-    with true <- Enum.sort(Map.keys(environment)) == [:codex_home, :cwd, :id],
+    with true <- Map.keys(environment) -- [:codex_home, :cwd, :id, :read_only] == [],
+         true <- Map.get(environment, :read_only, false) in [true, false],
          true <- Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\z/, id) and id != "local",
          true <- String.starts_with?(cwd, "/") and cwd != "/" and not String.contains?(cwd, ["\n", "\r", <<0>>]),
          true <- Path.expand(cwd) == cwd,
@@ -467,7 +616,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp apply_execution_environment(policies, nil), do: policies
 
-  defp apply_execution_environment(policies, environment) do
+  # Three-field bindings predate the kernel policy marker. Preserve their Codex
+  # sandbox contract; the trusted Linux executor always supplies read_only.
+  defp apply_execution_environment(policies, environment) when not is_map_key(environment, :read_only) do
     policies
     |> Map.put(:thread_sandbox, "workspace-write")
     |> Map.put(:turn_sandbox_policy, %{
@@ -476,6 +627,20 @@ defmodule SymphonyElixir.Codex.AppServer do
       "networkAccess" => true,
       "excludeTmpdirEnvVar" => false,
       "excludeSlashTmp" => false
+    })
+    |> Map.put(:execution_environment, environment)
+  end
+
+  defp apply_execution_environment(policies, environment) do
+    policies
+    |> Map.put(:thread_sandbox, "workspace-write")
+    # The trusted executor already enforces namespaces, mounts and budgets.
+    # Requesting another workspaceWrite sandbox inside it makes Codex create a
+    # nested bubblewrap namespace, which the isolated Linux worker cannot create.
+    # Local fallback is still rejected by verify_execution_environment/2.
+    |> Map.put(:turn_sandbox_policy, %{
+      "type" => "externalSandbox",
+      "networkAccess" => "enabled"
     })
     |> Map.put(:execution_environment, environment)
   end
@@ -574,6 +739,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_turn(port, thread_id, options) do
+    Process.delete({__MODULE__, port, :actual_model})
+
     params = %{
       "threadId" => thread_id,
       "input" => [
@@ -589,6 +756,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     }
 
     params = maybe_put_model(params, options.model)
+    effort = get_in(options, [:service_runtime, :service, "parameters", "reasoning_effort"])
+    params = if effort, do: Map.put(params, "effort", effort), else: params
     params = environment_params(params, options.execution_environment)
     params = if is_map(options.output_schema), do: Map.put(params, "outputSchema", options.output_schema), else: params
 
@@ -670,7 +839,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp observe_actual_model(port, payload) do
+    actual = get_in(payload, ["params", "actualModel"])
+    if ModelServices.identifier?(actual), do: Process.put({__MODULE__, port, :actual_model}, actual)
+  end
+
   defp handle_decoded_incoming(port, on_message, %{"method" => "turn/completed"} = payload, raw, state) do
+    observe_actual_model(port, payload)
     emit_turn_event(on_message, :turn_completed, payload, raw, port, payload)
     {:ok, state.output_text}
   end
@@ -702,7 +877,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp handle_malformed_incoming(port, on_message, raw, state) do
-    log_non_json_stream_line(raw, "turn stream")
+    log_non_json_stream_line(raw, "turn stream", port)
 
     if protocol_message_candidate?(raw) do
       emit_message(
@@ -1176,16 +1351,18 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:response_error, response_payload}}
 
       {:ok, %{} = other} ->
-        Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
+        Logger.debug("Ignoring message while waiting for response: #{inspect(redact_service_error(other, Process.get({__MODULE__, port})))}")
         with_timeout_response(port, request_id, timeout_ms, "")
 
       {:error, _} ->
-        log_non_json_stream_line(payload, "response stream")
+        log_non_json_stream_line(payload, "response stream", port)
         with_timeout_response(port, request_id, timeout_ms, "")
     end
   end
 
-  defp log_non_json_stream_line(data, stream_label) do
+  defp log_non_json_stream_line(data, stream_label, port) do
+    data = redact_service_error(data, Process.get({__MODULE__, port}))
+
     text =
       data
       |> to_string()
@@ -1213,6 +1390,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp stop_port(port) when is_port(port) do
+    Process.delete({__MODULE__, port})
+    Process.delete({__MODULE__, port, :actual_model})
+
     case :erlang.port_info(port) do
       :undefined ->
         :ok

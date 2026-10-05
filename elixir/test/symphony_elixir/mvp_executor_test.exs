@@ -38,6 +38,39 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
              )
   end
 
+  test "revoked reviewer service stops a checked candidate before Review or publish" do
+    alias SymphonyElixir.ModelServicesFixture, as: Fixture
+    alias SymphonyElixir.Mvp.Intake
+    context = execution_context!()
+    System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
+    System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+      File.rm_rf!(context.root)
+    end)
+
+    services = Fixture.settings(Path.join(context.root, "state"))
+    settings = Map.merge(services, Map.put(check_settings([["true"]]), :max_rework, 1))
+    {:ok, selected} = Intake.resolve_comments([], services)
+
+    agent = fn workspace, _, _, opts ->
+      assert opts[:model_service] == selected.services["coder"]
+      File.write!(Path.join(workspace, "candidate.txt"), "checked candidate")
+      System.delete_env("GH12_REVIEWER_KEY")
+      {:ok, %{output_text: "done"}}
+    end
+
+    opts = executor_opts(context, agent: agent, publish: fn _, _, _, _, _, _, _ -> flunk("must not publish without review") end)
+    assert {:error, :model_credential_missing} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, opts)
+    receipt = Receipt.read(context.receipt)
+    assert receipt["status"] == "blocked"
+    assert receipt["services"] == selected.services
+    assert List.last(receipt["rounds"])["model_requests"]["coder"]["actual_model"] == nil
+    assert receipt["review"] == nil
+  end
+
   test "creates a checked candidate and calls coder and reviewer independently before publish" do
     context = execution_context!()
     on_exit(fn -> File.rm_rf(context.root) end)

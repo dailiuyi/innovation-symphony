@@ -140,6 +140,7 @@ defmodule SymphonyElixir.Mvp.ExternalHandoff do
       "issue_scope" => string_scope(context.issue),
       "workspace" => context.workspace,
       "models" => Map.new(context.models, fn {key, value} -> {to_string(key), value} end),
+      "services" => Map.get(context, :services),
       "max_rework" => context.limit,
       "checks" => context.settings.checks,
       "recovery_policy" => json(context.settings.recovery),

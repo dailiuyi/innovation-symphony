@@ -417,3 +417,13 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
+
+### GH-12 role model services
+
+The optional `mvp.model_services` registry separates coder/reviewer provider, model,
+parameters, connection and credential references. Local management uses
+`mix mvp.models`; persisted state overrides the workflow seed and is loaded for
+new claims. Tasks retain full service snapshots through retry and audited recovery.
+See [MODEL_SERVICES](../docs/MODEL_SERVICES.md) for schema, discovery versus
+capability evidence, administrator commands, legacy migration and rollback.
+No network configuration write endpoint or View settings page is introduced.

@@ -1,8 +1,7 @@
 defmodule SymphonyElixir.Mvp.Attempts do
   @moduledoc "Bounded fresh model sessions with durable evidence and independent usage accounting."
 
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.{Receipt, Recovery, Review, Usage}
+  alias SymphonyElixir.Mvp.{ModelServices, Receipt, Recovery, Review, Usage}
 
   @type role :: :coder | :reviewer | :diagnosis
   @spec run(map(), role(), String.t(), (-> :ok | {:error, term()})) :: {:ok, map()} | {:error, term()}
@@ -97,9 +96,24 @@ defmodule SymphonyElixir.Mvp.Attempts do
     end
 
     remaining = remaining_ms(context)
-    common = [model: model(context, role), tools: false, on_message: handler, wall_timeout_ms: remaining]
+    common = [tools: false, on_message: handler, wall_timeout_ms: remaining]
     options = common ++ role_options(role, context.limit)
-    result = invoke_with_budget(context, prompt, options, remaining)
+
+    result =
+      with {:ok, service_options} <- ModelServices.options(context, role) do
+        Usage.request(context.receipt, usage_key, service_options[:model_service])
+        result = invoke_with_budget(context, prompt, service_options ++ options, remaining)
+
+        actual =
+          case result do
+            {:ok, response} -> response[:actual_model]
+            _ -> nil
+          end
+
+        Usage.request(context.receipt, usage_key, service_options[:model_service], actual)
+        result
+      end
+
     Usage.record(context.receipt, usage_key, result_usage(result))
     File.write!(Path.join(evidence, "output.txt"), output(result), [:exclusive, :sync])
     result
@@ -116,11 +130,9 @@ defmodule SymphonyElixir.Mvp.Attempts do
   defp invoke_with_budget(_, _, _, 0), do: {:error, :wall_timeout}
 
   defp invoke_with_budget(context, prompt, options, _) do
-    Keyword.get(context.opts, :agent, &AppServer.run/4).(context.workspace, prompt, context.issue, options)
+    Keyword.get(context.opts, :agent, &ModelServices.run/4).(context.workspace, prompt, context.issue, options)
   end
 
-  defp model(context, :reviewer), do: context.models.reviewer
-  defp model(context, _), do: context.models.coder
   defp role_options(:coder, _), do: []
   defp role_options(:reviewer, limit), do: [read_only: true, output_schema: Review.schema(limit)]
   defp role_options(:diagnosis, _), do: [read_only: true, output_schema: Recovery.schema()]
@@ -144,6 +156,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
 
   defp retryable?(_, {:error, error}) when error in [:turn_timeout, :response_timeout], do: true
   defp retryable?(_, {:error, {:port_exit, _}}), do: true
+  defp retryable?(_, {:error, {:model_call_failed, reason}}) when reason in [:model_rate_limited, :model_service_unavailable], do: true
   defp retryable?(:reviewer, {:error, :mvp_invalid_review}), do: true
   defp retryable?(:diagnosis, {:error, :mvp_invalid_diagnosis}), do: true
   defp retryable?(_, _), do: false

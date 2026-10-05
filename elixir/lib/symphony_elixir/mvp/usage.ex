@@ -21,6 +21,21 @@ defmodule SymphonyElixir.Mvp.Usage do
     Receipt.update(receipt, data["status"], %{"rounds" => updated, "usage" => aggregate(updated)})
   end
 
+  @spec request(Path.t(), String.t(), map() | nil, String.t() | nil) :: :ok
+  def request(receipt, key, service, actual \\ nil)
+  @spec request(Path.t(), String.t(), map() | nil, String.t() | nil) :: :ok
+  def request(_receipt, _key, nil, _actual), do: :ok
+
+  def request(receipt, key, service, actual) do
+    data = Receipt.read(receipt)
+    rounds = data["rounds"]
+    round = List.last(rounds)
+    descriptor = Map.take(service || %{}, ~w(id version provider model credential_ref source)) |> Map.put("actual_model", actual)
+    requests = Map.put(Map.get(round, "model_requests", %{}), key, descriptor)
+    updated = List.replace_at(rounds, -1, Map.put(round, "model_requests", requests))
+    Receipt.update(receipt, data["status"], %{"rounds" => updated})
+  end
+
   @spec aggregate([map()]) :: map()
   def aggregate(rounds) do
     sessions = Enum.flat_map(rounds, &Map.values(&1["usage"]))

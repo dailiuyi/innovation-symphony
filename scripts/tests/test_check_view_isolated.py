@@ -92,6 +92,12 @@ class ViewGateTests(unittest.TestCase):
                                                 "real_wsl_executed": False, "real_browser_executed": False},
                                     {}, {}, {})
 
+    def test_malformed_python_report_types_are_explicitly_rejected(self):
+        for report in (None, [], False, {}, {"python": []}, {"python": None}):
+            with self.subTest(report=report):
+                with self.assertRaisesRegex(ValueError, "missing or malformed Python report"):
+                    validator.validate_python_report(report, 16)
+
     def test_candidate_changes_after_freeze_are_rejected(self):
         with synthetic_repo({"view/app/fixture.py": b"SYNTHETIC_BEFORE\n"}) as (candidate, sha):
             before = validator.candidate_identity(candidate, sha)

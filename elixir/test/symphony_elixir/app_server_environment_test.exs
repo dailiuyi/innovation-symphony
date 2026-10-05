@@ -35,11 +35,8 @@ defmodule SymphonyElixir.AppServerEnvironmentTest do
     refute Map.has_key?(thread, "dynamicTools")
 
     assert turn["sandboxPolicy"] == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => ["/workspace", "/tmp", "/home/coder"],
-             "networkAccess" => true,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
+             "type" => "externalSandbox",
+             "networkAccess" => "enabled"
            }
   end
 
@@ -56,6 +53,36 @@ defmodule SymphonyElixir.AppServerEnvironmentTest do
     turn = Enum.find(requests!(context), &(&1["method"] == "turn/start"))["params"]
     assert turn["sandboxPolicy"] == %{"type" => "readOnly"}
     assert turn["environments"] == [%{"environmentId" => "task", "cwd" => "/workspace"}]
+  end
+
+  test "kernel read-only executor avoids nested namespace creation for review" do
+    context = context!()
+    environment = Map.put(context.environment, :read_only, true)
+    assert {:ok, session} = start_external(context, read_only: true, execution_environment: environment)
+
+    try do
+      assert {:ok, _} = AppServer.run_turn(session, "review", context.issue)
+    after
+      AppServer.stop_session(session)
+    end
+
+    turn = Enum.find(requests!(context), &(&1["method"] == "turn/start"))["params"]
+    assert turn["sandboxPolicy"] == %{"type" => "externalSandbox", "networkAccess" => "enabled"}
+  end
+
+  test "older executor bindings retain the Codex workspace sandbox contract" do
+    context = context!()
+    assert {:ok, session} = start_external(context, execution_environment: Map.delete(context.environment, :read_only))
+
+    try do
+      assert {:ok, _} = AppServer.run_turn(session, "legacy binding", context.issue)
+    after
+      AppServer.stop_session(session)
+    end
+
+    turn = Enum.find(requests!(context), &(&1["method"] == "turn/start"))["params"]
+    assert turn["sandboxPolicy"]["type"] == "workspaceWrite"
+    assert turn["sandboxPolicy"]["networkAccess"] == true
   end
 
   test "legacy session does not probe or add remote environments" do
@@ -87,7 +114,8 @@ defmodule SymphonyElixir.AppServerEnvironmentTest do
           Map.put(context.environment, :cwd, "/"),
           Map.put(context.environment, :codex_home, "relative"),
           Map.put(context.environment, :codex_home, context.workspace),
-          Map.put(context.environment, :url, "ws://untrusted")
+          Map.put(context.environment, :url, "ws://untrusted"),
+          Map.put(context.environment, :read_only, "true")
         ] do
       result = AppServer.start_session(context.workspace, execution_environment: binding)
       assert {:error, :invalid_execution_environment} = result
@@ -160,7 +188,7 @@ defmodule SymphonyElixir.AppServerEnvironmentTest do
 
     %{
       workspace: workspace,
-      environment: %{id: "task", cwd: "/workspace", codex_home: home},
+      environment: %{id: "task", cwd: "/workspace", codex_home: home, read_only: false},
       trace: trace,
       env_trace: env_trace,
       issue: %Issue{id: "environment", identifier: "ENV-1", title: "Isolated tests", state: "In Progress"}

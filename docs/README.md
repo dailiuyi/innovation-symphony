@@ -17,6 +17,7 @@
 | 已批准的结构化检查与复检修复 | [004-structured-check-recovery.md](issue-drafts/004-structured-check-recovery.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |
 | 官方来源及改动接缝 | [UPSTREAM.md](UPSTREAM.md) |
+| GH-12 角色模型服务、目录、管理与迁移 | [MODEL_SERVICES.md](MODEL_SERVICES.md) |
 | 当前产品需求与范围 | [REQUIREMENTS.md](REQUIREMENTS.md) |
 | 决策来源、历史替代关系 | [DECISIONS.md](DECISIONS.md) |
 | 下一步需要讨论什么 | [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) |

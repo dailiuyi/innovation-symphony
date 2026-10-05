@@ -1,8 +1,9 @@
 defmodule SymphonyElixir.MvpExecutionSandboxTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.ModelServicesFixture, as: ModelFixture
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
-  alias SymphonyElixir.Mvp.ExecutionSandbox
+  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelServices}
 
   test "host hashing is chunked and rejects oversized source or aggregate export before import" do
     context = context!()
@@ -83,6 +84,7 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       refute prompt =~ context.workspace
       refute prompt =~ context.evidence
       assert options[:model] == "frozen-model"
+      assert options[:wall_timeout_ms] == context.settings.check_timeout_ms
       environment = options[:execution_environment]
       assert environment.id == "task" and environment.cwd == "/workspace"
       refute String.starts_with?(environment.codex_home, context.workspace <> "/")
@@ -104,12 +106,76 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     assert File.read!(Path.join(context.workspace, ".codex/host-config")) == "host"
   end
 
+  test "isolated homes use role services instead of shared auth and reasoning defaults" do
+    context = context!()
+    System.put_env("GH12_CODER_KEY", "sandbox-synthetic-coder")
+    System.put_env("GH12_REVIEWER_KEY", "sandbox-synthetic-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    settings = ModelFixture.settings(context.root)
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+
+      agent = fn _, _, _, options ->
+        home = options[:execution_environment].codex_home
+        config = File.read!(Path.join(home, "config.toml"))
+        assert config =~ service["connection"]["base_url"]
+        assert config =~ service["parameters"]["reasoning_effort"]
+        refute File.exists?(Path.join(home, "auth.json"))
+        refute config =~ "sandbox-synthetic"
+        assert options[:execution_environment].read_only == (role != :coder)
+        export!(scratch(options), %{"source.txt" => "source"})
+        result!(scratch(options))
+        {:ok, %{output_text: "routed"}}
+      end
+
+      assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), role, "test", model_service: service)
+    end
+  end
+
+  test "a selected role auth home is isolated and may not overlap the task" do
+    context = context!()
+    System.put_env("GH12_CODER_KEY", "synthetic-coder")
+    System.put_env("GH12_REVIEWER_KEY", "synthetic-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    settings = ModelFixture.settings(context.root)
+    home = Path.join(context.root, "role-auth")
+    File.mkdir!(home)
+    File.write!(Path.join(home, "auth.json"), Jason.encode!(%{"token" => "synthetic-role-auth"}))
+    {:ok, service} = ModelServices.snapshot(settings, "reviewing", :reviewer, "fixture")
+    service = Map.put(service, "credential_ref", "auth_home:" <> home)
+
+    agent = fn _, _, _, options ->
+      private = options[:execution_environment].codex_home
+      assert File.read!(Path.join(private, "auth.json")) == File.read!(Path.join(home, "auth.json"))
+      assert File.read!(Path.join(private, "config.toml")) =~ "requires_openai_auth = true"
+      result!(scratch(options))
+      {:ok, %{output_text: "role account"}}
+    end
+
+    assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), :reviewer, "task", model_service: service)
+    unsafe = Map.put(service, "credential_ref", "auth_home:" <> context.workspace)
+    assert {:error, :sandbox_unsafe_trusted_paths} = ExecutionSandbox.agent(with_agent(context, agent), :reviewer, "task", model_service: unsafe)
+  end
+
   test "review and diagnosis do not import their disposable changes" do
     for role <- [:reviewer, :diagnosis] do
       context = context!()
 
       agent = fn _, prompt, _, options ->
         assert prompt =~ "frozen base is /baseline"
+        assert options[:execution_environment].read_only == true
+        assert File.read!(Path.join(options[:execution_environment].codex_home, "environments.toml")) =~ "--read-only-workspace"
         export!(scratch(options), %{"source.txt" => "untrusted rewrite"})
         result!(scratch(options))
         {:ok, %{output_text: "read-only result"}}

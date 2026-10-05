@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Mvp.InterruptedCoder do
   alias SymphonyElixir.Mvp.Recovery
 
   @max_bytes 16 * 1_024 * 1_024
-  @frozen ~w(repository issue workspace branch base_sha models max_rework issue_scope execution_sandbox)
+  @frozen ~w(repository issue workspace branch base_sha models services max_rework issue_scope execution_sandbox)
 
   @spec evidence(map(), map()) :: {:ok, map(), map()} | {:error, atom()}
   def evidence(context, data) do
@@ -211,7 +211,23 @@ defmodule SymphonyElixir.Mvp.InterruptedCoder do
       data["reason"] == ":mvp_recovery_resource_exhausted" and frozen_history?(before, data) and
       before["candidate_sha"] == data["candidate_sha"] and before["rework_count"] == data["rework_count"] and
       Enum.drop(before["rounds"], -1) == Enum.drop(data["rounds"], -1) and
-      Map.delete(List.last(before["rounds"]), "usage") == Map.delete(List.last(data["rounds"]), "usage")
+      Map.drop(List.last(before["rounds"]), ~w(usage model_requests)) == Map.drop(List.last(data["rounds"]), ~w(usage model_requests)) and
+      timeout_requests?(before, data)
+  end
+
+  defp timeout_requests?(before, data) do
+    previous = List.last(before["rounds"])["model_requests"]
+    current = List.last(data["rounds"])["model_requests"]
+
+    case get_in(before, ["services", "coder"]) do
+      nil ->
+        previous == current
+
+      service ->
+        key = "coder_attempt_#{before["recovery"]["agent_attempts"] + 1}"
+        request = Map.take(service, ~w(id version provider model credential_ref source)) |> Map.put("actual_model", nil)
+        current == Map.put(previous || %{}, key, request)
+    end
   end
 
   defp timeout_attempt(before, data, id) do
@@ -320,7 +336,7 @@ defmodule SymphonyElixir.Mvp.InterruptedCoder do
   defp rounds_prefix?(old, current) do
     is_list(old) and old != [] and length(old) <= length(current) and
       Enum.all?(Enum.zip(old, current), fn {before, current} ->
-        Map.take(before, ~w(round base_sha models evidence checks)) == Map.take(current, ~w(round base_sha models evidence checks))
+        Map.take(before, ~w(round base_sha models services evidence checks)) == Map.take(current, ~w(round base_sha models services evidence checks))
       end)
   end
 

@@ -18,8 +18,14 @@ defmodule SymphonyElixir.Mvp.Commands do
     File.write!(log_path, "")
 
     case execute(argv, cwd, timeout_ms, [], File.stream!(log_path)) do
-      {:ok, {_stream, status}} -> {:ok, status}
-      error -> error
+      {:ok, {_stream, status}} ->
+        # Ubuntu may ship uutils timeout, whose missing-command diagnostic
+        # omits the executable. Preserve that identity in terminal check logs.
+        if status == 127, do: File.write!(log_path, "\ncommand exited 127: #{List.first(argv)}\n", [:append])
+        {:ok, status}
+
+      error ->
+        error
     end
   end
 
