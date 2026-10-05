@@ -72,7 +72,10 @@ Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
 文件内容、API key 和 token 从不写入注册表或快照。`auth_home` 中的 ChatGPT
 登录采用内置 OpenAI provider；旧 API 默认地址在领取时解析为
 `https://chatgpt.com/backend-api/codex` 并冻结。ChatGPT OAuth 不发往 API key 的
-`api.openai.com/v1` 路由或其他连接。环境变量 API key 保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
+`api.openai.com/v1` 路由或其他连接。`auth_home` 的独立配置不覆盖保留的
+`[model_providers.openai]`：API key 使用顶层 `openai_base_url`，ChatGPT 使用顶层
+`chatgpt_base_url`（后台 API 根，Codex 添加 `/codex`），继续保留原推理参数。
+环境变量 API key 使用非保留的 `symphony` provider，保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
 `codex.command`，冻结为执行适配身份，评论无法设置它。含 `--config`/`-c`、
 `--profile`/`-p`、`--model`/`-m` 或 CODEX_HOME、provider/base_url/env_key
 覆盖及 shell 变量/命令展开的启动命令在冻结与启动前拒绝（包括看似无害的 config 参数），避免 Codex
@@ -109,7 +112,10 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 游标及错误响应拒绝。不把任意 `gpt-*` 当白名单。保留管理员禁用和历史目录，发现
 记录绑定服务商、协议、连接、凭据引用与安全凭据指纹。失败保留原目录和原刷新时间，
 另外记录 discovery_failed；不能声称渠道目录必然等于账号全部模型权限。每个渠道
-分别保存发现时间、参数集合和人工/AppServer 来源，刷新新连接不改写旧冻结连接的
+的受管协议流如收到 `configWarning` 表示配置无效或回退默认，或通知格式无效，
+立即返回 `model_service_configuration_invalid`，不接受后续默认渠道的目录、输出或
+批准，不自动重试/换配置；刷新保留原目录、原时间及能力证据。普通环境提示仍兼容。
+每个渠道分别保存发现时间、参数集合和人工/AppServer 来源，刷新新连接不改写旧冻结连接的
 参数证据；未知未来推理参数不发送，仍保留该型号已支持的参数和待验证状态。
 
 无法取得完整目录时用 `register` 人工登记型号及渠道支持的推理参数。此操作不产生

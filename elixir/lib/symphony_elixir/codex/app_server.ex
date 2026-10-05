@@ -368,6 +368,9 @@ defmodule SymphonyElixir.Codex.AppServer do
           true -> model_pages(port, next, models ++ data, Map.put(seen, next, true))
         end
 
+      {:error, reason} ->
+        {:error, reason}
+
       _ ->
         {:error, :model_discovery_failed}
     end
@@ -855,6 +858,10 @@ defmodule SymphonyElixir.Codex.AppServer do
       error ->
         error
     end
+  end
+
+  defp handle_decoded_incoming(port, on_message, %{"method" => "configWarning"} = payload, raw, state) do
+    with :ok <- configuration_warning(port, payload), do: handle_turn_method(port, on_message, payload, raw, state)
   end
 
   defp handle_decoded_incoming(port, on_message, %{"method" => "item/completed"} = payload, raw, state) do
@@ -1380,6 +1387,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{"id" => ^request_id} = response_payload} ->
         {:error, {:response_error, response_payload}}
 
+      {:ok, %{"method" => "configWarning"} = warning} ->
+        with :ok <- configuration_warning(port, warning), do: with_timeout_response(port, request_id, timeout_ms, "")
+
       {:ok, %{} = other} ->
         Logger.debug("Ignoring message while waiting for response: #{inspect(redact_service_error(other, Process.get({__MODULE__, port})))}")
         with_timeout_response(port, request_id, timeout_ms, "")
@@ -1389,6 +1399,21 @@ defmodule SymphonyElixir.Codex.AppServer do
         with_timeout_response(port, request_id, timeout_ms, "")
     end
   end
+
+  defp configuration_warning(port, warning) do
+    if Process.get({__MODULE__, port}) && invalid_configuration_warning?(warning),
+      do: {:error, :model_service_configuration_invalid},
+      else: :ok
+  end
+
+  defp invalid_configuration_warning?(%{"params" => %{"summary" => summary} = params}) when is_binary(summary) do
+    details = params["details"]
+
+    not (is_nil(details) or is_binary(details)) or
+      Regex.match?(~r/invalid config(?:uration)?|(?:using|fall(?:ing)? back to) defaults/i, summary <> " " <> (details || ""))
+  end
+
+  defp invalid_configuration_warning?(_), do: true
 
   defp log_non_json_stream_line(data, stream_label, port) do
     data = redact_service_error(data, Process.get({__MODULE__, port}))

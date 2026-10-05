@@ -195,7 +195,10 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     agent = fn _, _, _, options ->
       private = options[:execution_environment].codex_home
       assert File.read!(Path.join(private, "auth.json")) == File.read!(Path.join(home, "auth.json"))
-      assert File.read!(Path.join(private, "config.toml")) =~ "requires_openai_auth = true"
+      config = File.read!(Path.join(private, "config.toml"))
+      assert config =~ ~s(model_provider = "openai")
+      assert config =~ service["connection"]["base_url"]
+      refute config =~ "[model_providers.openai]"
       result!(scratch(options))
       {:ok, %{output_text: "role account"}}
     end

@@ -568,7 +568,8 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     private = Path.join(root, "private")
     File.mkdir!(private)
     assert :ok = ModelServices.write_home(private, put_in(service, ["parameters"], %{}), {:home, auth})
-    assert File.read!(Path.join(private, "config.toml")) =~ "requires_openai_auth = true"
+    assert File.read!(Path.join(private, "config.toml")) =~ ~s(model_provider = "openai")
+    refute File.read!(Path.join(private, "config.toml")) =~ "[model_providers.openai]"
     assert {:ok, nil} = ModelServices.load(Path.join(root, "missing"), nil)
     assert {:ok, frozen} = ModelServices.freeze(%{coder: "old", reviewer: "old-review"}, s)
     assert frozen["coder"]["source"] == "legacy_migration"
@@ -590,7 +591,8 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert :ok = ModelServices.write_home(private, service, {:home, home})
     config = File.read!(Path.join(private, "config.toml"))
     assert config =~ ~s(model_provider = "openai")
-    assert config =~ "https://chatgpt.com/backend-api/codex"
+    assert config =~ ~s(chatgpt_base_url = "https://chatgpt.com/backend-api")
+    refute config =~ "[model_providers.openai]"
     refute config =~ "api.openai.com/v1"
     refute config =~ "synthetic-chatgpt-token"
     wrong = put_in(service, ["connection", "base_url"], "https://other.example/v1")
@@ -603,6 +605,14 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     {:ok, selected} = ModelServices.snapshot(%{s | model_services: registry}, "coding", :coder, "fixture")
     assert selected["connection"] == service["connection"]
     assert ModelServices.channel_binding(registry["presets"]["coding"]) == ModelServices.channel_binding(selected)
+    # The endpoint alone must not select OAuth routing for an API-key auth.json.
+    File.write!(Path.join(home, "auth.json"), Jason.encode!(%{"OPENAI_API_KEY" => "synthetic-home-key"}))
+    private_api = Path.join(root, "api-home-private")
+    File.mkdir!(private_api)
+    assert :ok = ModelServices.write_home(private_api, service, {:home, home})
+    config = File.read!(Path.join(private_api, "config.toml"))
+    assert config =~ ~s(openai_base_url = "https://chatgpt.com/backend-api/codex")
+    refute config =~ "chatgpt_base_url"
   end
 
   test "legacy freezing preserves auth references and current restrictions without inventing evidence", %{root: root, settings: s} do

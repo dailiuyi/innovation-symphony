@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.MvpModelRoutingTest do
   use SymphonyElixir.TestSupport
   import ExUnit.CaptureLog
+  alias Mix.Tasks.Mvp.Models
   alias SymphonyElixir.ModelServicesFixture, as: F
   alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices}
 
@@ -121,8 +122,81 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "configuration fallback cannot register a default account's catalog or pass a turn", c do
+    for mode <- ~w(warning-before-init warning-after-init warning-details warning-page-two warning-turn warning-output malformed-warning malformed-warning-details) do
+      trace = Path.join(c.root, "#{mode}.json")
+      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} #{mode}", state_dir: Path.join(c.root, "state-#{mode}")}
+      settings = put_in(settings.model_services["presets"]["coding"]["connection"]["base_url"], "https://unverified-channel.example/v1")
+      {:ok, service} = ModelServices.snapshot(settings, "coding", :coder, "fixture")
+
+      if mode in ~w(warning-turn warning-output) do
+        assert {:error, :model_service_configuration_invalid} =
+                 AppServer.run(c.workspace, "test", c.issue, model: service["model"], model_service: service)
+      else
+        assert {:error, :model_service_configuration_invalid} = AppServer.list_models(service)
+        assert {:error, {:model_discovery_failed, failed}} = ModelCatalog.refresh(settings, "coding")
+        previous = settings.model_services["catalog"]["coding"]
+        assert failed["catalog"]["coding"] == Map.put(previous, "error", "discovery_failed")
+        assert failed["validations"] == settings.model_services["validations"]
+        refute failed["catalog"]["coding"]["models"]["gpt-next"]
+        assert {:error, :model_discovery_failed} = Models.execute("refresh", settings, ["coding"])
+        assert {:ok, saved} = ModelServices.load(ModelServices.path(settings), nil)
+        assert saved["catalog"]["coding"] == failed["catalog"]["coding"]
+        assert saved["validations"] == failed["validations"]
+        requests = trace |> File.read!() |> Jason.decode!() |> Map.fetch!("requests")
+        refute Enum.any?(requests, &(&1["method"] in ["thread/start", "turn/start"]))
+      end
+    end
+  end
+
+  test "real Codex loads both legacy auth-home roles and their frozen effort without inference", c do
+    codex = System.get_env("SYMPHONY_TEST_CODEX") || System.find_executable("codex") || "/opt/codex"
+    assert File.regular?(codex), "Codex client unavailable: #{codex}"
+    home = Path.join(c.root, "client-auth")
+    File.mkdir!(home)
+    # The isolated legacy path only uses auth.json, even with incompatible home config.
+    File.write!(Path.join(home, "config.toml"), ~s(profile = "ignored"\nmodel_reasoning_effort = "low"\n))
+    settings = %{c.settings | model_services: nil, model_command: "env TOKIO_WORKER_THREADS=2 #{codex} app-server"}
+    settings = Map.put(settings, :sandbox, %{:enabled => true, "auth_home" => home})
+    assert {:ok, models} = Intake.resolve_comments([F.comment(1, "/symphony models reviewer=gpt-test")], settings)
+    client_workflow(c.workspace)
+
+    token = "e30." <> Base.url_encode64(Jason.encode!(%{"sub" => "offline", "exp" => 4_102_444_800}), padding: false) <> ".synthetic"
+
+    auths = [
+      {%{"OPENAI_API_KEY" => "synthetic-offline-client-key"}, "openai_base_url", "https://api.openai.com/v1"},
+      {%{"tokens" => %{"id_token" => token, "access_token" => token, "refresh_token" => "synthetic-refresh"}}, "chatgpt_base_url", "https://chatgpt.com/backend-api"}
+    ]
+
+    for {auth, route_key, route} <- auths, role <- ~w(coder reviewer) do
+      File.write!(Path.join(home, "auth.json"), Jason.encode!(auth))
+      assert {:ok, services} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+      service = services[role]
+      assert service["parameters"] == %{"reasoning_effort" => "high"}
+      config = client_config(c.workspace, service)
+      assert config["model_reasoning_effort"] == "high"
+      assert config["model_provider"] == "openai"
+      assert config[route_key] == route
+    end
+  end
+
+  test "real Codex accepts independent registered API-key providers without inference", c do
+    codex = System.get_env("SYMPHONY_TEST_CODEX") || System.find_executable("codex") || "/opt/codex"
+    assert File.regular?(codex), "Codex client unavailable: #{codex}"
+    settings = %{c.settings | model_command: "env TOKIO_WORKER_THREADS=2 #{codex} app-server"}
+    client_workflow(c.workspace)
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+      config = client_config(c.workspace, service)
+      assert config["model_provider"] == "symphony"
+      assert config["model_providers"]["symphony"]["base_url"] == service["connection"]["base_url"]
+      assert config["model_providers"]["symphony"]["env_key"] == "SYMPHONY_MODEL_KEY"
+      assert config["model_reasoning_effort"] == service["parameters"]["reasoning_effort"]
+    end
+  end
+
   test "local catalog discovery uses AppServer and refuses inference without the kernel sandbox", c do
-    alias Mix.Tasks.Mvp.Models
     trace = Path.join(c.root, "managed.json")
     s = %{c.settings | model_command: "python3 #{c.binary} #{trace} probe"}
     assert {:ok, discovered} = Models.execute("refresh", s, ["coding"])
@@ -135,7 +209,6 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   end
 
   test "management run binds its requested workflow before real AppServer discovery", c do
-    alias Mix.Tasks.Mvp.Models
     trace = Path.join(c.root, "entrypoint.json")
     file = Path.join(c.root, "MODELS.md")
     {:ok, workflow} = Workflow.current()
@@ -368,7 +441,8 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       {"badRequest", :unclassified, 1},
       {"other", :unclassified, 1},
       {"429", :model_rate_limited, 2},
-      {"503", :model_service_unavailable, 2}
+      {"503", :model_service_unavailable, 2},
+      {"warning-output", :configuration_invalid, 1}
     ]
 
     budgets = [{"stage", 2, 4}, {"total", 4, 2}, {"wall", 4, 4}]
@@ -416,10 +490,10 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       }
 
       failure =
-        if category == :unclassified do
-          {:turn_failed, %{"codexErrorInfo" => mode, "message" => "protocol failure"}}
-        else
-          {:model_call_failed, category}
+        case category do
+          :unclassified -> {:turn_failed, %{"codexErrorInfo" => mode, "message" => "protocol failure"}}
+          :configuration_invalid -> :model_service_configuration_invalid
+          _ -> {:model_call_failed, category}
         end
 
       expected = if budget == "wall" or (budget == "total" and calls == 2), do: :mvp_recovery_resource_exhausted, else: failure
@@ -451,6 +525,61 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
   defp hash(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 
+  defp client_workflow(workspace) do
+    root = Path.dirname(workspace)
+    opts = [workspace_root: root, codex_read_timeout_ms: 5000, codex_approval_policy: "never"]
+    write_workflow_file!(Workflow.workflow_file_path(), opts)
+  end
+
+  defp client_config(workspace, service) do
+    read_only = service["role"] == "reviewer"
+    opts = [model: service["model"], model_service: service, tools: false, read_only: read_only]
+    assert {:ok, session} = AppServer.start_session(workspace, opts)
+
+    try do
+      refute File.read!(Path.join(session.service_runtime.home, "config.toml")) =~ "[model_providers.openai]"
+      Port.command(session.port, Jason.encode!(%{"id" => 90, "method" => "config/read", "params" => %{}}) <> "\n")
+      client_response(session.port, 90)["config"]
+    after
+      # Wait for this native test client to exit before deleting its writer home.
+      try do
+        {:os_pid, pid} = Port.info(session.port, :os_pid)
+        assert {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+        port = session.port
+        assert_receive {^port, {:exit_status, _}}, 5000
+      after
+        AppServer.stop_session(session)
+      end
+
+      refute File.exists?(session.service_runtime.home)
+    end
+  end
+
+  defp client_response(port, id) do
+    receive do
+      {^port, {:data, {:eol, line}}} ->
+        case Jason.decode(to_string(line)) do
+          {:ok, %{"id" => ^id, "result" => result}} ->
+            result
+
+          {:ok, %{"id" => ^id, "error" => error}} ->
+            flunk("Codex request failed: #{inspect(error)}")
+
+          {:ok, %{"method" => "configWarning", "params" => %{"summary" => summary}}} ->
+            refute summary =~ "Invalid configuration"
+            client_response(port, id)
+
+          _ ->
+            client_response(port, id)
+        end
+
+      {^port, {:exit_status, status}} ->
+        flunk("Codex exited: #{status}")
+    after
+      5000 -> flunk("Codex config/read timed out")
+    end
+  end
+
   defp drain_events(acc) do
     receive do
       {:event, msg} -> drain_events([msg | acc])
@@ -472,14 +601,28 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     turns = 0
     def write_trace(): pathlib.Path(trace).write_text(json.dumps(data))
     def send(obj): print(json.dumps(obj), flush=True)
+    def warning():
+        send({'method': 'configWarning', 'params': {'summary': 'Invalid configuration; using defaults.',
+              'details': 'Rejected managed configuration'}})
     for line in sys.stdin:
         req = json.loads(line); data['requests'].append(req); write_trace()
         method, rid = req.get('method'), req.get('id')
-        if method == 'initialize': send({'id': rid, 'result': {}})
+        if method == 'initialize':
+            send({'method': 'configWarning', 'params': {'summary': 'Linux sandbox needs user namespaces.', 'details': None}})
+            if mode == 'warning-before-init': warning()
+            send({'id': rid, 'result': {}})
+            if mode == 'warning-after-init': warning()
+            if mode == 'warning-details':
+                send({'method': 'configWarning', 'params': {'summary': 'Configuration warning',
+                      'details': 'Falling back to defaults'}})
+            if mode == 'malformed-warning': send({'method': 'configWarning', 'params': []})
+            if mode == 'malformed-warning-details':
+                send({'method': 'configWarning', 'params': {'summary': 'Configuration warning', 'details': {}}})
         elif method == 'model/list':
             if mode == 'malformed': send({'id': rid, 'result': {'data': 'bad'}})
             else:
                 cursor = req['params']['cursor']
+                if mode == 'warning-page-two' and cursor is not None: warning()
                 send({'id': rid, 'result': {'data': [{'model': 'gpt-test' if cursor is None else 'gpt-next',
                       'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]}],
                       'nextCursor': 'page-two' if cursor is None or mode == 'cycle' else None}})
@@ -488,6 +631,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
         elif method == 'thread/start': send({'id': rid, 'result': {'thread': {'id': 'thread', 'model': 'gpt-configured'}}})
         elif method == 'turn/start':
             turns += 1
+            if mode == 'warning-turn': warning()
             send({'id': rid, 'result': {'turn': {'id': 'turn'}}})
             if mode == 'error':
                 print('error ' + os.environ['SYMPHONY_MODEL_KEY'], file=sys.stderr, flush=True)
@@ -500,6 +644,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                     send({'method': 'item/completed', 'params': {'item': {'type': 'commandExecution', 'exitCode': 0}}})
                     text = json.dumps({'token': token})
                 send({'method': 'item/completed', 'params': {'item': {'type': 'agentMessage', 'text': text}}})
+                if mode == 'warning-output': warning()
                 status, error = 'completed', None
                 terminal_mode = mode.removeprefix('probe-')
                 if terminal_mode in ('401', '403', '429', '503', 'quota'):

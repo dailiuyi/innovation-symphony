@@ -427,14 +427,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec write_home(Path.t(), map(), tuple()) :: :ok | {:error, term()}
   def write_home(home, service, credential) do
     service = effective_connection(service)
-    provider_id = if match?({:home, _}, credential), do: "openai", else: "symphony"
-
-    provider =
-      "model_provider = #{Jason.encode!(provider_id)}\n" <>
-        "web_search = \"disabled\"\n" <>
-        effort_config(service) <>
-        ~s([model_providers.#{provider_id}]\nname = "OpenAI"\nbase_url = #{Jason.encode!(service["connection"]["base_url"])}\nwire_api = "responses"\n) <>
-        if(match?({:env, _, _}, credential), do: "env_key = \"SYMPHONY_MODEL_KEY\"\n", else: "requires_openai_auth = true\n")
+    provider = "web_search = \"disabled\"\n" <> effort_config(service) <> provider_config(service, credential)
 
     restrictions =
       ~s([features]\napps = false\nplugins = false\nhooks = false\ncodex_hooks = false\ncode_mode = false\njs_repl = false\nbrowser_use = false\ncomputer_use = false\nskip_host_skill_discovery = true\nmulti_agent = false\nshell_snapshot = false\n)
@@ -442,14 +435,24 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     with :ok <- connection_ready(service), :ok <- File.write(Path.join(home, "config.toml"), provider <> restrictions, [:exclusive]), do: link_auth(home, credential)
   end
 
+  # Built-in provider IDs are reserved in Codex. Keep its auth.json handling and
+  # freeze the route using supported root fields, never model_providers.openai.
+  defp provider_config(service, {:home, home}) do
+    url = service["connection"]["base_url"]
+    route_key = if chatgpt_auth?(home), do: "chatgpt_base_url", else: "openai_base_url"
+    route = if route_key == "chatgpt_base_url", do: String.trim_trailing(url, "/codex"), else: url
+    ~s(model_provider = "openai"\n#{route_key} = #{Jason.encode!(route)}\n)
+  end
+
+  defp provider_config(service, {:env, _, _}) do
+    ~s(model_provider = "symphony"\n[model_providers.symphony]\nname = "OpenAI"\nbase_url = #{Jason.encode!(service["connection"]["base_url"])}\nwire_api = "responses"\nenv_key = "SYMPHONY_MODEL_KEY"\n)
+  end
+
   @spec connection_ready(map()) :: :ok | {:error, atom()}
   def connection_ready(%{"credential_ref" => "auth_home:" <> home} = service) do
-    with {:ok, raw} <- File.read(Path.join(home, "auth.json")),
-         {:ok, %{"tokens" => tokens}} when is_map(tokens) <- Jason.decode(raw) do
-      if service["connection"]["base_url"] == "https://chatgpt.com/backend-api/codex", do: :ok, else: {:error, :model_auth_route_incompatible}
-    else
-      _ -> :ok
-    end
+    if chatgpt_auth?(home) and service["connection"]["base_url"] != "https://chatgpt.com/backend-api/codex",
+      do: {:error, :model_auth_route_incompatible},
+      else: :ok
   end
 
   def connection_ready(_), do: :ok
@@ -467,15 +470,19 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   # Codex's ChatGPT OAuth route differs from the API-key Responses endpoint.
   # Normalize only the legacy API default; explicit administrator channels remain explicit.
   defp effective_connection(%{"credential_ref" => "auth_home:" <> home, "connection" => %{"base_url" => "https://api.openai.com/v1"}} = service) do
-    with {:ok, raw} <- File.read(Path.join(home, "auth.json")),
-         {:ok, %{"tokens" => tokens}} when is_map(tokens) <- Jason.decode(raw) do
-      put_in(service, ["connection", "base_url"], "https://chatgpt.com/backend-api/codex")
-    else
-      _ -> service
-    end
+    if chatgpt_auth?(home), do: put_in(service, ["connection", "base_url"], "https://chatgpt.com/backend-api/codex"), else: service
   end
 
   defp effective_connection(service), do: service
+
+  defp chatgpt_auth?(home) do
+    with {:ok, raw} <- File.read(Path.join(home, "auth.json")),
+         {:ok, %{"tokens" => tokens}} when is_map(tokens) <- Jason.decode(raw) do
+      true
+    else
+      _ -> false
+    end
+  end
 
   @doc "Freeze newly claimed legacy workflows without asserting historical capability evidence."
   @spec freeze(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
