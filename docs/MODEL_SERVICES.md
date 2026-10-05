@@ -70,9 +70,10 @@ Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
 连接必须为 HTTPS Responses URL，禁止 URL 用户信息、查询、片段及未知字段。
 凭据引用支持 `env:NAME`、`auth_home:/absolute/path`（后者读取控制器侧 auth.json）；
 文件内容、API key 和 token 从不写入注册表或快照。`auth_home` 中的 ChatGPT
-登录采用内置 OpenAI provider；旧 API 默认地址在领取时解析为
-`https://chatgpt.com/backend-api/codex` 并冻结。ChatGPT OAuth 不发往 API key 的
-`api.openai.com/v1` 路由或其他连接。`auth_home` 的独立配置不覆盖保留的
+登录采用内置 OpenAI provider；未指定后台根时，领取解析为
+`https://chatgpt.com/backend-api/codex` 并冻结。管理员明确给出的 ChatGPT 后台根
+也可冻结为受控 HTTPS `/codex` 连接；OAuth 不发往 API key 的
+`api.openai.com/v1` 路由。`auth_home` 的独立配置不覆盖保留的
 `[model_providers.openai]`：API key 使用顶层 `openai_base_url`，ChatGPT 使用顶层
 `chatgpt_base_url`（后台 API 根，Codex 添加 `/codex`），继续保留原推理参数。
 环境变量 API key 使用非保留的 `symphony` provider，保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
@@ -153,8 +154,14 @@ provider/model、有效参数、连接、适配身份、执行命令、凭据引
 
 未配置新注册表的工作流和旧评论沿用白名单，领取时标记 legacy_migration，冻结旧
 模型、现有 Codex 命令及旧执行路径的有效配置。非隔离路径读取控制器 CODEX_HOME
-中 config.toml 的 model_provider、provider base_url/wire_api/env_key 和
-model_reasoning_effort，保留自定义 HTTPS Responses 渠道及环境凭据引用；
+中 config.toml 的 model_provider、provider base_url/wire_api/env_key、原生
+openai_base_url/chatgpt_base_url 和 model_reasoning_effort，保留自定义 HTTPS
+Responses 渠道及环境凭据引用。内置 API 路由优先使用 openai_base_url，再取
+OPENAI_BASE_URL 和旧默认；自定义 provider 的显式 base_url 优先，原生字段不
+覆盖它。ChatGPT 登录取 chatgpt_base_url（缺省为官方后台根），忽略 API 路由字段
+及环境连接，去除根地址末尾斜杠后按 Codex 行为追加一次 `/codex`；若原根已经
+以 `/codex` 结尾，也追加，生成角色配置时只移除最后一次追加的后缀以还原原根。
+凭据引用保持原认证选择，不把两个角色切换到新账号；
 未指定 effort 时不强加 high。隔离路径原本自行生成配置，固定内置 OpenAI 和
 high，仅从 sandbox.auth_home 取得 auth.json；该目录 config.toml 的 low、
 自定义 provider、profiles 或不可解析内容均不影响冻结或调用，不能引入迁移阻塞。

@@ -111,3 +111,40 @@ live 开关的外部平台 E2E。临时目录与源码目录分离后，所有�
 `execution_sandbox: cgroup v2 is required`，未降低要求或宣称本环境内核集成通过。
 真实 GPT 推理、准确最终候选的外部复验及独立 Review 均未在此会话执行。
 所有改动仅本地保存，没有提交、推送、创建 PR、合并、部署或升级运行服务。
+
+## 2026-10-05 本轮：非隔离原生连接兼容修复
+
+本轮确认旧非隔离 config.toml 的 openai_base_url/chatgpt_base_url 被迁移解析器
+拒绝，且连接提取遗漏这两个原生字段。新增三项回归在修复前均因
+legacy_model_service_migration_required 失败；修复后模型服务与路由套件共
+41 项通过。保留原自定义 provider、隔离路径忽略 auth_home/config.toml、重试、
+诊断、所有恢复入口、Review 结构及候选提交绑定回归。
+
+新回归不启用新注册表，沿用旧模型评论，分别核对两个角色的认证引用和指纹、
+原生连接、low/medium 及未指定 effort；领取冻结后改写原 config.toml，模拟
+AppServer 的实际 turn/start 仍采用冻结配置。另覆盖原生 API 地址与环境覆盖的
+优先级、自定义 provider 优先级、ChatGPT 后台根的末尾斜杠及已含 `/codex` 的
+往返映射；布尔/整数、HTTP、含凭据或查询的连接在冻结前拒绝。
+
+真实 codex-cli 0.160.0 离线创建角色 thread，通过 config/read 核对生成配置的
+有效连接和推理参数。此项只验证客户端加载，不执行真实 GPT 推理，不产生模型
+能力验证证据。模拟 turn/start、离线客户端加载与真实 GPT 验收仍分别记录。
+
+本次重新运行的完整门禁结果在下方记录；上节旧轮 TMPDIR 冲突保留为历史。
+检查报告中的 candidate_sha 仍是原 Git HEAD，本轮修复属于未提交工作树，不能
+把该字段当作包含修复的最终候选 SHA；控制器另行固定候选和独立 Review。
+
+| 本轮检查 | 结果 |
+| --- | --- |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出 0；format、specs.check、严格 Credo、覆盖率测试、Dialyzer、escript.build 全部通过。722 项中 716 通过、0 失败、6 跳过、0 排除、0 无效；覆盖率 100%，Dialyzer 0 错误。 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出 0；669 项中 663 通过、0 失败、6 跳过、0 排除、0 无效。 |
+| `python3 -B -m unittest scripts.tests.test_execution_sandbox -v` | 退出 0；2 项 CLI 回归通过，2 项受管 Linux 内核集成跳过。 |
+| `bash scripts/execution_sandbox.sh --check` | 退出 2；`execution_sandbox: cgroup v2 is required`，本环境无法执行所需内核集成。 |
+| `git diff --check` | 通过。 |
+
+本轮证据为 `.check-evidence/candidate-fhh806lg/` 和
+`.check-evidence/baseline-yntpc6ei/`，两个 policy.json 的 policy_changes 均为空。
+两套 Elixir 测试的 6 项跳过仍为未启用 live 开关的外部平台 E2E。
+真实双角色 GPT 推理、准确候选的受管 Linux 内核隔离及独立交付 Review 未执行，
+不以本次模拟路由或离线客户端结果标记这些验收通过。改动仅本地保存，未提交、
+推送、创建 PR、合并、部署或升级运行服务；未修改控制器证据或运行凭据。

@@ -3,16 +3,17 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
 
   alias SymphonyElixir.Mvp.ModelServices
 
-  @root_keys ~w(model model_provider model_reasoning_effort approval_policy sandbox_mode web_search personality)
+  @root_keys ~w(model model_provider model_reasoning_effort openai_base_url chatgpt_base_url approval_policy sandbox_mode web_search personality)
   @provider_keys ~w(name base_url wire_api env_key requires_openai_auth)
 
   @spec read(Path.t(), map(), (String.t() -> String.t() | nil)) :: {:ok, map()} | {:error, atom()}
   def read(home, sandbox, environment) do
     with {:ok, config} <- effective_config(home, sandbox),
+         true <- native_fields?(config),
          {:ok, provider} <- provider(config),
          {:ok, reference} <- reference(provider, home, environment),
          parameters = parameters(config, sandbox),
-         connection = %{"base_url" => provider["base_url"] || environment.("OPENAI_BASE_URL") || "https://api.openai.com/v1", "protocol" => "responses"},
+         connection = connection(config, provider, reference, environment),
          preset = %{
            "version" => 1,
            "provider" => "openai",
@@ -29,6 +30,28 @@ defmodule SymphonyElixir.Mvp.LegacyModelService do
       _ -> {:error, :legacy_model_service_migration_required}
     end
   end
+
+  defp native_fields?(config),
+    do: Enum.all?(~w(openai_base_url chatgpt_base_url), fn key -> not Map.has_key?(config, {"", key}) or is_binary(config[{"", key}]) end)
+
+  defp connection(config, provider, reference, environment) do
+    builtin = Map.get(config, {"", "model_provider"}, "openai") == "openai"
+
+    url =
+      if builtin and chatgpt_reference?(reference) do
+        # Codex treats this as a backend root and always appends /codex, even
+        # when the administrator's root already ends in that suffix.
+        String.trim_trailing(Map.get(config, {"", "chatgpt_base_url"}, "https://chatgpt.com/backend-api"), "/") <> "/codex"
+      else
+        native = if builtin, do: config[{"", "openai_base_url"}]
+        provider["base_url"] || native || environment.("OPENAI_BASE_URL") || "https://api.openai.com/v1"
+      end
+
+    %{"base_url" => url, "protocol" => "responses"}
+  end
+
+  defp chatgpt_reference?("auth_home:" <> home), do: ModelServices.chatgpt_auth?(home)
+  defp chatgpt_reference?(_), do: false
 
   # Legacy ExecutionSandbox generated its own config; auth_home supplied auth.json
   # only. Importing that home's provider, profiles or effort changes old execution.

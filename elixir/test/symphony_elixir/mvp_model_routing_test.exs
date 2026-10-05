@@ -196,6 +196,57 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "legacy nonisolated native API routing freezes both roles and loads in real Codex", c do
+    auth = %{"OPENAI_API_KEY" => "synthetic-native-api-key"}
+
+    for effort <- ["low", nil] do
+      assert_native_legacy_routing(c, auth, "openai_base_url", "https://native-api.example/v1", effort)
+    end
+  end
+
+  test "legacy nonisolated native ChatGPT roots freeze the exact Codex suffix for both roles", c do
+    token = "e30." <> Base.url_encode64(Jason.encode!(%{"sub" => "offline", "exp" => 4_102_444_800}), padding: false) <> ".synthetic"
+    auth = %{"tokens" => %{"id_token" => token, "access_token" => token, "refresh_token" => "synthetic-refresh"}}
+
+    for root <- ["https://native-chatgpt.example/backend-api", "https://native-chatgpt.example/backend-api/", "https://native-chatgpt.example/backend-api/codex"] do
+      assert_native_legacy_routing(c, auth, "chatgpt_base_url", root, nil)
+    end
+
+    assert_native_legacy_routing(c, auth, "chatgpt_base_url", "https://native-chatgpt.example/backend-api", "medium")
+  end
+
+  test "legacy native fields respect authentication and provider precedence and reject malformed routes", c do
+    home = Path.join(c.root, "native-precedence")
+    File.mkdir!(home)
+    settings = %{c.settings | model_services: nil} |> Map.put(:sandbox, %{"auth_home" => home})
+    models = %{coder: "gpt-test", reviewer: "gpt-test"}
+    native = ~s(openai_base_url = "https://native-api.example/v1"\nchatgpt_base_url = "https://native-chatgpt.example/backend-api"\n)
+
+    environment = fn
+      "OPENAI_BASE_URL" -> "https://environment.example/v1"
+      "OPENAI_API_KEY" -> "synthetic-environment-key"
+      _ -> nil
+    end
+
+    File.write!(Path.join(home, "config.toml"), native)
+    assert {:ok, services} = ModelServices.freeze(models, settings, environment: environment)
+    assert services["coder"]["credential_ref"] == "env:OPENAI_API_KEY"
+    assert services["coder"]["connection"]["base_url"] == "https://native-api.example/v1"
+
+    custom = ~s(model_provider = "company"\n[model_providers.company]\nbase_url = "https://custom.example/v1"\nenv_key = "GH12_CODER_KEY"\n)
+    File.write!(Path.join(home, "config.toml"), native <> custom)
+    assert {:ok, services} = ModelServices.freeze(models, settings, environment: environment)
+    assert services["reviewer"]["credential_ref"] == "env:GH12_CODER_KEY"
+    assert services["reviewer"]["connection"]["base_url"] == "https://custom.example/v1"
+
+    for field <- ~w(openai_base_url chatgpt_base_url), value <- ["true", "12", ~s("http://unsafe.example"), ~s("https://user:secret@unsafe.example"), ~s("https://unsafe.example?secret=value")] do
+      auth = if field == "chatgpt_base_url", do: %{"tokens" => %{"access_token" => "synthetic"}}, else: %{"OPENAI_API_KEY" => "synthetic"}
+      File.write!(Path.join(home, "auth.json"), Jason.encode!(auth))
+      File.write!(Path.join(home, "config.toml"), "#{field} = #{value}\n")
+      assert {:error, :legacy_model_service_migration_required} = ModelServices.freeze(models, settings, environment: fn _ -> nil end)
+    end
+  end
+
   test "local catalog discovery uses AppServer and refuses inference without the kernel sandbox", c do
     trace = Path.join(c.root, "managed.json")
     s = %{c.settings | model_command: "python3 #{c.binary} #{trace} probe"}
@@ -524,6 +575,57 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   end
 
   defp hash(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+  defp assert_native_legacy_routing(c, auth, field, route, effort) do
+    home = Path.join(c.root, "native-home-#{System.unique_integer([:positive])}")
+    File.mkdir!(home)
+    auth_json = Jason.encode!(auth)
+    File.write!(Path.join(home, "auth.json"), auth_json)
+    parameters = if effort, do: %{"reasoning_effort" => effort}, else: %{}
+    effort_config = if effort, do: ~s(model_reasoning_effort = "#{effort}"\n), else: ""
+    File.write!(Path.join(home, "config.toml"), ~s(#{field} = "#{route}"\n) <> effort_config)
+    previous_home = System.get_env("CODEX_HOME")
+    System.put_env("CODEX_HOME", home)
+    on_exit(fn -> restore_env("CODEX_HOME", previous_home) end)
+    codex = System.get_env("SYMPHONY_TEST_CODEX") || System.find_executable("codex") || "/opt/codex"
+    assert File.regular?(codex), "Codex client unavailable: #{codex}"
+    settings = %{c.settings | model_services: nil, model_command: "env TOKIO_WORKER_THREADS=2 #{codex} app-server"}
+    assert {:ok, models} = Intake.resolve_comments([F.comment(1, "/symphony models reviewer=gpt-test")], settings)
+    # The native root field wins over OPENAI_BASE_URL; neither can replace ChatGPT's root.
+    environment = fn name -> if name == "OPENAI_BASE_URL", do: "https://environment-wrong.example/v1" end
+    assert {:ok, services} = ModelServices.freeze(models, settings, environment: environment)
+    File.write!(Path.join(home, "config.toml"), ~s(#{field} = "https://changed-wrong.example/v1"\nmodel_reasoning_effort = "high"\n))
+    effective_route = if field == "chatgpt_base_url", do: String.trim_trailing(route, "/") <> "/codex", else: route
+    client_workflow(c.workspace)
+
+    for role <- ~w(coder reviewer) do
+      service = services[role]
+      assert service["connection"] == %{"base_url" => effective_route, "protocol" => "responses"}
+      assert service["parameters"] == parameters
+      assert service["credential_ref"] == "auth_home:" <> home
+      assert service["credential_identity"] == hash(auth_json)
+      assert service["source"] == "legacy_migration"
+      assert service["model"] == models[String.to_existing_atom(role)]
+      assert :ok = ModelServices.connection_ready(service)
+      config = client_config(c.workspace, service)
+      assert config["model_provider"] == "openai"
+      assert config[field] == String.trim_trailing(route, "/")
+      assert config["model_reasoning_effort"] == effort
+      trace = Path.join(home, "#{role}.json")
+      simulated = Map.put(service, "command", "python3 #{c.binary} #{trace} success")
+      assert {:ok, _} = ModelServices.run(c.workspace, "test", c.issue, model: service["model"], model_service: simulated, read_only: role == "reviewer")
+      data = trace |> File.read!() |> Jason.decode!()
+      assert data["credential_hash"] == hash(auth_json)
+      assert data["config"] =~ ~s(#{field} = "#{String.trim_trailing(route, "/")}")
+      refute data["config"] =~ "changed-wrong"
+      refute data["config"] =~ "environment-wrong"
+      turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
+      assert turn["model"] == service["model"]
+      assert turn["effort"] == effort
+    end
+
+    restore_env("CODEX_HOME", previous_home)
+  end
 
   defp client_workflow(workspace) do
     root = Path.dirname(workspace)

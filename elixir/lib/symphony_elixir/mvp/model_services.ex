@@ -440,7 +440,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp provider_config(service, {:home, home}) do
     url = service["connection"]["base_url"]
     route_key = if chatgpt_auth?(home), do: "chatgpt_base_url", else: "openai_base_url"
-    route = if route_key == "chatgpt_base_url", do: String.trim_trailing(url, "/codex"), else: url
+    route = if route_key == "chatgpt_base_url", do: String.replace_suffix(url, "/codex", ""), else: url
     ~s(model_provider = "openai"\n#{route_key} = #{Jason.encode!(route)}\n)
   end
 
@@ -449,8 +449,10 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   @spec connection_ready(map()) :: :ok | {:error, atom()}
-  def connection_ready(%{"credential_ref" => "auth_home:" <> home} = service) do
-    if chatgpt_auth?(home) and service["connection"]["base_url"] != "https://chatgpt.com/backend-api/codex",
+  def connection_ready(%{"credential_ref" => "auth_home:" <> home, "connection" => connection}) do
+    chatgpt_route = valid_connection?(connection) and String.ends_with?(connection["base_url"], "/codex")
+
+    if chatgpt_auth?(home) and not chatgpt_route,
       do: {:error, :model_auth_route_incompatible},
       else: :ok
   end
@@ -475,7 +477,9 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
   defp effective_connection(service), do: service
 
-  defp chatgpt_auth?(home) do
+  @doc false
+  @spec chatgpt_auth?(Path.t()) :: boolean()
+  def chatgpt_auth?(home) do
     with {:ok, raw} <- File.read(Path.join(home, "auth.json")),
          {:ok, %{"tokens" => tokens}} when is_map(tokens) <- Jason.decode(raw) do
       true
