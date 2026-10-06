@@ -78,11 +78,15 @@ Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
 `chatgpt_base_url`（后台 API 根，Codex 添加 `/codex`），继续保留原推理参数。
 环境变量 API key 使用非保留的 `symphony` provider，保留管理员显式配置的渠道。角色启动命令来自受控 WORKFLOW
 `codex.command`，冻结为执行适配身份，评论无法设置它。含 `--config`/`-c`、
-`--profile`/`-p`、`--model`/`-m` 或 CODEX_HOME、provider/base_url/env_key
+`--profile`/`-p`、`--model`/`-m` 或 CODEX_HOME、SYMPHONY_MODEL_KEY、provider/base_url/env_key
 覆盖及 shell 变量/命令展开的启动命令在新预设冻结与启动前拒绝（包括看似无害的 config 参数），避免 Codex
 命令行优先级覆盖角色路由；改用预设字段。受管进程清除继承的 OPENAI_BASE_URL。每次 AppServer 使用独立
 0700 主机配置目录和进程环境；沙盒中的模型主机目录包含隔离环境定义，凭据不进任务
 执行环境。既有安全功能开关及 reviewer 的内核只读挂载保留，不修改共享 Codex 配置。
+受管凭据变量的赋值、取消设置及引号/转义变体同样拒绝；旧迁移、完整快照冻结、
+普通角色调用、目录发现和能力验证共用校验。损坏的持久 JSON 返回
+`invalid_model_services_json`，错误不携带文件原文，调度日志和 preflight 保持安全错误；
+加载或保存失败不覆盖原持久文件。
 
 本期本地管理员入口（从 `elixir/` 运行，不启动调度器）：
 

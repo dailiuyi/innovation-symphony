@@ -92,6 +92,44 @@ defmodule SymphonyElixir.MvpModelAuthorizationTest do
     assert {:error, :model_service_authorization_unavailable} = ModelServices.options(context, :coder)
   end
 
+  test "initial registry decode failures cannot expose secrets through configuration, polling or CLI", %{settings: s} do
+    bind!(s)
+    assert {:ok, saved} = ModelServices.save(ModelServices.path(s), s.model_services, 0, s.model_services)
+    secret = "synthetic-malformed-registry-secret"
+
+    for {malformed, reason} <- [
+          {~s({"accidental_key":"#{secret}",), :invalid_model_services_json},
+          {Jason.encode!(%{"accidental_key" => secret}), :invalid_model_services}
+        ] do
+      File.write!(ModelServices.path(s), malformed)
+
+      assert {:error, ^reason} = ModelServices.load(ModelServices.path(s), saved)
+      assert {:error, ^reason} = Config.settings()
+      assert {:error, {:invalid_mvp_config, ^reason}} = SymphonyElixir.Config.validate!()
+      assert {:error, ^reason} = ModelServices.read(s)
+      assert {:error, ^reason} = ModelServices.save(ModelServices.path(s), saved, 1, saved)
+
+      log =
+        capture_log(fn ->
+          # Exercise the actual polling callback synchronously, without starting a scheduler.
+          assert {:noreply, state} = Orchestrator.handle_info(:run_poll_cycle, %Orchestrator.State{})
+          Process.cancel_timer(state.tick_timer_ref)
+          assert state.running == %{}
+        end)
+
+      assert log =~ "MVP dispatch disabled by invalid configuration: #{inspect(reason)}"
+      refute log =~ secret
+      refute log =~ malformed
+      args = ["--i-understand-that-this-will-be-running-without-the-usual-guardrails", "--preflight", s.workflow_path]
+      assert {:error, report} = CLI.evaluate(args)
+      assert report == "Preflight failed: #{inspect(reason)}"
+      refute report =~ secret
+      assert File.read!(ModelServices.path(s)) == malformed
+      refute File.exists?(ModelServices.path(s) <> ".next")
+      refute File.exists?(ModelServices.path(s) <> ".lock")
+    end
+  end
+
   test "retry reads successful WorkflowStore reload without replacing the original context", %{settings: s, root: root} do
     bind!(s)
     {:ok, s} = Config.settings()

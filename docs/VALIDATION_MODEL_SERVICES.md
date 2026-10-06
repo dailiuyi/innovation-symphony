@@ -246,3 +246,55 @@ specs.check、严格 Credo、732 项测试（726 通过、0 失败、6 跳过，
 以上为未提交工作树的本地结果；检查报告中的 candidate_sha 仍为原 Git HEAD，
 不代表包含修复的最终提交。控制器另行固定完整候选、执行完整验证和独立 Review。
 未取得本轮真实 GPT 推理或受管内核证据，不能据此宣称 GH-12 全部验收完成。
+
+## 2026-10-06：受管凭据命令与持久 JSON 错误边界
+
+本轮仅修复 GH-12 的两项公共边界缺陷。启动命令禁止引用或覆盖
+`SYMPHONY_MODEL_KEY`，沿用既有引号/转义归一化；完整服务冻结也校验两个角色的
+快照，拒绝携带危险旧命令或畸形服务集合。持久注册表的 JSON 解析异常转换为
+`invalid_model_services_json`，不返回带原文的 DecodeError；结构错误仍返回
+`invalid_model_services`。没有修改默认配置、预算、调度、隔离 runner 或验收政策。
+
+- A04/A05/A10：两个角色分别覆盖普通 `env`、`env --`、`env -i`、引号拆分、
+  反斜杠及 unset 形式。新预设和旧迁移冻结、AppServer 启动与目录发现、能力验证
+  和证据登记均拒绝；模拟进程在启动时写标记，拒绝路径不产生标记，不新增型号或
+  成功能力证据，不改变原目录时间。管理输出和捕获日志不含合成秘密。现有领取代码路径
+  通过模拟 GitHub 只读请求进入 blocked，回执仅记录安全错误，没有 services 或秘密，
+  不创建任务工作区。安全完整快照仍可冻结，畸形集合拒绝。
+- A04/A05/A08：保留正常双角色并发路由回归，新增正常目录刷新与成功工具/结构输出
+  探测；分别比较实际模拟 AppServer 子进程的凭据指纹、冻结指纹、目录渠道及角色
+  证据绑定，其他账号不能复用证据，角色默认不变。模拟成功不证明真实 GPT 权限。
+- A09/A10：含合成秘密的损坏 JSON，以及可解析但结构无效的 JSON，分别覆盖初始
+  配置读取、validate、实际轮询回调日志、本地管理读取及保存失败；错误没有原文或
+  秘密，持久文件字节不变。真实打包 escript 的 preflight 对损坏注册表退出 1，
+  输出安全错误，没有通过报告，文件、回执及证据不变。
+
+修复前的定向测试明确复现命令进入快照和 DecodeError 携带合成秘密。新增正常探测
+最初因夹具工作区超出测试 WORKFLOW 根而失败，已修正测试绑定后通过；真实领取
+夹具初次缺少 GitHub terminal_states，补全后通过。没有修改产品路径或配置检查。
+首轮冻结 candidate 的 736 项测试为 0 失败、6 跳过，但严格 Credo 有两处长行，
+覆盖率为 99.98%，未达原 100% 门禁；已修正长行并补充结构无效的持久 JSON 回归。
+首轮失败证据保留于 `.check-evidence/candidate-rs7kr6ys/`，最终完整重跑结果另记。
+
+`python3 -B -m unittest scripts.tests.test_execution_sandbox -v` 退出 0，2 项 CLI
+通过、2 项受管内核集成跳过。准确本地 `scripts/execution_sandbox.sh` 的 SHA-256 为
+`e2700ba6205c6f59bc213ea632f1d43eec3b6cb83f71ba47dd5bc39b03ec0bc9`；本轮直接运行
+`bash scripts/execution_sandbox.sh --check` 退出 2，原始错误为
+`execution_sandbox: cgroup v2 is required`。没有更改 runner 或使用已安装版本
+冒充候选内核实测。真实双角色 GPT 推理、准确候选内核集成和独立 Review 未执行。
+本轮只保存本地代码与自检记录，不提交、推送、创建 PR、合并、部署或升级服务，
+不修改运行凭据、`.git` 或控制器 `/evidence`。
+
+| 本轮最终检查 | 结果 |
+| --- | --- |
+| `python3 /opt/symphony/scripts/check_isolated.py candidate` | 退出 0；format、specs.check、严格 Credo、覆盖率测试、Dialyzer、escript.build 全部通过。736 项中 730 通过、0 失败、6 跳过、0 排除、0 无效；覆盖率 100%，Dialyzer 0 错误。 |
+| `python3 /opt/symphony/scripts/check_isolated.py baseline` | 退出 0；669 项中 663 通过、0 失败、6 跳过、0 排除、0 无效。 |
+| `git diff --check` | 通过。 |
+
+最终 candidate 证据位于 `.check-evidence/candidate-nvczasmk/`，baseline 位于
+`.check-evidence/baseline-4lmeapgd/`，两份 policy.json 的 policy_changes 均为空。
+两套 Elixir 测试的 6 项跳过为未启用 live 开关的 GitHub、GitLab、Jira、Asana 及
+Linear 本地/SSH worker E2E。上述通过不替代真实 GPT、候选内核隔离或独立 Review。
+代码与新增测试已逐字节核对为最终检查副本中的版本；检查报告 candidate_sha 仍为
+原 Git HEAD `aa12c85fd6ade88ffe4123c2a35629119cd05af1`，不能当作包含未提交修复的
+最终提交。控制器另行固定候选及复核，本轮未提交或改变运行服务。

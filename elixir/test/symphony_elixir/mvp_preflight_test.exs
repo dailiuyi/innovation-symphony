@@ -347,6 +347,35 @@ defmodule SymphonyElixir.Mvp.PreflightTest do
 
       assert files(ctx.root) == before
     end
+
+    secret = "synthetic-packaged-registry-secret"
+    malformed = ~s({"accidental_key":"#{secret}",)
+    registry_path = Path.join(ctx.root, "state/model-services.json")
+    File.write!(registry_path, malformed)
+    before = files(ctx.root)
+
+    {output, status} =
+      System.cmd(
+        "timeout",
+        [
+          "--signal=KILL",
+          "15s",
+          "escript",
+          "bin/symphony",
+          "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+          "--preflight",
+          ctx.path
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1, output
+    assert output =~ "Preflight failed: :invalid_model_services_json"
+    refute output =~ secret
+    refute output =~ malformed
+    refute output =~ "preflight-request"
+    refute output =~ ~s("status":"passed")
+    assert files(ctx.root) == before
   end
 
   defp probe(path, request) do

@@ -83,7 +83,12 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   def load(path, fallback) do
     case File.read(path) do
       {:ok, raw} ->
-        with {:ok, registry} <- Jason.decode(raw), :ok <- validate(registry), do: {:ok, registry}
+        with {:ok, registry} <- Jason.decode(raw), :ok <- validate(registry) do
+          {:ok, registry}
+        else
+          {:error, %Jason.DecodeError{}} -> {:error, :invalid_model_services_json}
+          error -> error
+        end
 
       {:error, :enoent} ->
         fallback_registry(fallback)
@@ -346,7 +351,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
     command != "" and not String.contains?(command, [<<0>>, "\n", "\r", "$", "`"]) and
       not Regex.match?(~r/(?i)(?:[a-z0-9_]*(?:api_key|token|secret|password)\s*=|--(?:api-key|token|password)\b)/, normalized) and
-      not Regex.match?(~r/(?i)(?:CODEX_HOME|model_provider|base_url|env_key|(?:^|\s)(?:--(?:config|profile|model)(?:\b|=)|-[cpm]))/, normalized)
+      not Regex.match?(~r/(?i)(?:CODEX_HOME|SYMPHONY_MODEL_KEY|model_provider|base_url|env_key|(?:^|\s)(?:--(?:config|profile|model)(?:\b|=)|-[cpm]))/, normalized)
   end
 
   defp command_safe?(_), do: false
@@ -531,7 +536,13 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec freeze(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def freeze(models, settings, opts \\ [])
   @spec freeze(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def freeze(%{services: services}, _settings, _opts), do: {:ok, services}
+  def freeze(%{services: services}, _settings, _opts) do
+    with true <- is_map(services) or {:error, :invalid_model_service_snapshot},
+         :ok <- validate_snapshot(services["coder"]),
+         :ok <- validate_snapshot(services["reviewer"]) do
+      {:ok, services}
+    end
+  end
 
   def freeze(models, settings, opts) do
     command = Map.get(settings, :model_command, SymphonyElixir.Config.settings!().codex.command)

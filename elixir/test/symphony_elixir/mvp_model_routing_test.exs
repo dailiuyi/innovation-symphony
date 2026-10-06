@@ -3,7 +3,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   import ExUnit.CaptureLog
   alias Mix.Tasks.Mvp.Models
   alias SymphonyElixir.ModelServicesFixture, as: F
-  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices}
+  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices, Receipt}
 
   setup do
     root = Path.join(System.tmp_dir!(), "gh12-routing-#{System.unique_integer([:positive])}")
@@ -489,6 +489,141 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "managed credential overrides are rejected before freezing, discovery, verification or startup", c do
+    secret = "synthetic-command-override-secret"
+    {:ok, selected} = Intake.resolve_comments([], c.settings)
+
+    prefixes = [
+      "env SYMPHONY_MODEL_KEY=#{secret}",
+      "env -- SYMPHONY_MODEL_KEY=#{secret}",
+      "env -i SYMPHONY_MODEL_KEY=#{secret}",
+      ~s(env 'SYMPHONY_MODEL_KEY=#{secret}'),
+      "env SYMPHONY_''MODEL_KEY=#{secret}",
+      ~S(env SYMPHONY_MODEL_\KEY=) <> secret,
+      "env -u SYMPHONY_MODEL_KEY",
+      "env --unset=SYMPHONY_MODEL_KEY"
+    ]
+
+    log =
+      capture_log(fn ->
+        for prefix <- prefixes, {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+          trace = Path.join(c.root, "override-#{role}.json")
+          settings = %{c.settings | model_command: "#{prefix} python3 #{c.binary} #{trace} success"}
+          unsafe = Map.put(selected.services[Atom.to_string(role)], "command", settings.model_command)
+          forged = put_in(selected.services[Atom.to_string(role)], unsafe)
+
+          assert {:error, :model_service_command_unsafe} = ModelServices.snapshot(settings, id, role, "fixture")
+          assert {:error, :model_service_command_unsafe} = ModelServices.freeze(Map.take(selected, [:coder, :reviewer]), settings)
+          assert {:error, :invalid_model_service_snapshot} = ModelServices.freeze(forged, settings)
+          comments = [F.comment(1, "/symphony configs #{role}=#{id}")]
+          assert {:error, :model_service_command_unsafe} = Intake.resolve_comments(comments, settings)
+          options = [model: "gpt-test", model_service: unsafe]
+          assert {:error, :invalid_model_service_snapshot} = AppServer.start_session(c.workspace, options)
+          assert {:error, :invalid_model_service_snapshot} = AppServer.list_models(unsafe)
+          assert {:error, :invalid_model_service_snapshot} = ModelCatalog.attest(settings.model_services, unsafe, F.proof(role))
+          assert {:error, :model_service_command_unsafe} = ModelCatalog.verify(settings, id, "gpt-test", role, c.workspace)
+          assert {:error, {:model_discovery_failed, failed}} = ModelCatalog.refresh(settings, id)
+          assert failed["catalog"][id]["models"] == settings.model_services["catalog"][id]["models"]
+          assert failed["catalog"][id]["refreshed_at"] == settings.model_services["catalog"][id]["refreshed_at"]
+          assert failed["validations"] == settings.model_services["validations"]
+          assert {:ok, shown} = Models.execute("show", settings, [])
+          assert shown["availability"][id]["gpt-test"][Atom.to_string(role)]["reason"] == "model_service_command_unsafe"
+          refute Jason.encode!(shown) =~ secret
+          refute inspect(failed) =~ secret
+          refute File.exists?(trace)
+        end
+
+        # Follow real admission through its blocked receipt, rather than writing a fixture receipt.
+        {:ok, workflow} = Workflow.load(c.settings.workflow_path)
+        trace = Path.join(c.root, "claim-override.json")
+        command = "env SYMPHONY_MODEL_KEY=#{secret} python3 #{c.binary} #{trace} success"
+
+        tracker = %{
+          "kind" => "github",
+          "provider" => %{"repo" => "owner/repo", "token" => "synthetic"},
+          "required_labels" => ["ready"],
+          "active_states" => ["open"],
+          "terminal_states" => ["closed"]
+        }
+
+        config = workflow.config |> Map.put("tracker", tracker) |> Map.put("agent", %{"max_concurrent_agents" => 1}) |> put_in(["codex", "command"], command)
+        File.write!(c.settings.workflow_path, "---\n" <> Jason.encode!(config) <> "\n---\nfixture")
+        Workflow.set_workflow_file_path(c.settings.workflow_path)
+        assert :ok = WorkflowStore.force_reload()
+        assert {:ok, settings} = SymphonyElixir.Mvp.Config.settings()
+        issue = %Issue{id: "unsafe-claim", identifier: "GH-12", state: "open", labels: ["ready"], native_ref: %{"repo" => "owner/repo", "number" => 12}}
+
+        request = fn "GET", path, _, nil, _ ->
+          body =
+            case Path.basename(path) do
+              "events" -> [%{"id" => 1, "event" => "labeled", "label" => %{"name" => "ready"}, "actor" => %{"login" => "owner"}}]
+              "comments" -> [F.comment(1, "/symphony configs coder=coding reviewer=reviewing")]
+            end
+
+          {:ok, %{status: 200, body: body}}
+        end
+
+        assert :ok = SymphonyElixir.Mvp.run(issue, self(), settings, request_fun: request)
+        receipt_path = Receipt.path(settings, issue)
+        receipt = Receipt.read(receipt_path)
+        assert receipt["status"] == "blocked"
+        assert receipt["reason"] == ":model_service_command_unsafe"
+        refute receipt["services"]
+        refute File.read!(receipt_path) =~ secret
+        refute File.exists?(trace)
+        refute File.exists?(Config.local_workspace_root())
+      end)
+
+    refute log =~ secret
+    assert Path.wildcard(Path.join(c.workspace, "model-capability-probe-*")) == []
+    assert {:ok, services} = ModelServices.freeze(selected, c.settings)
+    assert services == selected.services
+
+    for malformed <- [nil, [], %{}, Map.delete(selected.services, "reviewer")] do
+      assert {:error, :invalid_model_service_snapshot} = ModelServices.freeze(%{services: malformed}, c.settings)
+    end
+  end
+
+  test "discovery and capability evidence bind the credentials actually used by each role subprocess", c do
+    workflow_opts = [workspace_root: c.root, codex_command: "must-not-be-used", codex_read_timeout_ms: 1000]
+    write_workflow_file!(Workflow.workflow_file_path(), workflow_opts)
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      trace = Path.join(c.root, "account-#{role}.json")
+      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} probe-success"}
+      {settings, workspace} = F.probe_settings(settings, c.root)
+      System.put_env("GH12_PROBE_WORKSPACE", workspace)
+      on_exit(fn -> System.delete_env("GH12_PROBE_WORKSPACE") end)
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+      expected = hash(if role == :coder, do: "synthetic-route-coder", else: "synthetic-route-reviewer")
+
+      assert {:ok, discovered} = ModelCatalog.refresh(settings, id)
+      assert Jason.decode!(File.read!(trace))["credential_hash"] == expected
+      assert service["credential_identity"] == expected
+      channel = ModelServices.channel_binding(service)
+      assert discovered["catalog"][id]["models"]["gpt-next"]["discovery"][channel]["source"] == "appserver"
+
+      settings = %{settings | model_services: discovered}
+      parent = self()
+
+      probe =
+        F.sandbox_probe(fn workspace, prompt, issue, options ->
+          result = AppServer.run(workspace, prompt, issue, options)
+          send(parent, {:probe_result, result})
+          result
+        end)
+
+      verification = ModelCatalog.verify(settings, id, "gpt-test", role, workspace, probe: probe)
+      assert_received {:probe_result, {:ok, result}}
+      assert Jason.decode!(result.output_text)["token"] =~ ~r/\A[a-f0-9]{48}\z/
+      assert {:ok, verified} = verification
+      assert Jason.decode!(File.read!(trace))["credential_hash"] == expected
+      assert verified["validations"][ModelServices.binding(service)]["source"] == "inference"
+      refute verified["validations"][ModelServices.binding(Map.put(service, "credential_identity", hash("other-account")))]
+      assert verified["defaults"] == c.settings.model_services["defaults"]
+    end
+  end
+
   test "real Turn errors reject prior valid output and classify server revocation and recoverable errors", c do
     for {mode, category} <- [
           {"401", :model_account_forbidden},
@@ -543,7 +678,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   end
 
   test "execution attempts stop on protocol permissions and quota but retry transient errors within original budgets", c do
-    alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
+    alias SymphonyElixir.Mvp.{Attempts, Recovery}
 
     cases = [
       {"401", :model_account_forbidden, 1},
@@ -773,6 +908,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     def warning():
         send({'method': 'configWarning', 'params': {'summary': 'Invalid configuration; using defaults.',
               'details': 'Rejected managed configuration'}})
+    write_trace()
     for line in sys.stdin:
         req = json.loads(line); data['requests'].append(req); write_trace()
         method, rid = req.get('method'), req.get('id')
@@ -793,7 +929,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                 cursor = req['params']['cursor']
                 if mode == 'warning-page-two' and cursor is not None: warning()
                 send({'id': rid, 'result': {'data': [{'model': 'gpt-test' if cursor is None else 'gpt-next',
-                      'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]}],
+                      'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}, {'reasoningEffort': 'high'}]}],
                       'nextCursor': 'page-two' if cursor is None or mode == 'cycle' else None}})
         elif method == 'environment/status': send({'id': rid, 'result': {'status': 'unknown'}})
         elif method == 'environment/info': send({'id': rid, 'result': {'cwd': 'file:///workspace'}})
