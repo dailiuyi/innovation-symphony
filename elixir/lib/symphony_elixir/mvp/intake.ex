@@ -4,12 +4,13 @@ defmodule SymphonyElixir.Mvp.Intake do
   """
 
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.Mvp.{ModelCatalog, ModelServices}
   alias SymphonyElixir.Tracker.Issue
 
   @page_size 100
   @command_prefix "/symphony"
   @assignment ~r/\A(?<role>[A-Za-z][A-Za-z0-9_-]*)=(?<model>[A-Za-z0-9][A-Za-z0-9._:\/+-]*)\z/
-  @command ~r/\A\/symphony models (?<assignments>\S+(?: \S+)*)\z/
+  @command ~r/\A\/symphony (?<kind>models|configs) (?<assignments>\S+(?: \S+)*)\z/
 
   @type model_choice :: %{coder: String.t(), reviewer: String.t()}
 
@@ -42,11 +43,22 @@ defmodule SymphonyElixir.Mvp.Intake do
   def resolve_comments(comments, settings) when is_list(comments) and is_map(settings) do
     with :ok <- validate_settings(settings),
          {:ok, defaults} <- defaults(settings) do
-      apply_comments(comments, defaults, MapSet.new(settings.allowed_models), MapSet.new(settings.allowed_actors))
+      with {:ok, selected} <- apply_comments(comments, defaults, settings, MapSet.new(settings.allowed_actors)), :ok <- validate_selected(selected, settings), do: {:ok, selected}
     end
   end
 
   def resolve_comments(_comments, _settings), do: {:error, :invalid_comments}
+
+  defp validate_selected(%{services: services}, settings) do
+    Enum.reduce_while(services, :ok, fn {_, service}, :ok ->
+      case ModelCatalog.available(settings.model_services, service) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_selected(_, _), do: :ok
 
   defp enabled(%{enabled: true}), do: :ok
   defp enabled(%{enabled: false}), do: {:error, :mvp_disabled}
@@ -71,6 +83,12 @@ defmodule SymphonyElixir.Mvp.Intake do
   end
 
   defp valid_name_list?(_values), do: false
+
+  defp defaults(%{model_services: registry} = settings) when is_map(registry) do
+    with {:ok, coder} <- ModelServices.snapshot(settings, registry["defaults"]["coder"], :coder, "project_default"),
+         {:ok, reviewer} <- ModelServices.snapshot(settings, registry["defaults"]["reviewer"], :reviewer, "project_default"),
+         do: {:ok, %{coder: coder["model"], reviewer: reviewer["model"], services: %{"coder" => coder, "reviewer" => reviewer}}}
+  end
 
   defp defaults(settings) do
     coder = Map.get(settings, :coder_model)
@@ -229,7 +247,7 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   defp event_order(_event), do: -1
 
-  defp apply_comments(comments, defaults, allowed_models, allowed_actors) do
+  defp apply_comments(comments, defaults, settings, allowed_actors) do
     indexed =
       comments
       |> Enum.with_index()
@@ -237,11 +255,11 @@ defmodule SymphonyElixir.Mvp.Intake do
       |> Enum.sort_by(fn {comment, index} -> comment_order(comment, index) end)
 
     Enum.reduce_while(indexed, {:ok, defaults}, fn {comment, _index}, {:ok, selected} ->
-      apply_comment(comment, selected, allowed_models, allowed_actors)
+      apply_comment(comment, selected, settings, allowed_actors)
     end)
   end
 
-  defp apply_comment(comment, selected, allowed_models, allowed_actors) do
+  defp apply_comment(comment, selected, settings, allowed_actors) do
     case authorized_comment_command(comment, allowed_actors) do
       :ignore ->
         {:cont, {:ok, selected}}
@@ -249,17 +267,39 @@ defmodule SymphonyElixir.Mvp.Intake do
       {:error, reason} ->
         {:halt, {:error, reason}}
 
-      {:ok, assignments} ->
-        apply_assignments_result(assignments, selected, allowed_models)
+      {:ok, kind, assignments} ->
+        apply_assignments_result(kind, assignments, selected, settings, comment)
     end
   end
 
-  defp apply_assignments_result(assignments, selected, allowed_models) do
-    case apply_assignments(assignments, selected, allowed_models) do
+  defp apply_assignments_result(kind, assignments, selected, settings, comment) do
+    source = "issue_comment:#{comment["id"]}:#{comment["user"]["login"]}:#{kind}"
+    result = role_assignments(kind, assignments, selected, settings, source)
+
+    case result do
       {:ok, updated} -> {:cont, {:ok, updated}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
   end
+
+  defp role_assignments(kind, assignments, selected, %{model_services: registry} = settings, source) when is_map(registry) do
+    Enum.reduce_while(assignments, {:ok, selected}, fn {role, value}, {:ok, acc} ->
+      result =
+        if kind == "configs" or value == "default",
+          do: ModelServices.select(settings, role, value, source, acc),
+          else: ModelServices.select_model(settings, role, value, source, acc)
+
+      selection_result(result)
+    end)
+  end
+
+  defp role_assignments("configs", _, _, _, _), do: {:error, :model_services_not_configured}
+
+  defp role_assignments(_, assignments, selected, settings, _),
+    do: apply_assignments(assignments, selected, MapSet.new(settings.allowed_models))
+
+  defp selection_result({:ok, updated}), do: {:cont, {:ok, updated}}
+  defp selection_result(error), do: {:halt, error}
 
   defp comment_order(comment, index) do
     case integer_id(comment["id"]) do
@@ -310,13 +350,17 @@ defmodule SymphonyElixir.Mvp.Intake do
       {:error, {:missing_model_command_id, comment_id}}
     else
       case Regex.named_captures(@command, body) do
-        %{"assignments" => assignments} ->
-          parse_assignments(String.split(assignments, " "), comment_id)
+        %{"kind" => kind, "assignments" => assignments} ->
+          parse_kind_assignments(kind, assignments, comment_id)
 
         _ ->
           {:error, {:malformed_model_command, comment_id}}
       end
     end
+  end
+
+  defp parse_kind_assignments(kind, assignments, id) do
+    with {:ok, parsed} <- parse_assignments(String.split(assignments, " "), id), do: {:ok, kind, parsed}
   end
 
   defp parse_assignments(tokens, comment_id) do

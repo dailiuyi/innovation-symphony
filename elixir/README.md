@@ -326,7 +326,15 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Testing
 
+The default suite includes real Codex client configuration tests. They use synthetic
+credentials and do not run model inference or require a real account. Set
+`SYMPHONY_TEST_CODEX` to an executable client path; otherwise the tests look for
+`codex` on `PATH`, then `/opt/codex`. CI provisions Codex CLI `0.160.0` from the
+official Linux x86_64 release, verifies its pinned SHA-256 and version, and exports
+the explicit path before running the checks. A missing client is a test failure.
+
 ```bash
+export SYMPHONY_TEST_CODEX=/absolute/path/to/codex
 make all
 ```
 
@@ -417,3 +425,20 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
+
+### GH-12 role model services
+
+The optional `mvp.model_services` registry separates coder/reviewer provider, model,
+parameters, connection and credential references. Local management uses
+`mix mvp.models`; persisted state overrides the workflow seed and is loaded for
+new claims. Tasks retain full service snapshots through retry and audited recovery.
+Each invocation reads current authorization from the task's bound workflow and
+original persistent registry; revoked access or unreadable authorization stops the
+call without replacing frozen routing or using the workflow store's stale cache.
+See [MODEL_SERVICES](../docs/MODEL_SERVICES.md) for schema, discovery versus
+capability evidence, administrator commands, legacy migration and rollback.
+Terminal historical receipts can be enriched with `mix mvp.models migrate` using
+explicit historical routing and current role evidence under the existing audit lock;
+this does not resume execution or add budget. Unsupported legacy Codex settings
+stop with a migration error instead of adopting a new address or effort.
+No network configuration write endpoint or View settings page is introduced.

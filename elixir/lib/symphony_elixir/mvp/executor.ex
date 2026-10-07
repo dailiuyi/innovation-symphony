@@ -1,8 +1,6 @@
 defmodule SymphonyElixir.Mvp.Executor do
   @moduledoc "Bounded coder/check/reviewer rounds using independent upstream AppServer sessions."
 
-  alias SymphonyElixir.Codex.AppServer
-
   alias SymphonyElixir.Mvp.{
     Attempts,
     Commands,
@@ -11,6 +9,8 @@ defmodule SymphonyElixir.Mvp.Executor do
     ExternalHandoff,
     Feedback,
     InterruptedCoder,
+    ModelServiceMigration,
+    ModelServices,
     OperatorRecheck,
     Receipt,
     Recovery,
@@ -1548,10 +1548,11 @@ defmodule SymphonyElixir.Mvp.Executor do
       "branch" => context.branch,
       "base_sha" => context.base,
       "models" => Map.new(context.models, fn {key, value} -> {Atom.to_string(key), value} end),
+      "services" => Map.get(context, :services),
       "max_rework" => previous_limit(context, mode)
     }
 
-    Map.take(data, Map.keys(expected)) == expected and data["repository"] == context.issue.native_ref["repo"] and
+    Map.take(Map.put_new(data, "services", nil), Map.keys(expected)) == expected and data["repository"] == context.issue.native_ref["repo"] and
       context.evidence == context.receipt <> ".evidence" and resume_state?(context, data, mode)
   end
 
@@ -1716,7 +1717,8 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp resume_round_shape_valid?({round, number}, context, data, mode, total_rounds) do
     is_map(round) and round["round"] == number and round["base_sha"] == context.base and
-      round["models"] == data["models"] and round_candidate_valid?(round, number, mode, total_rounds) and
+      round["models"] == data["models"] and ModelServiceMigration.services(data, round, context.receipt) == {:ok, data["services"]} and
+      round_candidate_valid?(round, number, mode, total_rounds) and
       round["evidence"] == Path.join(context.evidence, "round-#{number}")
   end
 
@@ -1771,7 +1773,8 @@ defmodule SymphonyElixir.Mvp.Executor do
         workspace: workspace,
         issue: issue,
         settings: settings,
-        models: models,
+        models: Map.take(models, [:coder, :reviewer]),
+        services: Map.get(models, :services),
         receipt: receipt,
         opts: opts,
         repository: repository,
@@ -1787,7 +1790,8 @@ defmodule SymphonyElixir.Mvp.Executor do
         "base_sha" => base,
         "workspace" => workspace,
         "branch" => branch,
-        "models" => models,
+        "models" => context.models,
+        "services" => context.services,
         "max_rework" => context.limit,
         "rework_count" => 0,
         "issue_scope" => issue_scope(issue),
@@ -1871,10 +1875,10 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp start_round(%{limit: 0, evidence: evidence}, _number), do: evidence
+  defp start_round(%{limit: 0, services: nil, evidence: evidence}, _number), do: evidence
 
   defp start_round(context, number) do
-    evidence = Path.join(context.evidence, "round-#{number}")
+    evidence = if context.limit == 0, do: context.evidence, else: Path.join(context.evidence, "round-#{number}")
     File.mkdir_p!(evidence)
     data = Receipt.read(context.receipt)
 
@@ -1883,6 +1887,7 @@ defmodule SymphonyElixir.Mvp.Executor do
       "base_sha" => context.base,
       "candidate_sha" => nil,
       "models" => context.models,
+      "services" => Map.get(context, :services),
       "evidence" => evidence,
       "checks" => context.settings.checks,
       "usage" => if(Recovery.enabled?(context.settings), do: %{}, else: %{"coder" => Usage.empty(), "reviewer" => Usage.empty()})
@@ -1933,16 +1938,39 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp run_legacy_agent(context, role, prompt) do
     handler = fn message ->
-      if context.limit > 0, do: Usage.record(context.receipt, Atom.to_string(role), message)
+      if usage_recorded?(context), do: Usage.record(context.receipt, Atom.to_string(role), message)
       on_message(context).(message)
     end
 
-    options = [model: Map.fetch!(context.models, role), tools: false, on_message: handler]
+    options = [tools: false, on_message: handler]
     options = if role == :reviewer, do: options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: options
-    result = Keyword.get(context.opts, :agent, &AppServer.run/4).(context.workspace, prompt, context.issue, options)
-    if context.limit > 0, do: Usage.record(context.receipt, Atom.to_string(role), result_usage(result))
+
+    result =
+      with {:ok, service_options} <- ModelServices.options(context, role) do
+        if usage_recorded?(context) do
+          Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service])
+        end
+
+        result = Keyword.get(context.opts, :agent, &ModelServices.run/4).(context.workspace, prompt, context.issue, service_options ++ options)
+
+        actual =
+          case result do
+            {:ok, response} -> response[:actual_model]
+            _ -> nil
+          end
+
+        if usage_recorded?(context) do
+          Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service], actual)
+        end
+
+        result
+      end
+
+    if usage_recorded?(context), do: Usage.record(context.receipt, Atom.to_string(role), result_usage(result))
     result
   end
+
+  defp usage_recorded?(context), do: context.limit > 0 or not is_nil(context.services)
 
   defp result_usage({:ok, result}), do: result
   defp result_usage(_), do: %{}

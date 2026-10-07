@@ -290,3 +290,132 @@ defmodule SymphonyElixir.TestSupport do
     "  #{name}: |\n#{indented}"
   end
 end
+
+defmodule SymphonyElixir.ModelServicesFixture do
+  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelCatalog, ModelServices}
+
+  def probe_settings(settings, root) do
+    home = Path.join(root, "probe-auth")
+    workspace = Path.join(root, "probe-workspace")
+    File.mkdir_p!(home)
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(home, "auth.json"), "synthetic-host-auth")
+
+    {:ok, sandbox} =
+      ExecutionSandbox.settings(%{
+        "enabled" => true,
+        "root" => Path.join(root, "probe-sandboxes"),
+        "auth_home" => home,
+        "toolchain" => "/trusted/toolchain",
+        "codex" => "/trusted/codex",
+        "dependencies" => "/trusted/dependencies",
+        "trusted_root" => "/trusted/runtime"
+      })
+
+    {settings |> Map.put(:sandbox, sandbox) |> Map.put(:check_timeout_ms, 60_000), workspace}
+  end
+
+  def sandbox_probe(probe) do
+    fn workspace, prompt, issue, options ->
+      assert_environment = options[:execution_environment]
+      true = assert_environment.read_only
+      "task" = assert_environment.id
+      "/workspace" = assert_environment.cwd
+      scratch = Path.join(Path.dirname(assert_environment.codex_home), "sandbox")
+      File.mkdir_p!(scratch)
+
+      File.write!(
+        Path.join(scratch, "result.json"),
+        Jason.encode!(%{
+          "cleanup_complete" => true,
+          "export_complete" => true,
+          "scratch_root" => scratch,
+          "exit_status" => 0
+        })
+      )
+
+      probe.(workspace, prompt, issue, options)
+    end
+  end
+
+  def settings(root) do
+    presets =
+      Map.new([{"coding", "GH12_CODER_KEY", "medium"}, {"reviewing", "GH12_REVIEWER_KEY", "high"}], fn {id, key, effort} ->
+        {id,
+         %{
+           "version" => 1,
+           "provider" => "openai",
+           "adapter" => "codex_app_server",
+           "model" => "gpt-test",
+           "parameters" => %{"reasoning_effort" => effort},
+           "connection" => %{"base_url" => "https://#{id}.example/v1", "protocol" => "responses"},
+           "credential_ref" => "env:" <> key
+         }}
+      end)
+
+    registry = %{"revision" => 0, "defaults" => %{"coder" => "coding", "reviewer" => "reviewing"}, "presets" => presets, "catalog" => %{}, "validations" => %{}}
+
+    settings = %{
+      state_dir: root,
+      model_services: registry,
+      model_command: "codex app-server",
+      allowed_models: ["gpt-test"],
+      allowed_actors: ["owner"],
+      coder_model: "gpt-test",
+      reviewer_model: "gpt-test"
+    }
+
+    registry =
+      Enum.reduce(Map.keys(presets), registry, fn id, acc ->
+        {:ok, acc} = ModelCatalog.register(acc, id, "gpt-test", ~w(medium high))
+        acc
+      end)
+
+    registry =
+      Enum.reduce([{:coder, "coding"}, {:reviewer, "reviewing"}], registry, fn {role, id}, acc ->
+        {:ok, service} = ModelServices.snapshot(%{settings | model_services: acc}, id, role, "fixture")
+        {:ok, acc} = ModelCatalog.attest(acc, service, proof(role))
+        acc
+      end)
+
+    settings = settings |> Map.put(:model_services, registry) |> Map.put(:workflow_path, Path.join(root, "MODEL-WORKFLOW.md"))
+    write_authority!(settings)
+    settings
+  end
+
+  def write_authority!(settings) do
+    config = %{
+      "tracker" => %{"kind" => "linear", "api_key" => "synthetic", "project_slug" => "fixture", "required_labels" => ["ready"]},
+      "workspace" => %{"root" => settings.state_dir <> "-workspaces"},
+      "codex" => %{"command" => settings.model_command},
+      "mvp" => %{
+        "enabled" => true,
+        "coder_model" => settings.coder_model,
+        "reviewer_model" => settings.reviewer_model,
+        "allowed_models" => settings.allowed_models,
+        "allowed_actors" => settings.allowed_actors,
+        "checks" => [["true"]],
+        "state_dir" => settings.state_dir,
+        "model_services" => Map.get(settings, :model_services)
+      }
+    }
+
+    File.mkdir_p!(Path.dirname(settings.workflow_path))
+    File.write!(settings.workflow_path, "---\n" <> Jason.encode!(config) <> "\n---\nfixture")
+  end
+
+  def proof(role) do
+    now = DateTime.utc_now()
+
+    %{
+      "role" => Atom.to_string(role),
+      "validated_at" => DateTime.to_iso8601(now),
+      "expires_at" => DateTime.to_iso8601(DateTime.add(now, 3600)),
+      "capabilities" => ~w(tools structured_output),
+      "actual_model" => nil,
+      "source" => "manual"
+    }
+  end
+
+  def comment(id, body, actor \\ "owner"), do: %{"id" => id, "body" => body, "user" => %{"login" => actor, "type" => "User"}}
+end

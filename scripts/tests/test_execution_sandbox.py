@@ -47,6 +47,7 @@ class ExecutionSandboxCliTest(unittest.TestCase):
             codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             codex.chmod(0o700)
             command = ["/bin/sh", "-euc",
+                       f"test \"$(readlink /proc/self/ns/net)\" != '{os.readlink('/proc/self/ns/net')}'; "
                        f"test -z \"${{CODEX_API_KEY:-}}\"; "
                        "test \"$ELIXIR_MAKE_CACHE_DIR\" = /home/coder/.cache/elixir_make; test -d \"$ELIXIR_MAKE_CACHE_DIR\"; "
                        f"test ! -r '{host_secret}'; "
@@ -79,6 +80,29 @@ class ExecutionSandboxCliTest(unittest.TestCase):
             self.assertTrue(proof["cleanup_complete"])
             self.assertTrue(proof["export_complete"])
             self.assertEqual(proof["outcome"], "completed")
+
+            # Review may read the candidate and use private temporary files,
+            # but the kernel must deny writes even if a model asks for them.
+            review_scratch = root / "review-scratch"
+            review = subprocess.run(
+                ["bash", str(SCRIPT), "--workspace", str(workspace), "--scratch-root", str(review_scratch),
+                 "--toolchain", str(toolchain), "--codex", str(codex), "--trusted-root", str(trusted),
+                 "--dependencies", str(dependencies), "--baseline", str(baseline), "--evidence", str(evidence),
+                 "--timeout-seconds", "30", "--memory-mb", "1024", "--disk-mb", "512", "--pids", "32",
+                 "--cpus", "1", "--read-only-workspace", "true", "--", "python3", "-c",
+                 "import errno\nfrom pathlib import Path\n"
+                 "Path('/tmp/review-private').write_text('ok')\n"
+                 "try:\n Path('/workspace/forbidden').write_text('bad')\n"
+                 "except OSError as e:\n assert e.errno == errno.EROFS\n"
+                 "else:\n raise AssertionError('review workspace writable')\n"
+                 "print('READ_ONLY_OK')"],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(review.returncode, 0, review.stderr)
+            self.assertEqual(review.stdout.strip(), "READ_ONLY_OK")
+            self.assertFalse((review_scratch / "export" / "forbidden").exists())
+            review_proof = json.loads((review_scratch / "result.json").read_text())
+            self.assertTrue(review_proof["cleanup_complete"])
+            self.assertTrue(review_proof["export_complete"])
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("SYMPHONY_SANDBOX_INTEGRATION") == "1",
                          "set SYMPHONY_SANDBOX_INTEGRATION=1 in the provisioned Ubuntu runner")

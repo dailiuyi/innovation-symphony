@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   @moduledoc "Task-private execution environments for coder commands and controller checks."
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.Commands
+  alias SymphonyElixir.Mvp.{Commands, ModelServices}
   alias SymphonyElixir.PathSafety
 
   @paths ~w(root toolchain codex dependencies trusted_root auth_home)
@@ -36,15 +36,18 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
   @spec agent(map(), atom(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def agent(context, role, prompt, options) do
-    config = context.settings.sandbox
-    timeout = Keyword.get(options, :wall_timeout_ms, context.settings.check_timeout_ms)
+    config = role_config(context.settings.sandbox, Keyword.get(options, :model_service))
+    timeout = Keyword.get(options, :wall_timeout_ms, SymphonyElixir.Config.settings!().codex.turn_timeout_ms)
     import_options = Keyword.put(context.opts, :sandbox_max_bytes, config["disk_mb"] * 1_048_576)
 
-    with {:ok, run} <- prepare(config, context, timeout),
-         :ok <- prepare_home(run, config),
+    read_only = role != :coder
+
+    with true <- (is_integer(timeout) and timeout > 0) or {:error, :invalid_wall_timeout},
+         {:ok, run} <- prepare(config, context, timeout, read_only),
+         :ok <- prepare_home(run, config, Keyword.get(options, :model_service)),
          {:ok, before} <- source_files(context.workspace, import_options[:sandbox_max_bytes]) do
-      environment = %{id: "task", cwd: "/workspace", codex_home: run.home}
-      options = Keyword.put(options, :execution_environment, environment)
+      environment = %{id: "task", cwd: "/workspace", codex_home: run.home, read_only: read_only}
+      options = options |> Keyword.put(:execution_environment, environment) |> Keyword.put(:wall_timeout_ms, timeout)
       agent = Keyword.get(context.opts, :sandbox_agent_run, &AppServer.run/4)
       result = invoke(fn -> agent.(context.workspace, isolated_prompt(prompt, role, context), context.issue, options) end)
 
@@ -54,6 +57,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
       end
     end
   end
+
+  defp role_config(config, %{"credential_ref" => "auth_home:" <> home}), do: Map.put(config, "auth_home", home)
+  defp role_config(config, _), do: config
 
   @spec check(map(), [String.t()], pos_integer(), Path.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def check(context, command, timeout, log_path) do
@@ -92,7 +98,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     end
   end
 
-  defp prepare(config, context, timeout) do
+  defp prepare(config, context, timeout, read_only \\ false) do
     root = config["root"]
 
     with :ok <- validate_paths(config, context) do
@@ -105,6 +111,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
       :ok = File.mkdir(home)
       :ok = File.chmod(home, 0o700)
       args = launcher(config, context, scratch, timeout)
+      args = if read_only, do: args ++ ["--read-only-workspace", "true"], else: args
       {:ok, %{root: run, scratch: scratch, home: home, argv: args}}
     end
   end
@@ -178,22 +185,33 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     ]
   end
 
-  defp prepare_home(run, config) do
-    auth = Path.join(config["auth_home"], "auth.json")
+  defp prepare_home(run, config, service) do
+    case prepare_service_home(run.home, config, service) do
+      :ok ->
+        args = tl(run.argv) ++ ["--", "/opt/codex", "exec-server", "--listen", "stdio"]
+        environments = "default = \"task\"\ninclude_local = false\n[[environments]]\nid = \"task\"\nprogram = \"/bin/bash\"\nargs = #{Jason.encode!(args)}\ninitialize_timeout_sec = 120\n"
+        File.write!(Path.join(run.home, "environments.toml"), environments, [:exclusive])
 
-    with true <- File.regular?(auth),
-         :ok <- File.ln_s(auth, Path.join(run.home, "auth.json")) do
-      args = tl(run.argv) ++ ["--", "/opt/codex", "exec-server", "--listen", "stdio"]
-      environments = "default = \"task\"\ninclude_local = false\n[[environments]]\nid = \"task\"\nprogram = \"/bin/bash\"\nargs = #{Jason.encode!(args)}\ninitialize_timeout_sec = 120\n"
-      File.write!(Path.join(run.home, "environments.toml"), environments, [:exclusive])
+        :ok
 
-      File.write!(
-        Path.join(run.home, "config.toml"),
+      error ->
+        error
+    end
+  end
+
+  defp prepare_service_home(home, _config, service) when is_map(service) do
+    with {:ok, credential} <- ModelServices.credential(service["credential_ref"]),
+         do: ModelServices.write_home(home, service, credential)
+  end
+
+  defp prepare_service_home(home, config, nil) do
+    with true <- File.regular?(Path.join(config["auth_home"], "auth.json")),
+         :ok <- File.ln_s(Path.join(config["auth_home"], "auth.json"), Path.join(home, "auth.json")) do
+      File.write(
+        Path.join(home, "config.toml"),
         "model_reasoning_effort = \"high\"\nweb_search = \"disabled\"\n[features]\napps = false\nplugins = false\nhooks = false\ncodex_hooks = false\ncode_mode = false\njs_repl = false\nbrowser_use = false\ncomputer_use = false\nskip_host_skill_discovery = true\nmulti_agent = false\nshell_snapshot = false\n",
         [:exclusive]
       )
-
-      :ok
     else
       _ -> {:error, :sandbox_auth_unavailable}
     end

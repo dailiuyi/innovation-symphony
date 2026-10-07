@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Mvp do
 
   require Logger
   alias SymphonyElixir.{Config, Tracker, Workspace}
-  alias SymphonyElixir.Mvp.{Executor, Intake, Receipt}
+  alias SymphonyElixir.Mvp.{Executor, Intake, ModelServices, Receipt}
 
   @preserved_failure_statuses ["publish_pending", "comment_pending", "awaiting_external"]
 
@@ -65,7 +65,9 @@ defmodule SymphonyElixir.Mvp do
 
     result =
       with {:ok, models} <- Intake.resolve(issue, settings, options),
-           :ok <- Receipt.update(file, "preparing", %{"models" => models}),
+           {:ok, services} <- ModelServices.freeze(models, settings),
+           models = Map.put(models, :services, services),
+           :ok <- Receipt.update(file, "preparing", %{"models" => Map.take(models, [:coder, :reviewer]), "services" => services}),
            {:ok, workspace} <- Workspace.create_for_issue(issue, nil) do
         if is_pid(recipient), do: send(recipient, {:worker_runtime_info, issue.id, %{worker_host: nil, workspace_path: workspace}})
 

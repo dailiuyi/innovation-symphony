@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Mvp.{Attempts, Commands, Executor, InterruptedCoder, Receipt, Recovery}
+  alias SymphonyElixir.Mvp.{Attempts, Commands, Executor, InterruptedCoder, ModelServices, Receipt, Recovery}
 
   @old_boot "00000000-0000-0000-0000-000000000001"
   @new_boot "00000000-0000-0000-0000-000000000002"
@@ -24,6 +24,18 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     assert Process.get(:reviewed_sha) == data["candidate_sha"]
     assert previous_files == Map.new(previous_files, fn {path, _} -> {path, File.read!(path)} end)
     assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
+  end
+
+  test "frozen service timeout requests remain bound and permit the existing audited continuation" do
+    {context, auth, before} = timed_out!(1, true)
+    request = List.last(before["rounds"])["model_requests"]["coder_attempt_4"]
+    assert request["credential_ref"] == "env:GH12_TIMEOUT_KEY"
+    assert request["actual_model"] == nil
+    assert {:ok, _, _, _} = InterruptedCoder.timeout_evidence(context, before)
+    tampered = put_in(before, ["rounds"], List.update_at(before["rounds"], -1, &put_in(&1, ["model_requests", "coder_attempt_4", "model"], "different")))
+    assert {:error, :mvp_interruption_timeout_evidence_mismatch} = InterruptedCoder.timeout_evidence(context, tampered)
+    assert {:ok, @url} = Executor.resume_recovery(context, digest(File.read!(context.receipt)), auth)
+    assert Receipt.read(context.receipt)["services"] == before["services"]
   end
 
   test "timeout continuation authenticates every prior audit and current timeout file" do
@@ -96,8 +108,8 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     assert File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
   end
 
-  defp timed_out!(stage \\ 1) do
-    {context, auth, before} = interrupted!()
+  defp timed_out!(stage \\ 1, services \\ false) do
+    {context, auth, before} = interrupted!(services)
     before = put_in(before, ["recovery", "events"], List.update_at(before["recovery"]["events"], -1, &Map.put(&1, "stage_attempt", stage)))
     File.write!(context.receipt, Jason.encode!(before))
     {:ok, started, _} = DateTime.from_iso8601(before["recovery"]["started_at"])
@@ -394,7 +406,7 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     assert {:error, :mvp_interruption_owner_mismatch} = InterruptedCoder.owner(blocked, before, auth)
   end
 
-  defp interrupted! do
+  defp interrupted!(with_services \\ false) do
     root = Path.join(System.tmp_dir!(), "mvp-interrupted-#{System.unique_integer([:positive])}")
     workspace = Path.join(root, "workspace")
     remote = Path.join(root, "origin.git")
@@ -430,6 +442,31 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     settings = %{checks: [["true"], ["true"], check], check_timeout_ms: 10_000, max_rework: 5}
     settings = Map.merge(settings, %{recovery: policy, sandbox: %{enabled: false}})
     models = %{coder: "gpt-6.1-sol", reviewer: "gpt-6.1-sol"}
+    settings = Map.merge(settings, %{state_dir: Path.join(root, "state"), model_services: nil, allowed_models: ["gpt-6.1-sol"]})
+
+    settings =
+      Map.merge(settings, %{
+        workflow_path: Path.join(root, "MODEL-WORKFLOW.md"),
+        model_command: "codex app-server",
+        coder_model: "gpt-6.1-sol",
+        reviewer_model: "gpt-6.1-sol",
+        allowed_actors: ["owner"]
+      })
+
+    SymphonyElixir.ModelServicesFixture.write_authority!(settings)
+
+    models =
+      if with_services do
+        System.put_env("GH12_TIMEOUT_KEY", "synthetic-timeout-key")
+        on_exit(fn -> System.delete_env("GH12_TIMEOUT_KEY") end)
+        {:ok, services} = ModelServices.freeze(models, settings)
+        {:ok, identity} = ModelServices.credential_identity("env:GH12_TIMEOUT_KEY")
+        services = Map.new(services, fn {role, service} -> {role, service |> Map.put("credential_ref", "env:GH12_TIMEOUT_KEY") |> Map.put("credential_identity", identity)} end)
+        Map.put(models, :services, services)
+      else
+        models
+      end
+
     Process.put(:coder_calls, 0)
     Process.put(:checked, [])
 
@@ -456,7 +493,8 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
       issue: issue,
       repository: repository,
       settings: settings,
-      models: models,
+      models: Map.take(models, [:coder, :reviewer]),
+      services: Map.get(models, :services),
       opts: opts,
       base: before["base_sha"],
       branch: before["branch"],

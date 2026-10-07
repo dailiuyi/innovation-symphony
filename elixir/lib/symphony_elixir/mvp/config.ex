@@ -2,15 +2,16 @@ defmodule SymphonyElixir.Mvp.Config do
   @moduledoc "Configuration for the opt-in GitHub MVP intake path."
 
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Mvp.{ExecutionSandbox, Recovery}
+  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelServices, Recovery}
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workflow
 
-  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery sandbox)
+  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery sandbox model_services)
   @shell_names ["sh", "bash", "dash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]
 
   @type settings :: %{
           configured: boolean(),
+          workflow_path: Path.t() | nil,
           enabled: boolean(),
           coder_model: String.t() | nil,
           reviewer_model: String.t() | nil,
@@ -41,7 +42,10 @@ defmodule SymphonyElixir.Mvp.Config do
              workflow.config,
              workflow_dir
            ) do
-      {:ok, Map.put(settings, :configured, Map.has_key?(workflow.config, "mvp"))}
+      {:ok,
+       settings
+       |> Map.put(:configured, Map.has_key?(workflow.config, "mvp"))
+       |> Map.put(:workflow_path, Map.get(workflow, :path))}
     end
   end
 
@@ -105,10 +109,13 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, sandbox} <- ExecutionSandbox.settings(config["sandbox"]),
          {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          :ok <- required_ready_label(workflow_config, ready_label),
-         :ok <- validate_path_boundaries(state_dir, workflow_config) do
+         :ok <- validate_path_boundaries(state_dir, workflow_config),
+         {:ok, services} <- ModelServices.load(Path.join(state_dir, "model-services.json"), config["model_services"]) do
       {:ok,
        %{
          enabled: true,
+         model_services: services,
+         model_command: get_in(workflow_config, ["codex", "command"]) || "codex app-server",
          coder_model: coder_model,
          reviewer_model: reviewer_model,
          allowed_models: allowed_models,

@@ -38,6 +38,95 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
              )
   end
 
+  test "revoked reviewer service stops a checked candidate before Review or publish" do
+    alias SymphonyElixir.ModelServicesFixture, as: Fixture
+
+    for revocation <- [:credential, :workflow] do
+      context = execution_context!()
+      System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
+      System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
+
+      on_exit(fn ->
+        System.delete_env("GH12_CODER_KEY")
+        System.delete_env("GH12_REVIEWER_KEY")
+        File.rm_rf!(context.root)
+      end)
+
+      services = Fixture.settings(Path.join(context.root, "state"))
+      Workflow.set_workflow_file_path(services.workflow_path)
+      assert :ok = WorkflowStore.force_reload()
+      settings = Map.merge(services, Map.put(check_settings([["true"]]), :max_rework, 1))
+      {:ok, selected} = Intake.resolve_comments([], services)
+
+      agent = fn workspace, _, _, opts ->
+        assert opts[:model_service] == selected.services["coder"]
+        File.write!(Path.join(workspace, "candidate.txt"), "checked candidate")
+
+        if revocation == :credential do
+          System.delete_env("GH12_REVIEWER_KEY")
+        else
+          revoked = put_in(services.model_services, ["catalog", "reviewing", "models", "gpt-test", "disabled"], true)
+          Fixture.write_authority!(%{services | model_services: revoked})
+          assert :ok = WorkflowStore.force_reload()
+        end
+
+        {:ok, %{output_text: "done"}}
+      end
+
+      opts = executor_opts(context, agent: agent, publish: fn _, _, _, _, _, _, _ -> flunk("must not publish without review") end)
+      error = if revocation == :credential, do: :model_credential_missing, else: :model_disabled
+      assert {:error, ^error} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, opts)
+      receipt = Receipt.read(context.receipt)
+      assert receipt["status"] == "blocked"
+      assert receipt["services"] == selected.services
+      assert List.last(receipt["rounds"])["model_requests"]["coder"]["actual_model"] == nil
+      assert receipt["review"] == nil
+    end
+  end
+
+  test "zero rework persists complete service provenance and unknown usage without enabling recovery" do
+    alias SymphonyElixir.ModelServicesFixture, as: Fixture
+
+    for actual <- ["gpt-confirmed", nil] do
+      context = execution_context!()
+      System.put_env("GH12_CODER_KEY", "executor-synthetic-coder")
+      System.put_env("GH12_REVIEWER_KEY", "executor-synthetic-reviewer")
+
+      on_exit(fn ->
+        System.delete_env("GH12_CODER_KEY")
+        System.delete_env("GH12_REVIEWER_KEY")
+        File.rm_rf!(context.root)
+      end)
+
+      settings = Map.merge(Fixture.settings(Path.join(context.root, "state")), check_settings([["true"]])) |> Map.put(:max_rework, 0)
+      {:ok, selected} = Intake.resolve_comments([], settings)
+
+      agent = fn workspace, _, _, opts ->
+        role = opts[:model_service]["role"]
+        if role == "coder", do: File.write!(Path.join(workspace, "candidate.txt"), "candidate")
+        output = if role == "reviewer", do: Jason.encode!(%{"approved" => true, "summary" => "ok"}), else: "done"
+        {:ok, %{output_text: output, actual_model: actual}}
+      end
+
+      assert {:ok, _} = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, executor_opts(context, agent: agent, publish: recording_publish(self())))
+      data = Receipt.read(context.receipt)
+      refute data["recovery"]["enabled"]
+      assert [round] = data["rounds"]
+
+      for role <- ~w(coder reviewer) do
+        request = round["model_requests"][role]
+        assert request["provider"] == "openai"
+        assert request["model"] == "gpt-test"
+        assert request["source"] == "project_default"
+        assert request["actual_model"] == actual
+        assert round["usage"][role]["total_tokens"] == nil
+        assert round["usage"][role]["cost"] == nil
+      end
+
+      assert data["usage"]["total_tokens"] == %{"observed" => nil, "complete" => false}
+    end
+  end
+
   test "creates a checked candidate and calls coder and reviewer independently before publish" do
     context = execution_context!()
     on_exit(fn -> File.rm_rf(context.root) end)

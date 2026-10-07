@@ -13,7 +13,8 @@ usage() {
 Usage: execution_sandbox.sh --check
   execution_sandbox.sh --workspace DIR --scratch-root DIR --toolchain DIR --codex FILE
     --trusted-root DIR --dependencies DIR --baseline DIR --evidence DIR
-    --timeout-seconds N --memory-mb N --disk-mb N --pids N --cpus N -- COMMAND [ARG...]
+    --timeout-seconds N --memory-mb N --disk-mb N --pids N --cpus N
+    [--read-only-workspace true] -- COMMAND [ARG...]
 
 Runs in a private offline namespace. /workspace is a bounded tmpfs copy and .git is read-only.
 Standard streams pass through. Host-only result.json and export/ are written after cleanup.
@@ -116,13 +117,15 @@ run_bounded_prep() {
   [[ $status -eq 0 && $prep_clean == true ]]
 }
 supervisor() {
-  local workspace= scratch= private= cg= toolchain= codex= scripts= deps= baseline= evidence= disk= timeout_s=
+  local workspace= scratch= private= cg= toolchain= codex= scripts= deps= baseline= evidence= disk= timeout_s= host_netns= read_only=false
   while (($#)); do
     case "$1" in
       --workspace) workspace=$2; shift 2;; --scratch-root) scratch=$2; shift 2;; --private) private=$2; shift 2;;
       --cgroup) cg=$2; shift 2;; --toolchain) toolchain=$2; shift 2;; --codex) codex=$2; shift 2;;
       --scripts) scripts=$2; shift 2;; --dependencies) deps=$2; shift 2;; --baseline) baseline=$2; shift 2;;
       --evidence) evidence=$2; shift 2;; --disk-mb) disk=$2; shift 2;; --timeout-seconds) timeout_s=$2; shift 2;;
+      --host-netns) host_netns=$2; shift 2;;
+      --read-only-workspace) read_only=$2; shift 2;;
       --) shift; break;; *) log "invalid supervisor argument: $1"; return 2;;
     esac
   done
@@ -130,6 +133,15 @@ supervisor() {
   local deadline_tick prep_status=125 prep_clean=false remaining
   started=$(date +%s)
   deadline_tick=$((SECONDS + timeout_s))
+  if [[ -z "$host_netns" || "$(readlink /proc/self/ns/net)" == "$host_netns" ]]; then
+    write_result "$scratch" "$cg" 125 true false network_namespace_not_private "$started" "$(date +%s)"; return 1
+  fi
+  # Configure loopback before Bubblewrap's AppArmor child profile drops
+  # capabilities. The supervisor already owns a private network namespace;
+  # the task shares only that namespace, never the host network.
+  if ! ip link set lo up >/dev/null 2>&1; then
+    write_result "$scratch" "$cg" 125 true false loopback_setup_failed "$started" "$(date +%s)"; return 1
+  fi
   if ! mount -t tmpfs -o "size=${disk}m,nr_inodes=$((disk * 128)),mode=0700,nosuid,nodev" tmpfs "$private"; then
     write_result "$scratch" "$cg" 125 true false tmpfs_mount_failed "$started" "$(date +%s)"; return 1
   fi
@@ -146,8 +158,6 @@ supervisor() {
 import os, selectors, subprocess, sys, time
 limit = 67108864
 argv = sys.argv[1:]
-try: subprocess.run(['ip','link','set','lo','up'], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-except Exception as e: print('execution_sandbox: loopback setup failed: '+str(e), file=sys.stderr, flush=True); raise SystemExit(125)
 p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
 s = selectors.PollSelector(); os.set_blocking(sys.stdin.fileno(), False)
 for fd, dst in ((p.stdout.fileno(), sys.stdout.fileno()), (p.stderr.fileno(), sys.stderr.fileno())):
@@ -225,13 +235,15 @@ PYRELAY
       return 1
     fi
   fi
-  local -a b=(bwrap --die-with-parent --clearenv --unshare-user --uid 0 --gid 0 --unshare-pid --unshare-uts --unshare-ipc --unshare-net --cap-drop ALL
-    --cap-add CAP_NET_ADMIN --cap-add CAP_SETUID --cap-add CAP_SETGID --cap-add CAP_SETFCAP
+  local -a b=(bwrap --die-with-parent --clearenv --unshare-user --uid 0 --gid 0 --unshare-pid --unshare-uts --unshare-ipc --share-net --cap-drop ALL
+    --cap-add CAP_SETUID --cap-add CAP_SETGID --cap-add CAP_SETFCAP
     --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib)
   [[ ! -e /lib64 ]] || b+=(--ro-bind /lib64 /lib64)
   b+=(--ro-bind /etc/ssl/certs /etc/ssl/certs --ro-bind /etc/ssl/openssl.cnf /etc/ssl/openssl.cnf
     --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group
-    --proc /proc --dev /dev --dir /run --bind "$private/workspace" /workspace --ro-bind "$workspace/.git" /workspace/.git
+    --proc /proc --dev /dev --dir /run)
+  if [[ $read_only == true ]]; then b+=(--ro-bind "$private/workspace" /workspace); else b+=(--bind "$private/workspace" /workspace); fi
+  b+=(--ro-bind "$workspace/.git" /workspace/.git
     --ro-bind "$toolchain" /opt/toolchain --ro-bind "$codex" /opt/codex --ro-bind "$scripts" /opt/symphony/scripts
     --ro-bind "$deps" /opt/deps --ro-bind "$baseline" /baseline --ro-bind "$evidence" /evidence
     --bind "$private/tmp" /tmp --bind "$private/home" /home/coder --ro-bind "$private/relay.py" /run/symphony-relay.py
@@ -276,18 +288,20 @@ if [[ "${1-}" == --__supervisor ]]; then shift; supervisor "$@"; exit $?; fi
 if [[ "${1-}" == --help || "${1-}" == -h ]]; then usage; exit 0; fi
 if [[ "${1-}" == --check ]]; then check_runtime; printf 'execution_sandbox: ready\n' >&2; exit 0; fi
 
-workspace= scratch= toolchain= codex= trusted= deps= baseline= evidence= timeout_s= memory= disk= pids= cpus=
+workspace= scratch= toolchain= codex= trusted= deps= baseline= evidence= timeout_s= memory= disk= pids= cpus= read_only=false
 while (($#)); do
   case "$1" in
     --workspace) workspace=$2; shift 2;; --scratch-root) scratch=$2; shift 2;; --toolchain) toolchain=$2; shift 2;;
     --codex) codex=$2; shift 2;; --trusted-root) trusted=$2; shift 2;; --dependencies) deps=$2; shift 2;;
     --baseline) baseline=$2; shift 2;; --evidence) evidence=$2; shift 2;; --timeout-seconds) timeout_s=$2; shift 2;;
     --memory-mb) memory=$2; shift 2;; --disk-mb) disk=$2; shift 2;; --pids) pids=$2; shift 2;; --cpus) cpus=$2; shift 2;;
+    --read-only-workspace) read_only=$2; shift 2;;
     --) shift; break;; *) usage >&2; die "unknown option: $1";;
   esac
 done
 [[ -n "$workspace" && -n "$scratch" && -n "$toolchain" && -n "$codex" && -n "$trusted" && -n "$deps" && -n "$baseline" && -n "$evidence" && -n "$timeout_s" && -n "$memory" && -n "$disk" && -n "$pids" && -n "$cpus" ]] || die 'all paths and limits are required'
 (($#)) || die 'command is required after --'
+[[ $read_only == true || $read_only == false ]] || die 'read-only-workspace must be true or false'
 for val in "$timeout_s" "$memory" "$disk" "$pids" "$cpus"; do [[ "$val" =~ ^[1-9][0-9]*$ ]] || die 'limits must be positive integers'; done
 (( timeout_s <= 86400 && memory >= 128 && memory <= 65536 && disk >= 128 && disk <= 65536 && pids <= 65536 && cpus <= 64 )) || die 'resource limit outside supported range'
 check_runtime
@@ -338,10 +352,11 @@ printf '%s\n' "$((memory * 1024 * 1024))" > "$cg/memory.max"
 printf '%s\n' "$pids" > "$cg/pids.max"
 private=$(mktemp -d "$scratch/.private.XXXXXXXX")
 exec {input_fd}<&0
-unshare --mount --propagation private --fork -- /bin/bash "$SCRIPT_PATH" --__supervisor \
+host_netns=$(readlink /proc/self/ns/net)
+unshare --mount --net --propagation private --fork -- /bin/bash "$SCRIPT_PATH" --__supervisor \
   --workspace "$workspace" --scratch-root "$scratch" --private "$private" --cgroup "$cg" \
   --toolchain "$toolchain" --codex "$codex" --scripts "$trusted/scripts" --dependencies "$deps" \
-  --baseline "$baseline" --evidence "$evidence" --disk-mb "$disk" --timeout-seconds "$timeout_s" -- "$@" \
+  --baseline "$baseline" --evidence "$evidence" --disk-mb "$disk" --timeout-seconds "$timeout_s" --host-netns "$host_netns" --read-only-workspace "$read_only" -- "$@" \
   </proc/self/fd/"$input_fd" &
 supervisor_pid=$!
 wait "$supervisor_pid" || true
