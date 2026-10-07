@@ -326,7 +326,15 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Testing
 
+The default suite includes real Codex client configuration tests. They use synthetic
+credentials and do not run model inference or require a real account. Set
+`SYMPHONY_TEST_CODEX` to an executable client path; otherwise the tests look for
+`codex` on `PATH`, then `/opt/codex`. CI provisions Codex CLI `0.160.0` from the
+official Linux x86_64 release, verifies its pinned SHA-256 and version, and exports
+the explicit path before running the checks. A missing client is a test failure.
+
 ```bash
+export SYMPHONY_TEST_CODEX=/absolute/path/to/codex
 make all
 ```
 
