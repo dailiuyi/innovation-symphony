@@ -45,3 +45,8 @@ ci:
 	$(MAKE) dialyzer
 
 all: ci
+
+# Explicit client + disposable HOME, shared with CI and the fixed runner.
+.PHONY: check-clean
+check-clean:
+	python3 ../scripts/clean_check.py -- $(MAKE) all

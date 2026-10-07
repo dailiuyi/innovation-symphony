@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   @moduledoc "Task-private execution environments for coder commands and controller checks."
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.{Commands, ModelServices}
+  alias SymphonyElixir.Mvp.{AutomaticAcceptance, Commands, ModelServices, OperatorRecheck, Receipt}
   alias SymphonyElixir.PathSafety
 
   @paths ~w(root toolchain codex dependencies trusted_root auth_home)
@@ -18,10 +18,13 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     do: {:ok, %{enabled: false}}
 
   def settings(%{"enabled" => true} = value) do
-    allowed = ["enabled" | @paths] ++ Map.keys(@limits)
-    limits = Map.merge(@limits, Map.take(value, Map.keys(@limits)))
+    backend = Map.get(value, "backend", "bubblewrap")
+    extra = if backend == "rootless", do: ~w(backend profile image worker network environment_recipe acceptance_profiles), else: ~w(backend)
+    allowed = ["enabled" | @paths] ++ Map.keys(@limits) ++ extra
+    defaults = if backend == "rootless", do: Map.merge(@limits, %{"disk_mb" => 20_480, "pids" => 512}), else: @limits
+    limits = Map.merge(defaults, Map.take(value, Map.keys(@limits)))
 
-    if Map.keys(value) -- allowed == [] and Enum.all?(@paths, &absolute?(value[&1])) and
+    if valid_backend?(backend, value) and Map.keys(value) -- allowed == [] and Enum.all?(@paths, &absolute?(value[&1])) and
          Enum.all?(limits, fn {key, limit} -> is_integer(limit) and limit in @ranges[key] end) do
       {:ok, Map.merge(value, limits) |> Map.delete("enabled") |> Map.put(:enabled, true)}
     else
@@ -30,6 +33,54 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   end
 
   def settings(_), do: {:error, :invalid_execution_sandbox}
+
+  defp valid_backend?("bubblewrap", _), do: true
+
+  defp valid_backend?("rootless", value) do
+    value["profile"] == "rootless-open-v1" and value["network"] == "public-egress-v1" and
+      is_binary(value["image"]) and Regex.match?(~r/\A[A-Za-z0-9.\/:_-]+@sha256:[0-9a-f]{64}\z/, value["image"]) and
+      is_binary(value["worker"]) and Regex.match?(~r/\A[a-z][a-z0-9_-]{0,31}\z/, value["worker"]) and value["worker"] != "root" and
+      valid_recipe?(Map.get(value, "environment_recipe", "")) and
+      AutomaticAcceptance.valid_profiles?(Map.get(value, "acceptance_profiles", %{}))
+  end
+
+  defp valid_backend?(_, _), do: false
+  defp valid_recipe?(""), do: true
+  defp valid_recipe?(value) when is_binary(value), do: Path.type(value) == :relative and ".." not in Path.split(value) and not String.contains?(value, ["\n", "\r", <<0>>])
+  defp valid_recipe?(_), do: false
+
+  @doc "Fail before reserving a model attempt when the new backend is unavailable."
+  @spec preflight(map()) :: :ok | {:error, term()}
+  def preflight(%{settings: %{sandbox: %{"backend" => "rootless"} = config}} = context) do
+    with :ok <- native_role_commands(context, config),
+         {:ok, run} <- prepare(config, context, 120_000),
+         {:ok, output} <- Commands.run(run.argv ++ ["--preflight", "true", "--", "/opt/codex", "exec-server", "--listen", "stdio"], context.workspace, 120_000),
+         {:ok, %{"status" => "ready", "backend" => "rootless"}} <- Jason.decode(output) do
+      :ok
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :sandbox_preflight_invalid}
+    end
+  end
+
+  def preflight(_), do: :ok
+
+  defp native_role_commands(context, config) do
+    valid =
+      Enum.all?([:coder, :reviewer], fn role ->
+        with {:ok, options} <- ModelServices.options(context, role),
+             command when is_binary(command) <- get_in(options, [:model_service, "command"]),
+             [binary, "app-server" | _] <- OptionParser.split(command) do
+          binary == config["codex"]
+        else
+          _ -> false
+        end
+      end)
+
+    if valid, do: :ok, else: {:error, :sandbox_native_client_not_frozen}
+  rescue
+    _ -> {:error, :sandbox_native_client_not_frozen}
+  end
 
   @spec enabled?(map()) :: boolean()
   def enabled?(settings), do: get_in(settings, [:sandbox, :enabled]) == true
@@ -47,14 +98,19 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
          :ok <- prepare_home(run, config, Keyword.get(options, :model_service)),
          {:ok, before} <- source_files(context.workspace, import_options[:sandbox_max_bytes]) do
       environment = %{id: "task", cwd: "/workspace", codex_home: run.home, read_only: read_only}
+      options = if config["backend"] == "rootless", do: Keyword.put(options, :turn_protocol, "codex-0.160.0-turn-v1"), else: options
       options = options |> Keyword.put(:execution_environment, environment) |> Keyword.put(:wall_timeout_ms, timeout)
       agent = Keyword.get(context.opts, :sandbox_agent_run, &AppServer.run/4)
-      result = invoke(fn -> agent.(context.workspace, isolated_prompt(prompt, role, context), context.issue, options) end)
+      result = invoke(fn -> agent.(context.workspace, isolated_prompt(prompt, role, context) <> capability_prompt(config, role), context.issue, options) end)
 
-      with {:ok, status} <- await_result(run.scratch, cleanup_timeout(context)),
-           :ok <- export_changes(role, run.scratch, context.workspace, before, import_options) do
-        agent_result(result, status)
-      end
+      outcome =
+        with {:ok, status} <- await_result(run.scratch, cleanup_timeout(context)),
+             :ok <- export_changes(role, run.scratch, context.workspace, before, import_options) do
+          agent_result(result, status)
+        end
+
+      record_artifact(context, run.scratch, Atom.to_string(role))
+      outcome
     end
   end
 
@@ -71,6 +127,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
       check_argv =
         case kind do
+          "linux_probe" ->
+            ["python3", "/opt/symphony/scripts/probe_rootless.py", "--candidate-sha", candidate_sha]
+
           "view" ->
             [
               "/opt/toolchain/view-validation/python/bin/python",
@@ -91,11 +150,40 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
       runner = Keyword.get(context.opts, :sandbox_command_run, &Commands.run_logged/4)
       result = invoke(fn -> runner.(argv, context.workspace, timeout + 30_000, log_path) end)
 
-      with {:ok, status} <- await_result(run.scratch, cleanup_timeout(context)),
-           :ok <- copy_evidence(run.scratch, log_path, config["disk_mb"] * 1_048_576) do
-        check_result(result, status)
-      end
+      outcome =
+        with {:ok, status} <- await_result(run.scratch, cleanup_timeout(context)),
+             :ok <- copy_evidence(run.scratch, log_path, config["disk_mb"] * 1_048_576) do
+          check_result(classify_check_result(result, run.scratch, log_path, candidate_sha), status)
+        end
+
+      record_artifact(context, run.scratch, kind)
+      outcome
     end
+  end
+
+  defp record_artifact(%{receipt: receipt}, scratch, role) do
+    path = Path.join(scratch, "result.json")
+
+    with true <- canonical?(scratch) and canonical?(path),
+         {:ok, %{type: :regular, size: size}} when size <= 4_194_304 <- File.lstat(path),
+         {:ok, raw} <- File.read(path),
+         {:ok, %{"scratch_root" => ^scratch} = report} <- Jason.decode(raw) do
+      data = Receipt.read(receipt)
+      artifact = report |> Map.take(~w(backend profile source_saved export_complete cleanup_complete started_at_epoch ended_at_epoch source_volume resource_events))
+
+      environment = read_environment(scratch)
+
+      artifact = Map.merge(artifact, %{"environment" => environment, "role" => role, "result_path" => Path.join(scratch, "result.json"), "manifest_path" => Path.join(scratch, "export-report.json")})
+      Receipt.update(receipt, data["status"], %{"sandbox_artifacts" => (data["sandbox_artifacts"] || []) ++ [artifact]})
+    else
+      _ -> :ok
+    end
+  end
+
+  defp record_artifact(_, _, _), do: :ok
+
+  defp read_environment(scratch) do
+    with {:ok, bytes} <- File.read(Path.join(scratch, "environment.json")), {:ok, environment} <- Jason.decode(bytes), do: environment, else: (_ -> nil)
   end
 
   defp prepare(config, context, timeout, read_only \\ false) do
@@ -104,8 +192,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     with :ok <- validate_paths(config, context) do
       run = Path.join(root, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
+      if config["backend"] == "rootless", do: File.chmod!(root, 0o711)
       :ok = File.mkdir(run)
-      :ok = File.chmod(run, 0o700)
+      :ok = File.chmod(run, if(config["backend"] == "rootless", do: 0o711, else: 0o700))
       scratch = Path.join(run, "sandbox")
       home = Path.join(run, "codex-home")
       :ok = File.mkdir(home)
@@ -153,36 +242,43 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp overlap?(left, right), do: under?(left, right) or under?(right, left)
 
   defp launcher(config, context, scratch, timeout) do
-    [
-      "bash",
-      Path.join(config["trusted_root"], "scripts/execution_sandbox.sh"),
-      "--workspace",
-      context.workspace,
-      "--scratch-root",
-      scratch,
-      "--toolchain",
-      config["toolchain"],
-      "--codex",
-      config["codex"],
-      "--trusted-root",
-      config["trusted_root"],
-      "--dependencies",
-      config["dependencies"],
-      "--baseline",
-      Path.join(context.evidence, "baseline"),
-      "--evidence",
-      context.evidence,
-      "--timeout-seconds",
-      to_string(max(1, div(timeout, 1000))),
-      "--memory-mb",
-      to_string(config["memory_mb"]),
-      "--disk-mb",
-      to_string(config["disk_mb"]),
-      "--pids",
-      to_string(config["pids"]),
-      "--cpus",
-      to_string(config["cpus"])
-    ]
+    backend =
+      if config["backend"] == "rootless" do
+        ["--backend", "rootless", "--image", config["image"], "--worker", config["worker"], "--environment-recipe", Map.get(config, "environment_recipe", "")]
+      else
+        []
+      end
+
+    ["bash", Path.join(config["trusted_root"], "scripts/execution_sandbox.sh")] ++
+      backend ++
+      [
+        "--workspace",
+        context.workspace,
+        "--scratch-root",
+        scratch,
+        "--toolchain",
+        config["toolchain"],
+        "--codex",
+        config["codex"],
+        "--trusted-root",
+        config["trusted_root"],
+        "--dependencies",
+        config["dependencies"],
+        "--baseline",
+        Path.join(context.evidence, "baseline"),
+        "--evidence",
+        context.evidence,
+        "--timeout-seconds",
+        to_string(max(1, div(timeout, 1000))),
+        "--memory-mb",
+        to_string(config["memory_mb"]),
+        "--disk-mb",
+        to_string(config["disk_mb"]),
+        "--pids",
+        to_string(config["pids"]),
+        "--cpus",
+        to_string(config["cpus"])
+      ]
   end
 
   defp prepare_home(run, config, service) do
@@ -224,13 +320,21 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     |> role_prompt(role)
   end
 
+  defp capability_prompt(%{"backend" => "rootless"}, :coder) do
+    "\nThis rootless-open-v1 task has container root, apt and public network access. Install dependencies and run internal services freely. " <>
+      "Host credentials, host services and private networks remain inaccessible. Put required installation steps and pinned dependencies in the frozen environment recipe. " <>
+      "The workspace is persistent even on export failure; the controller owns candidate acceptance."
+  end
+
+  defp capability_prompt(_, _), do: ""
+
   defp role_prompt(prompt, :coder) do
     prompt <>
       "\n\nExecution environment: /workspace is a disposable, offline Linux task sandbox. " <>
       "Local TCP sockets and subprocesses are available. Run tests and diagnostic commands freely here. " <>
       "Run `python3 /opt/symphony/scripts/check_isolated.py candidate` and `python3 /opt/symphony/scripts/check_isolated.py baseline` before finishing. " <>
       "Repair failures and rerun within THIS session. Do not finish with known failing checks. " <>
-      "The trusted toolchain, dependencies and baseline are preinstalled; no external credentials or services are available. " <>
+      "The trusted toolchain, dependencies and baseline are preinstalled; no external credentials are available. " <>
       "Do not weaken checks or change their effective policy. Report skipped and unexecuted tests accurately. " <>
       "When an Issue asks to migrate the prepared View, the fixed sanitized source is available read-only at /opt/symphony/scripts/view_validation/source/view-source.zip and source-manifest.json; use /opt/toolchain/view-validation/python/bin/python and /opt/toolchain/view-validation/node/bin/node for offline validation work. " <>
       "scripts/check_view.py is only a controller routing marker; it is not a host-side checker. " <>
@@ -238,6 +342,8 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   end
 
   defp role_prompt(prompt, _), do: prompt <> "\n\nAll repository paths refer to the isolated copy at /workspace; the frozen base is /baseline and controller feedback is read-only at /evidence."
+
+  defp check_kind(["python3", "scripts/probe_rootless.py"]), do: {:ok, "linux_probe"}
 
   defp check_kind(["python3", script]) do
     if Path.basename(script) == "check_view.py",
@@ -280,9 +386,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp read_result(path, scratch) do
     with true <- canonical?(scratch),
          {:ok, raw} <- File.read(path),
-         {:ok, %{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => ^scratch, "exit_status" => status}} <- Jason.decode(raw),
+         {:ok, %{"cleanup_complete" => true, "scratch_root" => ^scratch, "exit_status" => status} = report} <- Jason.decode(raw),
          true <- is_integer(status) and status in 0..255 do
-      {:ok, status}
+      if report["export_complete"] == true, do: {:ok, status}, else: {:error, :sandbox_export_incomplete}
     else
       _ -> {:error, :sandbox_cleanup_incomplete}
     end
@@ -301,6 +407,35 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp check_result({:ok, status} = result, status), do: result
   defp check_result({:ok, _}, _), do: {:error, :sandbox_check_exit_mismatch}
   defp check_result(result, _), do: result
+
+  defp classify_check_result({:ok, status}, scratch, log_path, sha) when status != 0 do
+    resource = Jason.decode!(File.read!(Path.join(scratch, "result.json")))["resource_events"] || %{}
+    resource_exhausted = resource_exhausted?(resource)
+    reports = Path.wildcard(Path.rootname(log_path) <> "-details/**/result.json")
+
+    environment_failure =
+      Enum.any?(reports, fn path ->
+        with true <- canonical?(path),
+             {:ok, raw} <- File.read(path),
+             {:ok, %{"identity" => %{"candidate_sha" => ^sha}, "failure_category" => "environment", "outcome" => outcome}} <- Jason.decode(raw) do
+          is_integer(outcome) and outcome != 0
+        else
+          _ -> false
+        end
+      end)
+
+    if resource_exhausted or environment_failure do
+      {:error, {:sandbox_environment_failure, status}}
+    else
+      {:ok, status}
+    end
+  end
+
+  defp classify_check_result(result, _scratch, _log_path, _sha), do: result
+
+  defp resource_exhausted?(%{"memory" => %{"oom_kill" => value}}) when is_integer(value) and value in 1..1_000_000, do: true
+  defp resource_exhausted?(%{"pids" => %{"max" => value}}) when is_integer(value) and value in 1..1_000_000, do: true
+  defp resource_exhausted?(_), do: false
 
   defp cleanup_timeout(context), do: Keyword.get(context.opts, :sandbox_cleanup_timeout_ms, 30_000)
 
@@ -325,15 +460,137 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     result =
       invoke(fn ->
         File.mkdir!(transaction)
-        journal = %{original: original, replacement: replacement, export: export}
-        File.write!(Path.join(transaction, "journal.json"), Jason.encode!(journal), [:exclusive])
+
+        journal = %{
+          schema: 2,
+          transaction_id: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+          stage: "prepared",
+          workspace: workspace,
+          original: original,
+          replacement: replacement,
+          export: export,
+          original_manifest: encoded_manifest(before),
+          replacement_manifest: encoded_manifest(files)
+        }
+
+        write_import_journal(transaction, journal)
         transfer_files(replacement, export, Path.join(transaction, "new"), :copy, operation)
+        sync_tree(transaction)
+        write_import_journal(transaction, %{journal | stage: "staged"})
         transfer_files(original, workspace, Path.join(transaction, "backup"), :rename, operation)
+        sync_tree(transaction)
+        sync_tree(workspace)
+        write_import_journal(transaction, %{journal | stage: "backed_up"})
         transfer_files(replacement, Path.join(transaction, "new"), workspace, :rename, operation)
+        sync_tree(workspace)
+        write_import_journal(transaction, %{journal | stage: "published"})
         :ok
       end)
 
     finish_import(result, transaction, workspace, original, replacement)
+  end
+
+  defp encoded_manifest(files), do: files
+
+  defp write_import_journal(transaction, journal) do
+    pending = Path.join(transaction, "journal.pending")
+    File.write!(pending, Jason.encode!(journal), [:sync])
+    File.rename!(pending, Path.join(transaction, "journal.json"))
+    sync_tree(transaction)
+    sync_tree(Path.dirname(transaction))
+  end
+
+  defp sync_tree(path) do
+    script =
+      "import os,sys\nroot=sys.argv[1]\nfor directory,dirs,files in os.walk(root,followlinks=False):\n dirs[:]=[d for d in dirs if os.path.relpath(os.path.join(directory,d),root) not in ['.git','.codex','elixir/_build','elixir/deps','elixir/cover','elixir/bin'] and not os.path.islink(os.path.join(directory,d))]\n for name in files:\n  p=os.path.join(directory,name)\n  if not os.path.islink(p) and os.path.isfile(p):\n   fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW);os.fsync(fd);os.close(fd)\n fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);os.fsync(fd);os.close(fd)"
+
+    {_, 0} = System.cmd("/usr/bin/python3", ["-I", "-c", script, path], stderr_to_stdout: true)
+    :ok
+  end
+
+  @doc "Roll back a closed, failed import under the existing append-only operator lock."
+  @spec recover_import(map(), String.t(), map()) :: :ok | {:error, term()}
+  def recover_import(context, expected_journal_sha, authorization) do
+    transaction = Path.join(context.workspace, ".symphony-import")
+    journal_path = Path.join(transaction, "journal.json")
+
+    with {:ok, raw} <- File.read(context.receipt),
+         %{"status" => "blocked"} = data <- Jason.decode!(raw),
+         true <- canonical?(transaction) and canonical?(journal_path),
+         {:ok, journal_raw} <- File.read(journal_path),
+         true <- Base.encode16(:crypto.hash(:sha256, journal_raw), case: :lower) == expected_journal_sha,
+         {:ok, %{"schema" => 2, "workspace" => workspace} = journal} <- Jason.decode(journal_raw),
+         true <- workspace == context.workspace and valid_import_journal?(context, journal),
+         {:ok, operation} <- OperatorRecheck.begin(context, raw, data, Map.put(authorization, "import_journal_sha256", expected_journal_sha)) do
+      result =
+        invoke(fn ->
+          Enum.each(journal["replacement"] -- journal["original"], &rollback_added(&1, transaction, workspace))
+          Enum.each(journal["original"], &restore_original(&1, transaction, workspace))
+          {:ok, restored} = source_files(workspace, context.settings.sandbox["disk_mb"] * 1_048_576)
+          true = encoded_manifest(restored) == journal["original_manifest"]
+          sync_tree(workspace)
+          File.rename!(transaction, Path.join(operation.directory, "import-transaction"))
+          sync_tree(operation.directory)
+          sync_tree(workspace)
+          :ok
+        end)
+
+      OperatorRecheck.complete(operation, result)
+      result
+    else
+      _ -> {:error, :sandbox_import_recovery_required}
+    end
+  rescue
+    _ -> {:error, :sandbox_import_recovery_required}
+  end
+
+  defp valid_import_journal?(context, journal) do
+    transaction = Path.join(context.workspace, ".symphony-import")
+    export = journal["export"]
+
+    with true <- is_binary(export) and under?(export, context.settings.sandbox["root"]),
+         {:ok, proof} <- File.read(Path.join(Path.dirname(export), "result.json")),
+         %{"cleanup_complete" => true, "export_complete" => true} <- Jason.decode!(proof),
+         true <- is_list(journal["original"]) and is_list(journal["replacement"]),
+         true <- length(Enum.uniq(journal["original"])) == length(journal["original"]),
+         true <- length(Enum.uniq(journal["replacement"])) == length(journal["replacement"]),
+         true <- Map.keys(journal["original_manifest"]) |> Enum.sort() == Enum.sort(journal["original"]),
+         true <- Map.keys(journal["replacement_manifest"]) |> Enum.sort() == Enum.sort(journal["replacement"]) do
+      paths = journal["original"] ++ journal["replacement"]
+
+      Enum.all?(paths, &valid_journal_path?(&1, context, transaction)) and
+        Enum.all?(paths, &valid_live_import_file?(&1, context, journal)) and
+        Enum.all?(journal["original"], &valid_backup?(&1, context, transaction, journal))
+    else
+      _ -> false
+    end
+  end
+
+  defp valid_journal_path?(path, context, transaction) do
+    is_binary(path) and Path.type(path) == :relative and ".." not in Path.split(path) and path != "" and
+      not Enum.any?(@excluded, &(path == &1 or String.starts_with?(path, &1 <> "/"))) and
+      Enum.all?([context.workspace, Path.join(transaction, "backup"), Path.join(transaction, "new")], &canonical?(Path.join(&1, path)))
+  end
+
+  defp valid_live_import_file?(path, context, journal) do
+    actual = Path.join(context.workspace, path)
+
+    case File.lstat(actual) do
+      {:error, :enoent} -> true
+      {:ok, %{type: :regular}} -> file_identity(actual) in [journal["original_manifest"][path], journal["replacement_manifest"][path]]
+      _ -> false
+    end
+  end
+
+  defp valid_backup?(path, context, transaction, journal) do
+    backup = Path.join([transaction, "backup", path])
+    actual = if File.regular?(backup), do: backup, else: Path.join(context.workspace, path)
+    File.regular?(actual) and file_identity(actual) == journal["original_manifest"][path]
+  end
+
+  defp file_identity(path) do
+    stat = File.stat!(path)
+    %{"sha256" => Base.encode16(:crypto.hash(:sha256, File.read!(path)), case: :lower), "mode" => Bitwise.band(stat.mode, 0o7777), "size" => stat.size}
   end
 
   defp transfer_files(paths, source, destination, action, operation) do
@@ -353,6 +610,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
   defp finish_import(:ok, transaction, _workspace, _original, _replacement) do
     File.rm_rf(transaction)
+    sync_tree(Path.dirname(transaction))
     :ok
   end
 
@@ -481,7 +739,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
       |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
       |> :crypto.hash_final()
 
-    {:ok, {Map.put(files, path, digest), remaining - size}}
+    stat = File.stat!(Path.join(root, path))
+    identity = %{"sha256" => Base.encode16(digest, case: :lower), "mode" => Bitwise.band(stat.mode, 0o7777), "size" => stat.size}
+    {:ok, {Map.put(files, path, identity), remaining - size}}
   end
 
   defp hash_entry(_root, _path, _size, _state), do: {:error, :sandbox_source_size_limit}

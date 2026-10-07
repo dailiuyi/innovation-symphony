@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "codex": {
+    "version": "0.160.0",
+    "linux_archive_sha256": "306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13"
+  },
+  "elixir": "1.19.5",
+  "otp": "28.5",
+  "protocol": "codex-app-server-turn-v1"
+}

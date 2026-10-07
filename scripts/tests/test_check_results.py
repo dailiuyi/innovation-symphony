@@ -111,6 +111,66 @@ class CheckResultsTest(unittest.TestCase):
         for output in ("reason: :eperm", "permission denied", "No space left on device", "test timed out", "Unchecked dependencies"):
             self.assertEqual(check_results.classify("test", 2, output, self.assertion), 1)
 
+    def test_pid_exhaustion_diagnostics_stop_instead_of_triggering_code_rework(self):
+        for output in ('** (ErlangError) Erlang error: :eagain',
+                       'Failed to create dirty io scheduler thread 9, error = 11',
+                       'Failed to create dirty cpu scheduler thread 2, error = 11'):
+            for stage in ('test', 'baseline_test'):
+                self.assertEqual(check_results.classify(stage, 2, output, self.assertion), 1)
+            self.assertEqual(check_results.classify('credo', 4, 'found 1 warning\n' + output), 1)
+            self.assertEqual(check_results.classify('dialyzer', 2, 'Total errors: 1\nwarnings were emitted\n' + output), 1)
+        # Returned error tuples and assertion text do not prove PID exhaustion.
+        for output in ('expected error = 11', 'assert {:error, :eagain} == result\nright: {:ok, 1}',
+                       'expected "** (ErlangError) Erlang error: :eagain", got "other"'):
+            for stage in ('test', 'baseline_test'):
+                self.assertEqual(check_results.classify(stage, 2, output, self.assertion), 10)
+
+    def test_fixed_resource_configuration_diagnostics_stop_recognized_failures(self):
+        diagnostics = (
+            'Erlang resource configuration rejects -extra and -args_file in ERL_FLAGS',
+            'Erlang resource configuration rejects -extra and -args_file in ERL_ZFLAGS',
+            'Erlang resource configuration rejects invalid quoted flags in ERL_FLAGS',
+            'Erlang resource configuration rejects invalid quoted flags in ERL_ZFLAGS',
+            'Erlang resource configuration rejects invalid trusted CPU and PID limits',
+            'Erlang resource configuration rejects trusted CPU or PID limit outside supported range',
+        )
+        for diagnostic in diagnostics:
+            for output in (
+                'Isolated check setup failed: ' + diagnostic + '\n',
+                'Traceback (most recent call last):\n'
+                '  File "fixed_runner.py", line 1, in <module>\nValueError: ' + diagnostic + '\n',
+                'ValueError: ' + diagnostic + '\r\n',
+            ):
+                for stage in ('test', 'baseline_test'):
+                    with self.subTest(stage=stage, diagnostic=output):
+                        self.assertEqual(check_results.classify(stage, 2, output, self.assertion), 1)
+                with self.subTest(stage='credo', diagnostic=output):
+                    self.assertEqual(check_results.classify('credo', 4, 'found 1 warning\n' + output), 1)
+                with self.subTest(stage='dialyzer', diagnostic=output):
+                    self.assertEqual(check_results.classify(
+                        'dialyzer', 2, 'Total errors: 1\nwarnings were emitted\n' + output,
+                    ), 1)
+
+    def test_business_and_quoted_resource_diagnostic_text_remains_repairable(self):
+        diagnostic = 'Erlang resource configuration rejects -extra and -args_file in ERL_FLAGS'
+        for output in (
+            'ValueError: invalid business input',
+            'ValueError: Erlang resource configuration rejects invalid business input',
+            'ValueError: Erlang resource configuration rejects -extra and -args_file in ERL_AFLAGS',
+            'expected "ValueError: ' + diagnostic + '", got "other"',
+            'expected "Isolated check setup failed: ' + diagnostic + '", got "other"',
+            'ValueError: ' + diagnostic + ' was the expected message',
+        ):
+            for stage in ('test', 'baseline_test'):
+                with self.subTest(stage=stage, output=output):
+                    self.assertEqual(check_results.classify(stage, 2, output, self.assertion), 10)
+            with self.subTest(stage='credo', output=output):
+                self.assertEqual(check_results.classify('credo', 4, 'found 1 warning\n' + output), 10)
+            with self.subTest(stage='dialyzer', output=output):
+                self.assertEqual(check_results.classify(
+                    'dialyzer', 2, 'Total errors: 1\nwarnings were emitted\n' + output,
+                ), 10)
+
     def test_exit_contradictions_and_missing_report_stop(self):
         for code in (-15, -9, 1, 10, 124, 137, 143, 255):
             self.assertEqual(check_results.classify("test", code, "", self.assertion), 1)

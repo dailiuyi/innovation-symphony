@@ -15,12 +15,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_results
+import install_rootless_bridge
 from check_environment import isolated_environment
 
 
 @unittest.skipUnless(os.environ.get("RUN_MIX_INTEGRATION") == "1" and shutil.which("mix"), "opt-in real Mix integration")
 class MixReportIntegrationTest(unittest.TestCase):
-    def run_fixture(self, test_body, *, cover=False, helper="ExUnit.start()", source=None, stage="test"):
+    def run_fixture(self, test_body, *, cover=False, helper="ExUnit.start()", source=None, stage="test", environment_hook=None, formatter=None):
         with tempfile.TemporaryDirectory(prefix="symphony-report-fixture-") as temporary:
             root = Path(temporary)
             project, evidence = root / "candidate", root / "evidence"
@@ -39,10 +40,14 @@ end
             for args in (["init", "-q"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]):
                 subprocess.run(["git", "-C", str(project), *args], check=True, capture_output=True)
             arguments = ["mix", "test"] + (["--cover"] if cover else [])
+            environment = isolated_environment()
+            verify_environment = environment_hook(root, project, environment) if environment_hook else None
             output = io.BytesIO()
-            with patch.object(sys, "stdout", io.TextIOWrapper(output, encoding="utf-8", write_through=True)):
-                result = check_results.run_check(stage, arguments, project, isolated_environment(), candidate_root=project, evidence_root=evidence)
+            with patch.object(check_results, "FORMATTER", formatter or check_results.FORMATTER), patch.object(sys, "stdout", io.TextIOWrapper(output, encoding="utf-8", write_through=True)):
+                result = check_results.run_check(stage, arguments, project, environment, candidate_root=project, evidence_root=evidence)
                 logged = output.getvalue().decode()
+            if verify_environment:
+                verify_environment()
             run = next(evidence.iterdir())
             details = json.loads((run / "result.json").read_text())
             report_path = run / "report.jsonl"
@@ -149,6 +154,40 @@ test "exclude", do: assert(false)'''
         self.assertEqual((result, detail["child_exit"]), (10, 3), output)
         self.assertEqual(detail["reason"], "coverage below required 100%")
         self.assertIn("100.00%", output)
+
+    def test_recipe_mix_configuration_cannot_lower_frozen_coverage(self):
+        def poison(root, project, environment):
+            mix_home = root / 'recipe-mix-home'
+            mix_home.mkdir()
+            marker = root / 'configuration-loaded'
+            config = mix_home / 'config.exs'
+            config.write_text('File.write!(' + json.dumps(str(marker)) + ', "loaded")\n'
+                              'Mix.ProjectStack.post_config(test_coverage: [summary: [threshold: 0]])\n')
+            original = config.read_bytes()
+            environment['MIX_HOME'] = str(mix_home)
+            raw = subprocess.run(['mix', 'test', '--cover'], cwd=project, env=environment, capture_output=True, text=True)
+            self.assertEqual(raw.returncode, 0, raw.stdout + raw.stderr)
+            self.assertTrue(marker.exists(), raw.stdout + raw.stderr)
+            marker.unlink()
+            # Run the actual fixed runner with the same poisoned environment.
+            def verify():
+                self.assertFalse(marker.exists(), 'formal checker loaded recipe Mix config')
+                self.assertEqual(config.read_bytes(), original, 'checker modified recipe configuration')
+            return verify
+
+        source = 'defmodule CheckFixture do\n  def hit, do: :ok\n  def missed, do: :missed\nend\n'
+        result, detail, _, output = self.run_fixture('test "hit", do: assert(CheckFixture.hit() == :ok)', cover=True, source=source, environment_hook=poison)
+        self.assertEqual((result, detail['child_exit']), (10, 3), output)
+        self.assertEqual(detail['reason'], 'coverage below required 100%')
+        self.assertNotIn('Threshold:   0.00%', output)
+
+    def test_installed_formatter_starts_real_exunit_and_produces_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary)
+            install_rootless_bridge.copy_check_payload(Path(__file__).resolve().parents[1], destination)
+            result, _, report, output = self.run_fixture('test "pass", do: assert(true)', formatter=destination / 'check_formatter.exs')
+            self.assertEqual(result, 0, output)
+            self.assertIn('"suite_finished"', report)
 
     def test_full_coverage_passes(self):
         result, _, _, output = self.run_fixture('test "hit", do: assert(CheckFixture.hit() == :ok)', cover=True,

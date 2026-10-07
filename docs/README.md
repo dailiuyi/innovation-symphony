@@ -2,6 +2,9 @@
 
 | 内容 | 文档 |
 | --- | --- |
+| 三项 rootless 审查问题修复及回归 | [ROOTLESS_REVIEW_FIXES.md](ROOTLESS_REVIEW_FIXES.md) |
+| 宽权限实验代码验收与实机前置条件 | [VALIDATION_ROOTLESS.md](VALIDATION_ROOTLESS.md) |
+| 宽权限 rootless 容器、持久产物、固定补证与未完成验收 | [ROOTLESS_OPEN.md](ROOTLESS_OPEN.md) |
 | Linux/WSL 来源分流、只读采集与独立合成验证 | [LINUX-SOURCE.md](../view/docs/LINUX-SOURCE.md) |
 | GH-7 View 安装、配置、独立检查与运行 | [view/README.md](../view/README.md) |
 | GH-7 来源、迁移差异与固定兼容性夹具 | [MIGRATION.md](../view/docs/MIGRATION.md) |

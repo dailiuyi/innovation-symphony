@@ -335,3 +335,6 @@ This upstream Linear workflow is not the GitHub MVP configuration. For GitHub us
 integers 0..2. Explicit 1/2 enables bounded rejection rework and original-Issue
 feedback; uncertainty or interruption stops execution. See
 [the rework contract](../docs/REVIEW_REWORK.md) for review fields and evidence.
+
+
+实验性的宽权限 rootless 容器、持久导出、失败分流和固定补证配置见 [实施合同](../docs/ROOTLESS_OPEN.md)。默认未启用；代码不代表已安装或实机验收，旧冻结任务保持原后端。

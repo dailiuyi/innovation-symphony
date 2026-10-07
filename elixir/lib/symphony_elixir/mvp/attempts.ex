@@ -47,9 +47,10 @@ defmodule SymphonyElixir.Mvp.Attempts do
   end
 
   defp available(context) do
-    recovery = Receipt.read(context.receipt)["recovery"]
+    data = Receipt.read(context.receipt)
+    recovery = data["recovery"]
 
-    if recovery["agent_attempts"] < context.settings.recovery.max_agent_attempts do
+    if recovery["agent_attempts"] + Map.get(data, "external_probe_calls", 0) < context.settings.recovery.max_agent_attempts do
       time_available(context)
     else
       {:error, :mvp_recovery_resource_exhausted}
