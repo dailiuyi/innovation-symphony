@@ -322,6 +322,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     with true <- Recovery.enabled?(context.settings),
          {:ok, raw, data} <- resume_binding(context, expected_receipt_digest, :external),
+         :ok <- notify_external_binding(context, :before_lock),
          handoff = data["external_handoff"],
          {:ok, record} <- ExternalHandoff.read(context, handoff),
          :ok <- external_handoff_binding(context, data, record),
@@ -359,6 +360,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     with {:ok, ^raw, locked_data} <-
            resume_binding(context, resume.expected_receipt_digest, :external),
+         :ok <- notify_external_binding(context, :locked),
          {:ok, locked_record} <- ExternalHandoff.read(context, locked_data["external_handoff"]),
          :ok <- external_handoff_binding(context, locked_data, locked_record),
          {:ok, workspace_sha_after_lock} <- workspace_digest(context.workspace),
@@ -416,6 +418,17 @@ defmodule SymphonyElixir.Mvp.Executor do
       {:error, _} = error ->
         park_external_retry(context, resume, error)
     end
+  end
+
+  defp notify_external_binding(context, phase) do
+    on_message(context).(%{
+      event: :mvp_external_binding_verified,
+      timestamp: DateTime.utc_now(),
+      phase: phase,
+      message: "external receipt binding verified (#{phase})"
+    })
+
+    :ok
   end
 
   defp park_external_retry(context, resume, error) do
@@ -564,7 +577,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     }
 
     Map.take(record, Map.keys(expected)) == expected and
-      data["recovery"]["policy"] == record["recovery_policy"] and resume_checks_binding?(context, data)
+      data["recovery"]["policy"] == record["recovery_policy"] and external_checks_binding?(context, data)
   end
 
   defp pending_handoff_matches?(data, record) do
@@ -1621,8 +1634,19 @@ defmodule SymphonyElixir.Mvp.Executor do
   defp resume_status(_mode), do: "blocked"
 
   defp resume_checks_binding?(context, data) do
+    resume_checks_binding?(context, data, [])
+  end
+
+  defp resume_checks_binding?(context, data, historical_rounds) do
     is_list(context.settings.checks) and is_list(data["rounds"]) and data["rounds"] != [] and
-      Enum.all?(data["rounds"], &(&1["checks"] == context.settings.checks))
+      Enum.all?(data["rounds"], &(&1["checks"] == context.settings.checks or Enum.member?(historical_rounds, &1["round"])))
+  end
+
+  defp external_checks_binding?(context, data) do
+    case external_historical_rounds(context, data, :external) do
+      {:ok, historical_rounds} -> resume_checks_binding?(context, data, historical_rounds)
+      _ -> false
+    end
   end
 
   defp resume_state?(context, data, :resume) do
@@ -1755,22 +1779,94 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp resume_round_shapes_valid?(rounds, context, data, mode) do
-    rounds
-    |> Enum.with_index(1)
-    |> Enum.all?(&resume_round_shape_valid?(&1, context, data, mode, length(rounds)))
+    case external_historical_rounds(context, data, mode) do
+      {:ok, historical_rounds} ->
+        rounds
+        |> Enum.with_index(1)
+        |> Enum.all?(&resume_round_shape_valid?(&1, context, data, mode, length(rounds), historical_rounds))
+
+      _ ->
+        false
+    end
   end
 
-  defp resume_round_shape_valid?({round, number}, context, data, mode, total_rounds) do
+  defp resume_round_shape_valid?({round, number}, context, data, mode, total_rounds, historical_rounds) do
     is_map(round) and round["round"] == number and round["base_sha"] == context.base and
       round["models"] == data["models"] and ModelServiceMigration.services(data, round, context.receipt) == {:ok, data["services"]} and
-      round_candidate_valid?(round, number, mode, total_rounds) and
+      round_candidate_valid?(round, number, mode, total_rounds, historical_rounds) and
       round["evidence"] == Path.join(context.evidence, "round-#{number}")
   end
 
-  defp round_candidate_valid?(round, number, mode, total_rounds) do
+  defp round_candidate_valid?(round, number, mode, total_rounds, historical_rounds) do
     is_binary(round["candidate_sha"]) or
-      (mode in [:resume_recovery, :interrupted] and number == total_rounds and is_nil(round["candidate_sha"]))
+      (mode in [:resume_recovery, :interrupted] and number == total_rounds and is_nil(round["candidate_sha"])) or
+      Enum.member?(historical_rounds, number)
   end
+
+  defp external_historical_rounds(_context, _data, mode) when mode != :external, do: {:ok, []}
+
+  defp external_historical_rounds(context, data, :external) do
+    exceptions = Enum.filter(data["rounds"], &(is_map(&1) and (is_nil(&1["candidate_sha"]) or &1["checks"] != context.settings.checks)))
+
+    if exceptions == [] do
+      {:ok, []}
+    else
+      verified_external_history(context, data, exceptions)
+    end
+  end
+
+  defp verified_external_history(context, data, exceptions) do
+    # A completed operator snapshot may preserve unsuccessful legacy attempts.
+    # Authenticate its exact before/after bytes before accepting that history.
+    id = data["operator_recheck"]
+    identity = ~w(schema repository issue issue_scope workspace branch base_sha models max_rework execution_sandbox)
+
+    with true <- valid_operator_id?(id),
+         directory = Path.join([context.evidence, "operator-rechecks", id]),
+         {:ok, raw} <- File.read(context.receipt),
+         {:ok, ^data} <- Jason.decode(raw),
+         :ok <- external_review_predecessor(context, %{"predecessor" => id}, data, raw),
+         {:ok, completion_raw} <- File.read(Path.join(directory, "completion.json")),
+         {:ok, completion} <- Jason.decode(completion_raw),
+         {:ok, head_raw} <- File.read(Path.join(context.evidence, "operator-rechecks/head.json")),
+         {:ok, ^completion} <- Jason.decode(head_raw),
+         {:ok, before_raw} <- File.read(Path.join(directory, "receipt-before.json")),
+         {:ok, before} when is_map(before) <- Jason.decode(before_raw),
+         {:ok, authorization_raw} <- File.read(Path.join(directory, "authorization.json")),
+         {:ok, authorization} when is_map(authorization) <- Jason.decode(authorization_raw),
+         true <- authorization["id"] == id and authorization["receipt_sha256"] == digest_hex(before_raw),
+         true <- authorization["checks"] == context.settings.checks,
+         :ok <- external_review_predecessor(context, authorization, before, before_raw),
+         true <- Map.take(before, identity) == Map.take(data, identity),
+         true <- get_in(before, ["recovery", "policy"]) == get_in(data, ["recovery", "policy"]),
+         true <- get_in(before, ["recovery", "started_at"]) == get_in(data, ["recovery", "started_at"]),
+         true <- is_list(before["rounds"]),
+         true <- Enum.all?(exceptions, &unchanged_unproduced_round?(&1, before, data)) do
+      {:ok, Enum.map(exceptions, & &1["round"])}
+    else
+      _ -> {:error, :mvp_resume_binding_mismatch}
+    end
+  end
+
+  defp unchanged_unproduced_round?(round, before, data) do
+    number = round["round"]
+
+    is_integer(number) and number >= 1 and number < length(data["rounds"]) and
+      Enum.at(before["rounds"], number - 1) == round and unproduced_external_history?(round, data["base_sha"])
+  end
+
+  defp unproduced_external_history?(round, base) do
+    round["checks"] == [] and
+      is_map(round["usage"]) and map_size(round["usage"]) > 0 and
+      Enum.all?(~w(check_failure review review_path comment), &is_nil(round[&1])) and
+      unproduced_external_origin?(round, base)
+  end
+
+  defp unproduced_external_origin?(%{"round" => 1, "historical_v0" => true, "produced_candidate" => false, "candidate_sha" => sha}, base),
+    do: sha == base
+
+  defp unproduced_external_origin?(%{"round" => number, "candidate_sha" => nil}, _base), do: number > 1
+  defp unproduced_external_origin?(_round, _base), do: false
 
   defp resume_candidate_sha_valid?(last, data, mode) do
     last["candidate_sha"] == data["candidate_sha"] or

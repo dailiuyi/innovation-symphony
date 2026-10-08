@@ -3,6 +3,13 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
 
   alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery, Review}
 
+  @capacity_error %{
+    "message" => "Selected model is at capacity. Please try a different model.",
+    "codexErrorInfo" => "serverOverloaded",
+    "additionalDetails" => nil,
+    "misalignment" => nil
+  }
+
   setup do
     root = Path.join(System.tmp_dir!(), "mvp-attempts-#{System.unique_integer([:positive, :monotonic])}")
     File.mkdir_p!(root)
@@ -68,6 +75,164 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
     assert File.read!(Path.join(context.workspace, "agent-attempt-1/outcome.json")) =~ "mvp_invalid_review"
     assert_receive {:forwarded, _}
     assert_receive {:forwarded, _}
+  end
+
+  test "capacity retry retains the original review prompt and requires a real valid result", %{context: context} do
+    original = "independently review the unchanged candidate"
+    valid = Jason.encode!(%{approved: true, summary: "confirmed after actual inference"})
+
+    context =
+      with_agent(context, fn _, prompt, _, opts ->
+        assert opts[:read_only]
+        assert opts[:tools] == false
+        assert opts[:model] == "reviewer"
+        assert opts[:output_schema] == Review.schema(0)
+        count = Receipt.read(context.receipt)["recovery"]["agent_attempts"]
+
+        if count == 1 do
+          assert prompt == original
+          opts[:on_message].(%{event: :turn_failed, details: @capacity_error})
+          {:error, {:turn_failed, @capacity_error}}
+        else
+          assert String.starts_with?(prompt, original)
+          assert prompt =~ "temporarily at capacity"
+          refute prompt =~ "Exact controller validation errors"
+          refute prompt =~ "Previous raw output"
+          {:ok, %{output_text: valid}}
+        end
+      end)
+
+    assert {:ok, %{output_text: ^valid}} = Attempts.run(context, :reviewer, original, fn -> :ok end)
+    data = Receipt.read(context.receipt)
+    assert data["recovery"]["agent_attempts"] == 2
+    assert File.read!(Path.join(context.workspace, "agent-attempt-1/output.txt")) == ""
+    assert File.read!(Path.join(context.workspace, "agent-attempt-1/outcome.json")) =~ "serverOverloaded"
+    refute File.exists?(Path.join(context.workspace, "agent-attempt-1/validation-errors.json"))
+    assert File.read!(Path.join(context.workspace, "agent-attempt-2/prompt.txt")) =~ "temporarily at capacity"
+    assert File.read!(Path.join(context.workspace, "agent-attempt-2/validation-errors.json")) == "[]"
+    assert data["rounds"] |> List.last() |> get_in(["usage", "reviewer_attempt_1", "total_tokens"]) == nil
+    refute Map.has_key?(data, "review")
+  end
+
+  test "capacity stage cap returns the original failure and preserves the existing task ledger", %{context: context} do
+    context = put_in(context.settings.recovery.stage_attempts, 2)
+    context = put_in(context.settings.recovery.max_agent_attempts, 16)
+    context = put_in(context.settings.recovery.max_elapsed_ms, 28_800_000)
+    context = put_in(context.settings.recovery.max_rework, 5)
+    before = Receipt.read(context.receipt)
+    recovery = before["recovery"] |> Map.put("agent_attempts", 12) |> Map.put("policy", context.settings.recovery)
+    frozen = %{"candidate_sha" => String.duplicate("a", 40), "rework_count" => 4, "max_rework" => 5, "models" => %{"coder" => "coder", "reviewer" => "reviewer"}}
+    Receipt.update(context.receipt, "reviewing", Map.put(frozen, "recovery", recovery))
+
+    context =
+      with_agent(context, fn _, prompt, _, _ ->
+        assert String.starts_with?(prompt, "review")
+        refute prompt =~ "Exact controller validation errors"
+        refute prompt =~ "Previous raw output"
+        {:error, {:turn_failed, @capacity_error}}
+      end)
+
+    assert {:error, {:turn_failed, @capacity_error}} = Attempts.run(context, :reviewer, "review", fn -> :ok end)
+    data = Receipt.read(context.receipt)
+    assert Map.take(data, Map.keys(frozen)) == frozen
+    assert data["recovery"]["started_at"] == recovery["started_at"]
+    assert data["recovery"]["policy"] == Jason.decode!(Jason.encode!(recovery["policy"]))
+    assert data["recovery"]["agent_attempts"] == 14
+    started = Enum.filter(data["recovery"]["events"], &(&1["status"] == "started"))
+    assert Enum.map(started, &{&1["attempt"], &1["role"], &1["stage_attempt"]}) == [{13, "reviewer", 1}, {14, "reviewer", 2}]
+    assert Enum.all?(Enum.filter(data["recovery"]["events"], &(&1["status"] == "finished")), &String.contains?(&1["outcome"], "serverOverloaded"))
+    refute File.exists?(Path.join(context.workspace, "agent-attempt-15"))
+    refute Map.has_key?(data, "review")
+  end
+
+  test "capacity retry obeys global model-call and wall-clock limits", %{context: context} do
+    for budget <- [:calls, :wall] do
+      root = Path.join(context.workspace, Atom.to_string(budget))
+      File.mkdir!(root)
+      receipt = Path.join(root, "receipt.json")
+      data = Receipt.read(context.receipt)
+      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"evidence" => root, "usage" => %{}}]}))
+      bounded = %{context | workspace: root, receipt: receipt}
+      bounded = if budget == :calls, do: put_in(bounded.settings.recovery.max_agent_attempts, 1), else: bounded
+      {:ok, started, _} = DateTime.from_iso8601(data["recovery"]["started_at"])
+      start_ms = DateTime.to_unix(started, :millisecond)
+      clock = :atomics.new(1, [])
+      :atomics.put(clock, 1, start_ms)
+
+      bounded =
+        with_agent(bounded, fn _, _, _, opts ->
+          opts[:on_message].(%{event: :turn_failed, details: @capacity_error})
+          if budget == :wall, do: :atomics.put(clock, 1, start_ms + bounded.settings.recovery.max_elapsed_ms)
+          {:error, {:turn_failed, @capacity_error}}
+        end)
+
+      if budget == :wall do
+        bounded = %{bounded | opts: Keyword.put(bounded.opts, :now_ms, fn -> :atomics.get(clock, 1) end)}
+        assert {:error, :mvp_recovery_resource_exhausted} = Attempts.run(bounded, :reviewer, "review", fn -> :ok end)
+      else
+        assert {:error, :mvp_recovery_resource_exhausted} = Attempts.run(bounded, :reviewer, "review", fn -> :ok end)
+      end
+
+      assert File.read!(Path.join(root, "agent-attempt-1/messages.log")) =~ "serverOverloaded"
+      assert Receipt.read(receipt)["recovery"]["agent_attempts"] == 1
+      refute File.exists?(Path.join(root, "agent-attempt-2"))
+    end
+  end
+
+  test "only the structured serverOverloaded code permits a capacity retry", %{context: context} do
+    for info <- ["unauthorized", "usageLimitExceeded", "rateLimitExceeded", "internalServerError", "other", nil] do
+      root = Path.join(context.workspace, info || "missing")
+      File.mkdir!(root)
+      receipt = Path.join(root, "receipt.json")
+      data = Receipt.read(context.receipt)
+      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"evidence" => root, "usage" => %{}}]}))
+      error = Map.put(@capacity_error, "codexErrorInfo", info)
+      agent = fn _, _, _, _ -> {:error, {:turn_failed, error}} end
+      bounded = with_agent(%{context | workspace: root, receipt: receipt}, agent)
+      assert {:error, {:turn_failed, ^error}} = Attempts.run(bounded, :reviewer, "review", fn -> :ok end)
+      assert Receipt.read(receipt)["recovery"]["agent_attempts"] == 1
+      refute File.exists?(Path.join(root, "agent-attempt-2"))
+    end
+  end
+
+  test "capacity failure cannot retry after candidate integrity changes", %{context: context} do
+    marker = Path.join(context.workspace, "changed")
+
+    context =
+      with_agent(context, fn _, _, _, _ ->
+        File.write!(marker, "changed")
+        {:error, {:turn_failed, @capacity_error}}
+      end)
+
+    verify = fn -> if File.exists?(marker), do: {:error, :tampered}, else: :ok end
+    assert {:error, :tampered} = Attempts.run(context, :reviewer, "review", verify)
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1
+    refute File.exists?(Path.join(context.workspace, "agent-attempt-2"))
+  end
+
+  test "capacity coder retry keeps partial work and the existing no-reset instructions", %{context: context} do
+    partial = Path.join(context.workspace, "partial.txt")
+
+    context =
+      with_agent(context, fn _, prompt, _, opts ->
+        refute opts[:read_only]
+        assert opts[:model] == "coder"
+
+        if Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 1 do
+          File.write!(partial, "existing partial work")
+          {:error, {:turn_failed, @capacity_error}}
+        else
+          assert File.read!(partial) == "existing partial work"
+          assert prompt =~ "serverOverloaded"
+          assert prompt =~ "Continue from the existing partial work"
+          assert prompt =~ "do not commit, reset, or clean"
+          refute prompt =~ "Exact controller validation errors"
+          {:ok, %{output_text: "finished"}}
+        end
+      end)
+
+    assert {:ok, %{output_text: "finished"}} = Attempts.run(context, :coder, "implement", fn -> :ok end)
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 2
   end
 
   test "valid rejected review is final and is never sampled again", %{context: context} do

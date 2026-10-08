@@ -1,6 +1,69 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  # The terminal notification observed in GH-12 Reviewer attempt 13.
+  @capacity_error %{
+    "message" => "Selected model is at capacity. Please try a different model.",
+    "codexErrorInfo" => "serverOverloaded",
+    "additionalDetails" => nil,
+    "misalignment" => nil
+  }
+  @capacity_turn %{
+    "id" => "01a10af8-4057-75c2-a784-b1e72f750d15",
+    "items" => [],
+    "itemsView" => "notLoaded",
+    "status" => "failed",
+    "error" => @capacity_error,
+    "startedAt" => 1_791_185_403,
+    "completedAt" => 1_791_185_472,
+    "durationMs" => 68_224
+  }
+
+  test "failed turn/completed preserves the actual capacity error despite partial review output" do
+    payload = %{
+      "method" => "turn/completed",
+      "params" => %{"threadId" => "01a10af8-2970-7a92-9fb2-de065c04f3e8", "turn" => @capacity_turn},
+      "emittedAtMs" => 1_791_185_472_222
+    }
+
+    assert {{:error, {:turn_failed, @capacity_error}}, messages} = terminal_notification(payload)
+    assert Enum.any?(messages, &(&1.event == :turn_failed and &1.details == @capacity_error and &1.payload == payload))
+    assert Enum.any?(messages, &(&1.event == :turn_ended_with_error and &1.reason == {:turn_failed, @capacity_error}))
+    refute Enum.any?(messages, &(&1.event == :turn_completed))
+  end
+
+  test "terminal notification validates explicit status and error while retaining legacy completion" do
+    interrupted = %{"status" => "interrupted"}
+    failed_without_error = %{"status" => "failed", "id" => "failed-no-error"}
+
+    cases = [
+      {%{}, :ok},
+      {%{"params" => %{}}, :ok},
+      {%{"params" => %{"turn" => %{"status" => "completed", "error" => nil}}}, :ok},
+      {%{"params" => %{"turn" => %{"status" => "completed"}}}, :ok},
+      {%{"params" => %{"turn" => %{"status" => "completed", "error" => @capacity_error}}}, {:error, {:turn_failed, @capacity_error}}},
+      {%{"params" => %{"error" => @capacity_error}}, {:error, {:turn_failed, @capacity_error}}},
+      {%{"params" => %{"turn" => failed_without_error}}, {:error, {:turn_failed, failed_without_error}}},
+      {%{"params" => %{"turn" => interrupted}}, {:error, {:turn_cancelled, interrupted}}},
+      {%{"params" => []}, {:error, :invalid_turn_completion}},
+      {%{"params" => %{"turn" => nil}}, {:error, :invalid_turn_completion}},
+      {%{"params" => %{"turn" => %{"status" => "inProgress"}}}, {:error, :invalid_turn_completion}},
+      {%{"params" => %{"turn" => %{"id" => "missing-status"}}}, {:error, :invalid_turn_completion}}
+    ]
+
+    for {fields, expected} <- cases do
+      {result, messages} = terminal_notification(Map.put(fields, "method", "turn/completed"))
+
+      if expected == :ok do
+        assert {:ok, %{output_text: ~s({"approved":true,"summary":"partial"})}} = result
+        assert Enum.any?(messages, &(&1.event == :turn_completed))
+      else
+        assert result == expected
+        refute Enum.any?(messages, &(&1.event == :turn_completed))
+      end
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -1626,6 +1689,55 @@ defmodule SymphonyElixir.AppServerTest do
              end)
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  defp terminal_notification(payload) do
+    root = Path.join(System.tmp_dir!(), "symphony-terminal-#{System.unique_integer([:positive, :monotonic])}")
+    workspace_root = Path.join(root, "workspaces")
+    workspace = Path.join(workspace_root, "GH-12")
+    binary = Path.join(root, "fake-codex")
+    completion = Jason.encode!(payload)
+    notification = Jason.encode!(%{"method" => "item/completed", "params" => %{"item" => %{"type" => "agentMessage", "text" => ~s({"approved":true,"summary":"partial"})}}})
+    owner = self()
+    ref = make_ref()
+
+    try do
+      File.mkdir_p!(workspace)
+
+      File.write!(binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"terminal-thread"}}}' ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"terminal-turn"}}}'
+            printf '%s\\n' '#{notification}'
+            printf '%s\\n' '#{completion}'
+            exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(binary, 0o755)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root, codex_command: "#{binary} app-server")
+      issue = %{id: "terminal-issue", identifier: "GH-12", title: "Terminal protocol", description: "fixture"}
+      result = AppServer.run(workspace, "review", issue, tools: false, on_message: &send(owner, {ref, &1}))
+      {result, terminal_messages(ref)}
+    after
+      File.rm_rf!(root)
+    end
+  end
+
+  defp terminal_messages(ref) do
+    receive do
+      {^ref, message} -> [message | terminal_messages(ref)]
+    after
+      0 -> []
     end
   end
 end

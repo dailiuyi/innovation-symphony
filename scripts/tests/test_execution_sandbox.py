@@ -50,6 +50,8 @@ class ExecutionSandboxCliTest(unittest.TestCase):
                        f"test \"$(readlink /proc/self/ns/net)\" != '{os.readlink('/proc/self/ns/net')}'; "
                        f"test -z \"${{CODEX_API_KEY:-}}\"; "
                        "test \"$ELIXIR_MAKE_CACHE_DIR\" = /home/coder/.cache/elixir_make; test -d \"$ELIXIR_MAKE_CACHE_DIR\"; "
+                       "test \"$SYMPHONY_CHECK_CPUS\" = 1; test \"$SYMPHONY_CHECK_PIDS\" = 32; "
+                       "test \"$ERL_FLAGS\" = '+S 1:1 +SDcpu 1:1 +SDio 1 +SP 100:100 +SDPcpu 100:100'; "
                        f"test ! -r '{host_secret}'; "
                        "if printf bad 2>/dev/null > /workspace/.git/marker; then exit 41; fi; "
                        "python3 -c \"import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
@@ -89,8 +91,9 @@ class ExecutionSandboxCliTest(unittest.TestCase):
                  "--toolchain", str(toolchain), "--codex", str(codex), "--trusted-root", str(trusted),
                  "--dependencies", str(dependencies), "--baseline", str(baseline), "--evidence", str(evidence),
                  "--timeout-seconds", "30", "--memory-mb", "1024", "--disk-mb", "512", "--pids", "32",
-                 "--cpus", "1", "--read-only-workspace", "true", "--", "python3", "-c",
-                 "import errno\nfrom pathlib import Path\n"
+                 "--cpus", "64", "--read-only-workspace", "true", "--", "python3", "-c",
+                 "import errno, os\nfrom pathlib import Path\n"
+                 "assert os.environ['ERL_FLAGS'] == '+S 1:1 +SDcpu 1:1 +SDio 1 +SP 100:100 +SDPcpu 100:100'\n"
                  "Path('/tmp/review-private').write_text('ok')\n"
                  "try:\n Path('/workspace/forbidden').write_text('bad')\n"
                  "except OSError as e:\n assert e.errno == errno.EROFS\n"

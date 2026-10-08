@@ -15,7 +15,7 @@ from .common import short_runtime
 DEFAULT_GLOB = "/var/tmp/innovation-symphony-v0*"
 
 REMOTE_SCRIPT = r"""
-import glob, json, os, re
+import glob, hashlib, json, os, re
 
 LOCAL = __LOCAL__
 if LOCAL:
@@ -39,6 +39,32 @@ def _list(path):
 
 def _walk(path):
     return walk_directory(root, path) if LOCAL else os.walk(path)
+
+def _closed_host_interruption(receipt, raw, evidence):
+    # A matching closed operator proves this historical coding state stopped.
+    # Missing ownership or old timestamps alone never prove an interruption.
+    ident = receipt.get("operator_recheck")
+    if (receipt.get("status") != "coding" or not isinstance(ident, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", ident)
+            or os.path.lexists(os.path.join(evidence, "operator-recheck.lock"))):
+        return None
+    directory = os.path.join(evidence, "operator-rechecks")
+    head = os.path.join(directory, "head.json")
+    completion = os.path.join(directory, ident, "completion.json")
+    try:
+        if _info(head).st_size > 16_384 or _info(completion).st_size > 16_384:
+            return None
+        record = json.loads(_read(head))
+        if (not isinstance(record, dict) or record != json.loads(_read(completion))
+                or record.get("id") != ident
+                or record.get("final_receipt_sha256") != hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                or not re.fullmatch(r'\{:error, \{:host_shutdown_interrupted, "[0-9a-f]{64}"\}\}', record.get("result", ""))
+                or os.path.lexists(os.path.join(evidence, "operator-recheck.lock"))):
+            return None
+        return {"kind": "closed_host_interruption", "operation": ident,
+                "completedAt": record.get("completed_at"), "receiptStatus": "coding"}
+    except (OSError, ValueError, TypeError):
+        return None
 
 UUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 SID_RE = re.compile(r"^" + UUID + r"(?:-(?:turn-?)?" + UUID + r")?$")
@@ -201,7 +227,8 @@ for root in roots:
                     continue
                 path = os.path.join(dirpath, name)
                 try:
-                    rec = json.loads(_read(path))
+                    receipt_raw = _read(path)
+                    rec = json.loads(receipt_raw)
                 except Exception:
                     if LOCAL:
                         raise
@@ -210,6 +237,10 @@ for root in roots:
                     continue
                 rec["_path"] = path
                 ev_dir = path + ".evidence"
+                rec.pop("_execution_health", None)
+                interruption = _closed_host_interruption(rec, receipt_raw, ev_dir)
+                if interruption:
+                    rec["_execution_health"] = interruption
                 rec["_agent_attempts"] = _agent_attempts(rec, ev_dir)
                 rec.pop("events", None)
                 rt["receipts"].append(rec)

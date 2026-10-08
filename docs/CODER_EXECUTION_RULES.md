@@ -122,6 +122,8 @@ coder 自检通过后提出提交验收：提交代码变化、已执行命令�
 
 本地后端使用 Linux bubblewrap：任务文件副本为 `/workspace`，Git 元数据只读；工具链、依赖、原始基线和控制器证据分别只读提供。任务 PID、网络和挂载空间分离，外网关闭，内部 loopback 可用。私有存储、cgroup CPU／内存／进程限制和外部墙钟超时覆盖整个进程树。任务结束须先清理后代、导出产物并写完成证明，控制器才导入普通源文件；链接和特殊文件拒绝导入。
 
+2026-10-04 当前 Linux 实测发现 Ubuntu 的 `unpriv_bwrap` AppArmor 子配置拒绝 `net_admin`。本地后端由外层 root supervisor 创建独立 network namespace，并在进入 bubblewrap 前启用 loopback；bubblewrap 只共享该私有网络，先核对 namespace 与宿主不同，不再要求子进程取得 `CAP_NET_ADMIN`。不改系统 AppArmor 规则或家目录权限。需要将正式验收所需的冻结代码、工具链和依赖放在可由 root namespace 访问的受控目录，不能把宿主家目录访问失败当作候选代码失败。
+
 宿主 Codex AppServer 使用独立的受控 HOME，只保留模型认证，禁用宿主插件、hooks 和代码扩展。通过 `environments.toml` 的 stdio executor 将模型的文件和命令操作转发到任务环境，`include_local=false`，启动时验证没有 local 回退。测试进程不获得模型认证或 GitHub token。
 
 当前依赖采取预置离线方式；不提供任意下载或新增真实平台访问。Mix 与静态分析缓存写入任务私有 HOME，不能复用其他任务污染的 PLT。OTP 所需的原安装前缀只读映射到同一份受信工具链，不挂载其父目录。正式检查在新实例里构造临时项目，使用冻结基线的 Mix 配置、lockfile、formatter、Credo、WORKFLOW 与 runtime config，分别运行格式、specs、Credo、覆盖率、Dialyzer、构建及基线测试；不会调用候选改写的顶层检查脚本。报告保留逐测试状态和跳过原因。测试代码本身仍须独立审查，这不是抵御任意恶意仓库的报告防伪平台。

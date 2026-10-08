@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from test_runtime_source import SID, rollout, scan
 import run as entry
-from symphony_board import api, collector, config, local_files, runtime_source as source, wslpull
+from symphony_board import api, collector, config, derive, local_files, runtime_source as source, wslpull
 from symphony_board.state import BoardState
 from symphony_board.store import BoardStore
 
@@ -20,6 +20,45 @@ from symphony_board.store import BoardStore
 class LocalRuntimeSourceTests(unittest.TestCase):
     def tearDown(self):
         collector.load_sessions({})
+
+    def test_closed_shutdown_is_readonly_and_requires_exact_completion_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'runtime'
+            receipt = root / 'state/task.json'
+            receipt.parent.mkdir(parents=True)
+            raw = json.dumps({'issue': '12', 'status': 'coding', 'operator_recheck': 'original-op',
+                              '_execution_health': {'kind': 'closed_host_interruption', 'operation': 'unverified'}})
+            receipt.write_text(raw)
+            evidence = Path(str(receipt) + '.evidence')
+            directory = evidence / 'operator-rechecks/original-op'
+            directory.mkdir(parents=True)
+            record = {'id': 'original-op', 'final_receipt_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+                      'result': '{:error, {:host_shutdown_interrupted, "' + 'a' * 64 + '"}}'}
+            head = directory.parent / 'head.json'
+            completion = directory / 'completion.json'
+            head.write_text(json.dumps(record)); completion.write_text(json.dumps(record))
+            def health():
+                return scan([str(root)])['runtimes'][0]['receipts'][0].get('_execution_health')
+            self.assertEqual(health()['kind'], 'closed_host_interruption')
+            self.assertEqual(health()['operation'], 'original-op')
+            self.assertEqual(receipt.read_text(), raw)
+            task = derive.build_tasks(scan([str(root)]), [], {})[0]
+            self.assertEqual(task['status'], 'coding')
+            self.assertEqual(task['statusLabel'], '宿主中断 · 历史编码状态')
+            self.assertEqual(task['stage'], [1, None])
+            self.assertIn('等待受审计接续', task['gap'])
+            self.assertEqual(task['reason'], '')
+            lock = evidence / 'operator-recheck.lock'; lock.write_text('new owner')
+            self.assertIsNone(health()); lock.unlink()
+            receipt.write_text(raw + '\n')
+            self.assertIsNone(health()); receipt.write_text(raw)
+            completion.write_text(json.dumps(dict(record, result='{:ok, :done}')))
+            self.assertIsNone(health()); completion.write_text(json.dumps(record))
+            for changes in [{'id': 'other-op'}, {'result': '{:ok, :done}'},
+                            {'final_receipt_sha256': 'b' * 64}]:
+                changed = dict(record, **changes)
+                head.write_text(json.dumps(changed)); completion.write_text(json.dumps(changed))
+                self.assertIsNone(health())
 
     def test_multiglob_unicode_top_level_sandbox_and_receipts_are_readonly(self):
         with tempfile.TemporaryDirectory() as tmp:

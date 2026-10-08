@@ -1,5 +1,276 @@
 # 原型运行与项目交付
 
+## 2026-10-05 Issue #12 ready 与领取启用前诊断
+
+所有者为 #12 添加 ready 后要求“先修复mvpfalse”（IS-065）。只读核实 GitHub Issue
+为 open/ready；View `/api/bootstrap` 已登记并启用 `dailiuyi/innovation-symphony`，
+采集为 ok/local，控制器配置也已绑定该仓库。当前活动工作流仍为
+`.local/runtime/WORKFLOW.md`，`mvp.enabled=false`、`mvp.sandbox.enabled=false`；
+状态接口返回 running/retrying/blocked 均为 0，状态目录无领取回执。
+
+未直接开启未隔离的兼容路径。先生成
+`.local/runtime/WORKFLOW.enabled.pending.md`，启用 MVP 与任务隔离，保留当前角色模型。
+首次只读预检返回 `:mvp_state_source_overlap`：原状态目录和工作区在源码树内，
+停用配置不会执行这些启用分支校验。候选改用独立的
+`/var/tmp/innovation-symphony-linux-runtime/{state,workspaces,sandboxes}` 后，真实 GitHub
+只读预检退出码为 0，返回 `passed / issue_count=1`。这些路径为待安装安排，
+未创建、迁移或替换活动状态；证据在 `.local/runtime/intake-enable-preflight.json`。
+
+当前宿主侧接入仍未完成：隔离运行器要求 root 及 cgroup 权限，活动用户控制器未接入
+无人值守的受控隔离入口。两次宿主服务状态／非交互 sudo 检查的自动审批均超时，
+命令未执行，不能据此断定宿主没有权限或操作不安全。需要所有者在本机终端完成
+sudo 检查，密码仅在终端输入，再完成受控运行目录及隔离入口接入、复核后激活候选。
+只读预检不验证上述隔离能力，不代表 #12 已领取。本次未改活动开关、未启动任务、
+未 Git 提交、推送、安装服务版本或改变系统权限。
+
+随后所有者放开工具权限并要求由助手操作（IS-066）。宿主服务读取已成功：
+`innovation-symphony-controller.service` 为 active/running，MainPID 为 9217，
+启动入口仍为 `.local/start-symphony.sh`；实际 `sudo -n true` 返回
+`interactive authentication is required`。这是系统 sudo 身份认证缺口，
+不再是工具自动审批超时；没有尝试无密码 sudo、读取密码或绕过认证。
+
+已由当前用户在源码树外创建 `/var/tmp/innovation-symphony-linux-runtime/` 的
+state、workspaces、sandboxes、logs、preflight，并复制既有受信脚本、工具链及依赖。
+隔离脚本摘要仍为 `5ae08607777947f9979df1de85cdbb048e4087235ffd0508b6f351e83bb5ba04`。
+复制后的 OTP 28／Elixir 1.19.5 工具链版本检查通过；候选配置更新为上述固定路径，
+再次只读预检退出码 0，返回 `passed / issue_count=1`，结果保存于运行根的
+`preflight/result.json`。此处为用户所有的准备副本，尚未完成受控 root 执行入口安装；
+不登记为服务已经切换或真实隔离模型执行接入已通过。
+
+活动工作流仍为 `mvp.enabled=false`，旧状态、日志、服务与 View 配置保留。
+下一步需要所有者在本机终端完成必要的 sudo 身份认证／受控入口交接，密码只在
+终端输入。工具权限放开不能替代该系统认证。
+
+### root 检查通过后的后台接入准备
+
+2026-10-05，所有者报告已在本机完成隔离 `--check`，输出为 `ready`。
+此为所有者提供的 root 前置检查结果；并不把 sudo 的终端认证交给控制器。
+助手复核用户服务 PID 仍为 9217、活动开关仍关闭，非交互 sudo 仍要求认证。
+检查当前 `ExecutionSandbox.launcher/5` 后确认其直接使用 `bash`，没有后台特权桥接。
+
+为本次 Linux 本地运行准备了忽略目录 `.local/runtime/bridge/` 下的受限 stdio 桥接，
+不是新增调度器或长期部署决定。普通用户控制器通过 Unix SOCK_SEQPACKET 传递
+标准流文件描述符；root helper 校验 SO_PEERCRED、固定路径／资源上限、任务目录、
+新 scratch 目录和有限的执行器／正式检查命令。禁止任意宿主命令和环境变量；
+连接断开则终止运行器进程组，由现有运行器执行 cgroup 清理，不伪造完成证明。
+root 产物不跟随链接移交所有权，模型和 GitHub 认证不传入 helper。
+
+启动脚本将受信脚本、工具链和依赖复制并冻结到 root 所有的
+`/opt/innovation-symphony-linux-bridge/`；只启动临时 systemd helper，不启用开机自启、
+不修改 sudo 规则、不把整个控制器提升为 root，也不开启领取。
+原隔离脚本摘要保持不变，普通用户入口包装器只转发到该 helper。
+候选工作流已改为上述冻结资产路径，因此安装后须重新检查候选及真实执行入口。
+本地六项协议／拒绝／标准流／退出码／断连清理验证通过，启动脚本语法检查通过；
+这些普通用户测试不代替真实 root 桥接或完整四条隔离底线验收。
+
+当前 helper 尚未安装或启动；需所有者在本机终端执行准备好的
+`.local/runtime/bridge/start-root-bridge.sh` 完成系统身份认证。
+安装后仍由助手复核入口、执行隔离验证及领取配置，再切换控制器；
+此时 `mvp.enabled` 仍为 false，#12 尚未领取，未提交或推送。
+
+
+### 实际启用与 #12 领取验证
+
+2026-10-05，所有者完成受控 helper 的本机启动。系统服务
+`innovation-symphony-linux-bridge.service` 实际为 active/running；安装目录 root:root
+0755，socket innovation:innovation 0600。普通用户通过 socket 调用 `--check` 返回 ready。
+
+首次真实 stdio 沙箱探针发现用户私有运行目录无法由 bubblewrap 的用户命名空间
+穿过，进程已清理且没有派发 Issue。助手修正本地桥接：输入在容量上限内复制到
+root 所有的私有 `/var/tmp/symphony-bridge-*` 快照执行，完成后移交产物。
+再修正结果发布窗口：产物、归属和原运行器清理证明一起原子发布到控制器 scratch，
+不让轮询看见尚未移交的 root 私有目录。临时 root 服务通过本机系统认证更新，
+没有修改 AppArmor、用户家目录权限或 sudo 规则。七项本地验证通过；真实 Codex
+exec-server 沙箱探针退出 0，cleanup_complete、descendants_cleaned、export_complete
+均为 true，CPU/内存/进程限制证据正常。保留首次失败及成功探针报告。
+
+安装后的候选再次通过真实 GitHub 只读预检，issue_count=1。停用工作流备份为
+`.local/runtime/WORKFLOW.disabled-before-enable-20261004T215224Z.md`；活动工作流启用
+MVP 与隔离后重启控制器，首次自动领取 #12，但在线程创建前 blocked。
+本机客户端协议及无模型回合的实际握手确认旧 `approval_policy.reject` 不再被接受。
+改为 `granular`，五类审批请求全部 false（自动拒绝），保留隔离与权限边界；
+握手响应预算调整为 60000ms，实际 AppServer.start_session 成功，未启动验证模型回合。
+
+对 #12 首次启动失败作人工操作者核实：Codex 线程数为 0，无模型用量，无候选 SHA
+和发布记录，工作区干净、HEAD 等于原 base SHA。停止 runner 后将原回执、证据和
+工作区完整归档到独立运行根的 `archives/issue-12-startup-failure-20261004T220053Z/`，
+保存原回执 SHA256 及核实结果，再仅对该启动失败重新领取；没有删除记录、换
+state_dir、修改历史模型或使用 mvp.release 绕过其无 base_sha 守卫。这是本次获准
+启用操作中的有审计纠错，不新增自动重领或通用失败恢复协议。
+
+重启后控制器 MainPID=32407；2026-10-05 06:01:37（Asia/Shanghai）状态为
+running=1、blocked=0、retrying=0，GH-12 有真实 session ID、turn_count=1 和实际
+模型输入输出用量。coder/reviewer 默认均为 gpt-6.1-sol。此证据确认实际领取并进入
+编码，不代表 #12 实现、完整检查、Review 或 PR 交付已完成。
+
+View 仓库登记保持原条目，补充 `/var/tmp/innovation-symphony-linux-runtime` 的
+采集 glob，保留原运行根及历史采集；旧配置备份为
+`.local/view-config.before-intake-enable.toml`。View 重启不影响控制器。
+此次未 Git 提交／推送、合并或部署 #12 的候选。root helper 是临时 systemd 单元，
+没有开机自启；不能将当前启用登记为重启后无人值守恢复已通过。
+
+
+### IS-067 原 #12 的 Linux 全流程修复与接续准备
+
+06:01 的真实编码回合最终停为 `blocked/:mvp_no_changes`，不是功能已实现；
+实际命令报告 `bwrap: No permissions to create a new namespace`。同一原回执、工作区、
+冻结 Issue、基线与原 rollout 均保留。该回合最终观测为输入 59,268、输出 756、
+合计 60,024 tokens；之前日志中的 44,445 是中间采样，不能作为最终累计用量。
+
+AppServer 为已经可信准备的 external execution environment 使用 `externalSandbox`，
+避免在外层隔离内重复创建 namespace；环境探测仍拒绝 local fallback。
+Reviewer 与 diagnosis 的工作区改由外层只读挂载保证，只有具备受信只读绑定的会话
+才沿用外部沙箱策略。普通本地只读会话和旧外部绑定的 readOnly 策略保留。
+受限 helper 只新增明确 `--read-only-workspace true`，重复参数、固定路径和命令白名单
+校验继续生效；无外网、凭据不可见、Git 元数据只读、资源限制与完成证明不变。
+
+当前验证：30 项 AppServer／执行沙箱单测通过；7 项 helper 检查通过；
+4 项真实 root Linux 隔离测试全部执行通过（含工作区写入 EROFS）；
+真实 Coder shell/isolation 和 Reviewer read-only shell 两个 GPT 探针均通过。
+证据位于 `/var/tmp/innovation-symphony-linux-runtime/preflight/` 下的
+`model-exec-probe.json`、`model-review-probe.json` 及日志。探针为合成任务，
+不代替 #12 功能或完整交付验收。Ubuntu uutils timeout 的缺失程序诊断另补全程序路径。
+
+所有者按 IS-067 选择继续并交付 #12。此次一次性操作在
+`.local/runtime/bridge/continue-issue12.exs`：先绑定原回执摘要、完整远端 Issue、
+干净原分支 HEAD、全部冻结基线文件、原模型、原沙箱和实际 rollout 摘要；
+经既有 OperatorRecheck 互斥及 append-only 证据记录后，调用相同 Executor 的
+轮次／检查／Review／交付实现。它不修改正常领取或通用自动恢复入口。
+原 V0 的无线变更回合以历史轮记录原基线 HEAD（produced_candidate=false），
+原回执字节归入操作审计，原证据目录保留；原调用和用量进入累计账本。
+此次助手工程预算为从原模型开始时间计算 8 小时、累计最多 16 次调用、5 次返工，
+单个隔离会话／检查最多 1 小时；不是新增永久默认，不重置原开始时间或次数。
+准确正式检查、独立 Review、Draft PR 与最终运行状态尚须继续核实。
+
+06:41 已将普通用户控制器切换到
+`.local/releases/linux-executor-20261005/symphony`，二进制 SHA-256
+`d2238689e1b341e5a46b7f24c597c83a291006fafc4223daf59431b4c4eccd4f`；
+清单固定源码文件摘要及验证结果。最终 670 项测试 0 失败、6 项外部测试跳过、
+冻结范围覆盖率 100%，规格、格式、严格 lint 与 Dialyzer（0 错误）均通过。
+原启动脚本备份为 `.local/start-symphony.before-linux-fix-20261005.sh`。
+root runner 摘要为 `e2700ba6205c6f59bc213ea632f1d43eec3b6cb83f71ba47dd5bc39b03ec0bc9`。
+
+第一次一次性接续准备因审计辅助函数假定 V0 已有 rounds 而在回执修改和模型调用前停止。
+适配只在内存中向旧 guard 提供由原回执路径推导的 round-1 证据路径，
+原回执字节与冻结数据仍保存在审计中，不跳过孤立旧锁或互斥检查；
+适配来源纳入 authorization.json。随后临时普通用户单元
+`innovation-symphony-issue12-operation2.service` 于 06:42 启动相同 Elixir Executor 接续。
+此时原 #12 为 coding，调用账本从原 1 次增为 2 次；控制器与 View 均 HTTP 200。
+未重启 View、未清理原状态、未合并或升级 #12 功能候选。
+
+
+## 2026-10-04 当前 Linux 模型、隔离与正式检查验收
+
+按 IS-059，在忽略目录 `.local/validation-20261004/` 验收。两次调用分别经过本项目
+`SymphonyElixir.Codex.AppServer.run/4`，冻结模型为 `gpt-6.1-sol`，使用合成输入、只读
+策略与 JSON Schema；coder 和 reviewer 均收到 `turn_completed`，输出严格解码通过。
+认证使用独立受控 CODEX_HOME，调用结束后已删除复制的 `auth.json`；结果见
+`model/result.json`。这些是模型连通性验证，不是实际任务编码或完整独立 Review。
+
+root 运行器前置检查通过后，两项真实隔离集成首先因 loopback 设置失败而拒绝启动。
+宿主内核日志确认 `unpriv_bwrap` AppArmor 拒绝子进程 `net_admin`。局部修正为在
+外层 root supervisor 的独立 network namespace 中启用 loopback，先校验与宿主
+namespace 不同，随后让 bubblewrap 共享该私有网络；不改系统 AppArmor 或家目录权限。
+原失败证据保存在 `attempt1-isolation-*`。所有者通过本机 sudo 终端重跑后，4 项检查
+全部通过，0 失败、0 跳过，覆盖网络、只读 Git、宿主秘密、资源预算、后代清理和导出。
+记录在 `isolation-integration.log`，退出码为 0。
+
+正式检查绑定源码 HEAD `169ff8efaf7534425b0649dad995ee8b5edff277`，使用独立冻结
+代码副本与固定可信脚本。初次本地诊断通过格式、规格、Credo，测试为 669 项、1 失败、
+6 跳过、覆盖率 100%；失败来自本机 uutils timeout 的缺失命令诊断文本差异。该次
+不是正式隔离验收，原证据保留。随后从已安装的 GNU coreutils 复制 GNU timeout 9.7
+到独立工具链，不修改系统默认命令。NIF 缓存也位于独立工具链，正式检查可离线编译。
+
+正式隔离第一次从家目录挂载源时因路径权限失败，未进入代码检查。改为 root 在 `/tmp`
+复制受信代码、工具链、依赖和无凭据证据目录，使用新运行目录验收；不放宽家目录权限。
+准确版本的首轮隔离候选检查在 Dialyzer 冷缓存生成阶段触发 900 秒超时，报告目录为
+`formal-1791095641-145532`。格式、规格、Credo 和 669 项测试（0 失败、6 项外部平台
+live E2E 跳过、覆盖率 100%）均有通过证据，但 Dialyzer、构建及冻结基线未完成，
+不得登记为完整通过。完成证明为 timeout/124，后代清理及导出完成，无 OOM。
+首轮预算为墙钟 900 秒、内存 4096 MiB、磁盘 2048 MiB、进程 256、CPU 2；随后仅
+扩大独立验收预算至 1800 秒与 CPU 4 后重跑全部检查，不改候选、冻结规则或活动服务
+配置。这些数值为本次验收安排，不登记为仓库默认决定。
+
+扩大预算的新一轮报告为 `formal-1791096662-188811`。格式、规格、Credo、覆盖率、
+Dialyzer 和构建全部通过，完整候选检查退出码为 0。候选测试为 669 项、663 项通过、
+0 失败、6 跳过、覆盖率 100%；Dialyzer 为 0 错误、0 跳过。新的隔离实例执行冻结
+基线测试也通过：669 项、663 项通过、0 失败、6 跳过，完整基线检查退出码为 0。
+六项跳过均为会创建真实外部平台任务的 live E2E，不计为实测通过。
+
+已重新解析全部七份阶段结果，校验源码 SHA、runner/formatter 摘要、manifest 与
+逐测试报告身份及事件完整性；候选和基线两份隔离证明均为 completed/0，后代清理、
+证据导出完成，无 OOM。隔离运行器的本地修正摘要为
+`5ae08607777947f9979df1de85cdbb048e4087235ffd0508b6f351e83bb5ba04`。
+汇总在 `.local/validation-20261004/summary.json`。以上通过范围是合成模型连通性、
+真实 Linux 隔离能力与固定源码的完整候选/基线检查；不等于实际 Issue 的编码/Review
+交付或活动控制器的无人值守隔离模型 executor 已完成接入。
+
+验收结束后两个 systemd 用户服务仍为 active/running，MainPID 分别为 96197、62905；
+控制器状态及 View bootstrap HTTP 200，任务 running/retrying/blocked 均为 0。
+
+真实领取仍为 `mvp.enabled=false`，活动服务的 `mvp.sandbox.enabled=false` 未改。
+本轮没有真实 Issue 操作、Git 提交、推送、合并或部署。
+
+## 2026-10-04 当前 Linux GitHub 凭据接入与默认模型设置
+
+按 IS-058，核实所有者已提供 `.local/runtime/secrets/github-token`，文件非空、权限
+`0600`；启动器已通过环境变量加载，凭据内容不写入文档或日志。`gh api` 使用该文件
+凭据读取仓库信息成功，返回 `dailiuyi/innovation-symphony`。这证明仓库读取可用，
+不等于 Issues 全部读取、写入、Git 推送或 Draft PR 交付权限已验证。
+
+`.local/runtime/WORKFLOW.github.md` 与活动 `WORKFLOW.md` 的 coder/reviewer 默认值均
+改为 `gpt-6.1-sol`，模型白名单为该单项，操作者名单填写已核实账号 `dailiuyi`。
+`mvp.enabled=false` 保持，既有路径、检查和隔离模板不变；原配置备份在忽略目录
+`.local/runtime/config-backups/`。本机本地配置校验通过，但停用校验不会验证
+启用分支的完整执行设置或模型可用性。
+
+北京时间 14:14 重启同一 `innovation-symphony-controller.service` 后实际加载 GitHub
+工作流。此前旧进程尚未注入凭据，文件热加载曾记录 `:missing_github_token` 并保留旧
+配置；本次重启后进程环境已核实收到文件中的对应凭据，未清除原日志。
+最终 MainPID 为 96197，服务 `active/running`，状态 API HTTP 200，
+running/retrying/blocked 均为 0。View `/api/bootstrap` HTTP 200，采集 `ok/local`。
+
+看板地址仍为 `http://127.0.0.1:8613/`，控制器状态页仍为
+`http://127.0.0.1:4000/`。没有启动真实任务或模型调用，没有迁移原 WSL 历史、
+Git 提交、推送或云部署。隔离环境、准确正式检查和模型实测仍须完成后才启用领取。
+
+## 2026-10-04 当前 Linux 本机新环境启动
+
+按 IS-057，在当前 Linux 机器的新 checkout `169ff8efaf7534425b0649dad995ee8b5edff277`
+创建独立运行环境。此前 Windows＋WSL 的固定 release、生产配置、历史数据库与回执
+不在此机器上；没有迁移或声称恢复旧服务。
+
+依赖及实施文件放在忽略目录 `.local/`。mise 2026.10.1 下载校验通过；OTP 28.5
+从源码构建，Elixir 1.19.5 使用 OTP 28 预编译包。ncurses/OpenSSL 的 Ubuntu 包仅
+提取到 `.local/build-deps/`，未安装系统包；SSL 初始化及 crypto 的 OpenSSL 3.5.5
+信息核实通过。Hex 依赖第一次超时后增加下载超时并降低并发，按仓库 lockfile 下载
+成功，`mix build` 生成本机 `elixir/bin/symphony`。没有修改依赖锁或控制器源码。
+
+Python 3.14 的独立 `.local/view-venv/` 安装固定 `codex-transcript-viewer==0.5.0`。
+`.local/launch-view.py` 强制 loopback 监听；端口释放后允许有界等待，仍保留独占绑定。
+`.local/view-config.toml` 使用 `transport=local`，只读扫描 `.local/runtime/`；新建
+`view/data/board.db`，未复制旧历史或合成任务。
+
+当前活动工作流为 `.local/runtime/WORKFLOW.md`，采用项目内置的 `memory` tracker，
+没有配置任何 Issue，`mvp.enabled=false`。真实 GitHub 模式初次启动被
+`:missing_github_token` 拒绝；停用的 GitHub 模板保存为同目录 `WORKFLOW.github.md`。
+本机空队列启动是本次实施安排，不是 GitHub 接入通过或永久 tracker 决定。
+启用真实任务还需有效 GitHub 凭据及完整执行配置。
+
+两个 transient 用户服务由 systemd 管理：`innovation-symphony-controller.service` 与
+`innovation-symphony-view.service`。北京时间 2026-10-04 04:42 核实均为
+`active/running`，MainPID 分别为 91949 与 62905。Symphony 首页及
+`http://127.0.0.1:4000/api/v1/state` 返回 HTTP 200，running/retrying/blocked 均为 0；
+View 首页、`/api/bootstrap` 与 `/api/snapshot` 返回 HTTP 200，采集为 `ok/local`。
+浏览器实际显示任务看板和“只读采集 · 正常”；新环境没有任务与会话。
+两个端口均只监听 `127.0.0.1`。
+
+访问地址：View `http://127.0.0.1:8613/`；Symphony 原生状态页
+`http://127.0.0.1:4000/`。本机日志和接口核实结果保存在 `.local/runtime/`；控制器
+旋转日志位于该目录 `logs/log/`。可以通过 `systemctl --user status` 或 `restart`
+加对应单元名管理当前服务；transient 单元未设置开机自启，重启电脑后需要重新注册。
+此次只做本机安装和服务启动，未派发真实 Issue、迁移旧任务、Git 提交、推送或云部署。
+
 ## 2026-10-03 最新 main 看板安装
 
 来源：用户本次明确要求“拉取最新代码，安装并告诉我看板的访问网址”。远端 main 已拉取至 `0ec92f949d5ce5759c0a68c507fa9dbcddebb8f9`（PR #9 合并）；为保留原开发分支和三份未提交需求文档，在 `.local/releases/0ec92f9` 建立 detached 固定 worktree，安装其中 `view/`，没有合并或重置原开发分支。
@@ -286,3 +557,350 @@ CONFIG=/srv/symphony/runtime/watchdog.json
 ## 2026-10-08：IS-076 独立 rootless 桥安装
 
 按所有者对 `codex/rootless-open-reliability` 的明确授权，镜像 digest、Podman/crun/uidmap、专用 worker 和本机完整待激活配置已补齐。`innovation-symphony-rootless-bridge.service` 已安装、启动、开机 enabled，并通过服务重启、受保护 payload 摘要及启动守卫核验。真实 Linux 基础探针 16 项通过、清理与导出成功；完整 rootless 交付链和故障矩阵尚未验收。原活动控制器／View、旧桥与 `mvp.enabled=false` 保留，没有真实派发、远端 push、合并或云部署。详情、失败记录、剩余范围和回退见 [VALIDATION_ROOTLESS](VALIDATION_ROOTLESS.md) 的 IS-076 节；本轮代码本地提交以对应分支 Git log 为准。
+
+### 2026-10-05 07:54 CST：#12 超时、检查配置纠正及继续执行
+
+- 修复后的 Linux 固定运行版本已经安装；670 项测试、0 失败、6 项外部跳过、100% 冻结覆盖率及 Dialyzer 0 错误的结果针对宿主 Linux 修复，不能作为尚未提交的 #12 功能候选验收结果。
+- 原任务第二次实际 coder 会话达到 1 小时执行时限，沙箱 result.json 证明 cleanup_complete、descendants_cleaned、export_complete 均为 true，安全导出已有实现。回执随后为 blocked / mvp_recovery_resource_exhausted；原 8 小时总预算和 16 次会话上限并未耗尽。
+- 主代理发现临时 WORKFLOW.operator.md 的 mvp.enabled=false 被 disabled_settings 解释为 checks=[]；这是临时操作入口错误，未曾执行正式检查或交付。接续第三次会话停止于 coding、无候选或 PR；系统进程已结束、受控 execution cgroups 均为空，未产生可接受的原生 export/completion，不伪造沙箱成功证据。停止证据和累计实测用量保存在 preflight/issue12-operation3-stop.json，root 输入快照保留。最后一次已证明安全的第二次会话导出仍在原工作区。
+- 修正入口为 WORKFLOW.operator.checked.md：保留完整两项冻结 candidate/baseline 检查，mix run --no-start 不启动第二个调度器。接续脚本对检查命令做精确断言，并校验原回执、工作区内容摘要、基线、任务范围及沙箱完成证明。旧 round 的空检查列表作为错误历史保留，不宣称通过验收。
+- OperatorRecheck 完成前次停止审计后，以 linux-issue12-checks-restored-20261005 接续；innovation-symphony-issue12-operation4.service 开始新 round-3，保留原起算时间、累计用量、已导出代码、最多 5 次返工和 16 次会话上限。此前会话未删除或重置。此时尚无候选提交、推送或 Draft PR；后续需正式检查、独立 Review 和新配置路径的真实 GPT 证据。
+
+### 2026-10-05 10:20 CST：修复模型会话单次时限造成的 interrupted
+
+- 实际原 #12 已通过第一候选的正式检查并完成独立 Review；Review 拒绝 10 项具体缺口，控制器启动 round-4 修复。10:14 原 coder 被单次 1 小时时限中断，回执 blocked / mvp_recovery_resource_exhausted，沙箱 result.json 确认 export_complete、cleanup_complete、descendants_cleaned 均为 true；原生执行退出 0，但 AppServer 仍因墙钟超时失败，不把成功清理/导出等同于模型回合成功。
+- 旧候选为 9f59c5a8c66917bf1fcdf65bc5600d9e3e25aded；返工修改尚未形成下一候选。coder 报告 714 项测试、0 失败、6 项跳过及 100% 覆盖率是返工自检，尚不能替代该修改后的正式检查和新鲜 Review。
+- 宿主 ExecutionSandbox.agent 不再将模型剩余时间与 check_timeout_ms 取最小值。没有显式墙钟时使用 Codex turn_timeout_ms；operator 可单独给 agent_timeout_ms，仍取剩余总预算和该上限的最小值。正式检查继续沿用自己的 check_timeout_ms。23 项沙箱回归测试通过（含三种角色、阶段上限和剩余时间）；临时桥接入口允许最多 7200 秒，7201 秒及其他路径、命令、资源越界仍拒绝，8 项桥接测试通过。
+- 保护入口在所有执行 cgroup 均无活跃任务时更新，root 所有权和认证、路径、命令、网络及资源限制不变。入口旧文件保留 bridge.before-agent-timeout.py；新文件 SHA-256 为 2877788163da96a3ca056a07f5af0c3b17a9b2fe62f7e84b7631bc8b50c4372a。
+- operator-rechecks/linux-issue12-agent-timeout-fix-20261005 绑定原回执、原候选、导出内容摘要、清理证明、固定基线和工作流。innovation-symphony-issue12-operation5.service 从原 round-4 stage-2 继续，累计第 7 次会话；保留原 06:01:06 起算的 8 小时和 16 次会话预算，不增补总额度。该会话设置为最多 2 小时，实际仍受剩余总预算限制；正式检查保持原 1 小时。
+- 实测当前回执 coding，新鲜 GPT coder 会话已经开始，View 采集到 01a109db-f5cc-7223-8ee9-6a98a92eea4c。本次恢复不清除旧 interrupted 历史，不宣称 #12 已交付。宿主完整检查及固定运行打包结果随后记录。
+
+- 本次宿主完整 make all 已通过：671 项测试、0 失败、6 项外部跳过，覆盖率 100%，Dialyzer 0 错误，fmt/specs/Credo/escript 打包通过。固定修复 release 为 `.local/releases/linux-agent-timeout-20261005`，清单保存准确二进制/源码摘要。核实普通控制器无运行任务后更新入口并重启，新 PID 1092840，控制器与 View API 均 200，#12 独立接续进程保持 active。这是 Linux 执行器时限修复安装，不安装 #12 功能候选。真实新会话 environments.toml 的执行上限确认是 7200 秒；当前任务仍 coding，原预算起点未变。
+
+## 2026-10-05 IS-068：Issue #12 外部堵塞和重复检查修复
+
+用户要求根据全部会话报告修复外部堵塞和不必要返工；来源、范围见 IS-068。初次状态为原 #12 `awaiting_external`、候选 `d87ba1000cc26e077057e1c431a6f0923b976478`、Draft PR #13。完整分析和后续发现见 [ISSUE12_PROCESS_ANALYSIS](ISSUE12_PROCESS_ANALYSIS.md)。
+
+- 源码修复：完整暂停配置仍保留并严格校验冻结执行合同；现有 `mix mvp.external` 只为已经领取的任务跳过新领取开关，ready、actor、模型评论、检查等值与回执审计仍校验。固定检查整段串行、实际 VM 继承锁 FD，避免 checker 终止后提前释放；普通 scheduler 为 `min(cpus, max(1, pids // 32))`、dirty CPU/IO 各一，固定 runner 注入 CPU/PID 参数，独立入口读取 cgroup 的最紧限额。明确的线程或进程启动异常归为环境停止；普通业务断言中的 `:eagain` 仍按可修代码失败处理。这些数值是本轮工程安排。
+- 独立审查修复了初稿中小 PID 配额下仍按 CPU 开过多线程、锁 FD 不继承和裸 `:eagain` 误分类三个问题。真实进程锁、杀 checker 后 VM 持锁、escript 头及 CLI 覆盖下两层实际 VM `{2,1,1}` 的回归通过。无门槛、隔离、权限或覆盖率例外。
+- 首版完整源代码门禁通过：`make all` 675 项、0 失败、6 项既有外部跳过，100% 覆盖率、Dialyzer 0 错误，fmt/specs/Credo/escript 通过。Python 最终 81 项、0 失败、18 环境条件跳过；资源相关最后 33 项、3 环境跳过。日志在 `.local/external-issue12-20261005/`。后续历史接续兼容修复须重新完成适用检查，不将首版日志用于证明后来修改。
+- 准确候选完整归档逐文件核对：294 个跟踪文件相同。候选自身双角色配置实测于约 13:30 复现当前 Codex 客户端对保留 provider 的真实拒绝：生成 `[model_providers.openai]` 不能覆盖内置 `openai`。两个角色认证引用分开、参数分别 low/high，现有同一账号；连接冻结为 OAuth 对应路由。实际线程创建前失败，未成功调用 GPT，实际型号为未知。随后四次无推理启动诊断仅发送 initialize/initialized，使用合成认证、私有 home 与隔离网络，确认初始化成功仍可能随后发出配置无效警告；诊断对照去掉保留 provider 表后该警告消失，未改候选源码。失败证据保存在 `A04-verification.json`，不能宣称 A04 通过。
+- 原候选 A11 实机证据已完成并自包含于 `A11-kernel.json`，SHA256 `e93ba7043e3e2d26c25ffc081b736ad3849f84f9f3656f47d65a089809f88ace`。当时 root runner 与候选脚本摘要同为 `e2700ba6205c6f59bc213ea632f1d43eec3b6cb83f71ba47dd5bc39b03ec0bc9`；EROFS、网络和凭据隔离、本地 TCP、8 GiB tmpfs、256 PID 实际限额及 EAGAIN、完整 reap、后台 setsid 子清理及导出通过。CPU/内存限额已记录，未做内存耗尽、填满磁盘或 CPU 基准。故意进程极限案例中的一次 `pids.events.max` 是预期结果，普通 clean case 为零。
+- 源代码合同修复保存为 `.local/releases/linux-external-contract-20261005` 的固定本地 operator 快照，清单绑定 75 个源文件和完整检查日志。活动控制器 PID 1092840 未切换，未安装 #12 功能候选。隔离 root 四脚本补丁已准备为 `resource-payload` 并经独立审查；安装器固定清单摘要、认证串行 helper、暂停接单后核对无执行者、安装验证、磁盘满时基于已落盘备份回滚，完整版本确认后才恢复接单。为继续核验准确候选，暂未激活，旧 runner 保留。
+- 原任务外部补证的两次 CLI 入口预检通过，使用完整 `enabled=false` 工作流、原两条检查、原模型、原八小时/16 次额度和原前序审计。这些预检完成 CLI 的远端身份与合同校验后通过只读 delegate 返回，没有执行 Executor 深层校验。13:46 启动实际独立接续单元 `innovation-symphony-issue12-external-20261005.service`；它在任何证据导入、模型调用和回执写入前因 `mvp_resume_binding_mismatch` 退出。原回执字节和全部历史保持，导入次数为零。
+- 深层校验发现两处旧失败历史不兼容：round 2 的候选为 null；round 1 的历史 V0 无产出记录和 round 2 的检查为 `[]`。最新完成审计的 final receipt SHA、authorization、receipt-before 和前序闭合链均可验证。修复仅允许完整已关闭审计证明、逐字段及用量不变的这些无产物历史；当前最终候选、实际产生候选回合、完整冻结检查、基线、元数据、预算和锁后复查不变。无证据的历史缺失不得通过。该修复完整最终门禁通过：679 项、0 失败、6 外部跳过、100% 覆盖率，Dialyzer 0 错误。新增锁前与锁内绑定观察事件，确定性审计漂移负例保证导入与模型派发前拒绝。固定 operator 快照 `.local/releases/linux-external-history-20261005` 保存 75 个源码文件及门禁 SHA `1fca0c45ebacc9ff00d61899d500b728a0793bd6beaaadade618f0112a86958f`。14:29 独立单元 `innovation-symphony-issue12-external-20261005-v2.service` 成功将两份证据作为一批导入，新增一条导入历史，原任务进入 checking；候选不变，当时 Agent 尝试次数仍 11。
+- 两条冻结正式检查随后均通过：候选 716 项、710 通过、0 失败、6 跳过，基线 669 项、663 通过、0 失败、6 跳过，两个 `exit_status` 均为 0。14:43:30 预留第 12 次 Agent 尝试后的 Review 启动失败：生成的 `environments.toml` 向 launcher 传入 7671 秒，超过 root bridge 的 7200 秒硬上限；root 日志为 `bridge refused or failed: timeout exceeds local policy`。拒绝发生在沙箱和模型启动前，无沙箱、无完成报告，Review 日志为空，第 12 次没有成功 GPT 调用或 Review 结论。等待完成报告 30 秒后，执行器把缺失结果归为 `:sandbox_cleanup_incomplete`，遮蔽了实际的预启动拒绝。14:44 完成链以错误闭合，原回执为 `blocked`，Agent 尝试 12/16、恢复计数 4/5、候选仍为 d87ba1000cc26e077057e1c431a6f0923b976478。摘要绑定保存于 `.local/external-issue12-20261005/review-startup-refusal-binding.json`。UID 1000 不能读取 root 所有的全局执行 cgroup，只核对了可读的 helper 直接子进程，不宣称全局 cgroup 为零。
+- 单次时限默认值的源码修复已通过独立审查：默认 Agent launcher 使用配置的单次 Turn 上限与剩余总预算取最小值，显式单次覆盖仍按原合同处理；不修改 bridge 上限或原任务总额度。三个 Agent 角色实际 launcher 对 60 秒及 7671 秒剩余窗口的回归确认默认上限分别为 60 秒及 7200 秒。完整 `make all` 再次通过：680 项、0 失败、6 既有外部跳过、100% 覆盖率，fmt/specs/Credo/escript 通过、Dialyzer 0 错误；日志 `.local/external-issue12-20261005/elixir-agent-cap-gate.log`。固定 operator 快照为 `.local/releases/linux-review-cap-20261005`，本次活动控制器未升级。15:29:52 有审计的 `innovation-symphony-issue12-review-cap-20261005.service` 开始运行，复用仍绑定原候选、刚通过的两项正式检查，保留第 12 次失败历史、原开始时间和全部预算；第 13 次 Agent 尝试于 15:30:04 实际启动模型。
+- 15:31 第 13 次 Review 调用收到服务端 `turn/completed / status=failed`，`codexErrorInfo=serverOverloaded`、`Selected model is at capacity`。这是新增真实外部容量失败，不追认为初次报告 13 份会话的返工原因。当时 AppServer 将失败但空的完成输出误送格式校验，因此开始第 14 次格式修正尝试；680 项日志不证明后来发现的错误分类缺口已修复。15:31 快照为 `reviewing`、Agent 尝试 14/16、恢复计数 4/5、候选仍为 d87ba1000cc26e077057e1c431a6f0923b976478，尚无第 13 次的有效 Review。
+- 第 14 次调用随后成功产出有效独立 Review，`approved=false`，三项阻塞均为代码缺陷：A01 旧 auth_home 工作流兼容与 A04 双角色真实调用受到保留 provider 表覆盖影响；A05 缺少拒绝无效配置及默认回退的 `configWarning`，可能把默认配置的合法 `model/list` 目录归到请求渠道。准确原候选的 A11 内核证据被本次 Reviewer 接受。执行器自动进入 round 6 Coder，第 15 次 Agent 尝试、恢复计数 5/5；此更新时客体修改进行中，尚无新候选。修复后仍须新 SHA 的准确 A04 和必要内核证据、冻结正式检查与预算内独立 Review，不登记最终验收通过。
+- main 的最小终态失败传递修复另已通过独立审查和完整门禁：`turn/completed` 中 failed、interrupted、非空 error 和不合法显式 Turn 传播对应失败，避免服务失败的空输出被当成成功并触发 Review 格式修正；旧无 Turn 通知继续兼容。`make all` 688 项、0 失败、6 既有外部跳过、100% 覆盖率、Dialyzer 0 错误，fmt/specs/Credo/escript 均通过。日志 `.local/external-issue12-20261005/elixir-capacity-gate-v2.log`，SHA256 `782cbb3febebbdaebca14582e9ba93091bfb0a6b1f72426a7c7af765d8e7b991`。这项基础设施修复不证明候选 A01/A04/A05 的功能修改已完成。
+- 15:30:44 核对活动普通控制器真实入口后，备份 `.local/runtime/WORKFLOW.md` 并只将 `mvp.enabled` 从 true 改为 false；此前 external 专用工作流的 false 不能代表普通控制器已暂停。原两条检查、沙箱、状态与工作区、模型、宿主认证引用和端口保留，普通控制器此前 running 为零，#12 独立 operator 不因停领结束。审计 `.local/external-issue12-20261005/controller-intake-pause.json` 保存前后摘要和完整备份位置。未重领原任务、未改 View 或 root helper。
+- 680 项门禁的基础设施封包另存 `.local/releases/linux-infra-fixed-20261005`，从原固定 snapshot 的完整副本运行 direct toolchain `mix escript.build --no-compile`；75 个源码、89 个原 BEAM 和 escript 中 89 个 BEAM 的全部保留 chunk 核对相同，原 snapshot 清单未变。二进制 SHA256 `31d9cd9df749c6444e0507e7530710cbefda803d3ef778d9e9cb6f56d5984e78`，新清单 SHA256 `8ebd0e0d0219cb02f84da859b99ce76fa1321d7c96fb8b125a2d3fe13112b124`。封包不含 #12 的 `ModelServices`，未安装、未改启动脚本或重启服务；它不包含后来模型容量分类修复，保留为该次门禁的历史产物，不能用于宣称全部最新修复已可安装。
+- 688 项门禁的新固定源快照 `.local/releases/linux-infra-capacity-source-20261005` 已完整复制为 `.local/releases/linux-infra-capacity-fixed-20261005`，在新副本中 direct toolchain `mix escript.build --no-compile` 后核对 75 个源码、89 个原 BEAM 及 archive 中 89 个 BEAM 的全部保留 chunk 相同，父快照未变。二进制 SHA256 `b779ceb721e4d3564d28d664767805265f08eef21687995d2411e616b384bd38`，新清单 SHA256 `2ce57c76952e7e4e1c3f40e30082c57dd858b364d84446d52695a4aa34cd8651`。新包明确仅基础设施修复、无 `ModelServices`，已经本地准备而未安装，未改启动脚本或重启；活动 controller 尚未升级，容量分类修复未据此宣布运行生效。
+
+- 安装前资源复核还封住 +SP/+SDPcpu 对绝对 scheduler 数量的倍率，以及 ERL_FLAGS/ERL_ZFLAGS 中 -extra/-args_file 的预算解析逃逸；普通其他设置继续保留。错误格式或预算控制参数拒绝有固定环境诊断，业务 ValueError 不误分类。最终 scripts 87 项、17 opt-in/root 条件跳过，view 34 项全通过；资源定向 39 项、2 root 条件跳过，真实 Erlang/escript/nested 五字段回归执行。四文件封包清单 SHA `d5bf37d90f4e5d7c2796a040d3e870ec83ba333109b9d686888f84e94c581869`，安装器 SHA `087ffdd034bdfc3e84e4cbdac0f95a30a79a583359ab884e60396960e8cc18f2`，当前尚未激活，原 A11 封存证据未改。
+- 第 15 次 coder 自主检查另记录两类失败：首轮 dirty IO 线程 9 启动 `:eagain`、退出 134；第二轮看门狗时序断言为 1685 毫秒超过 1600 毫秒，相关定向用例单独通过。候选自检记录为 719 项、1 失败、6 跳过。此处是客体自检，不能记为正式两项冻结检查结果，不将不同失败泛化为全环境同一根因。此更新时仍为 Agent15 coding，尚无新候选导出。
+- 冻结基线自检的 `:eexist` 经两个真实 Elixir VM 最小复现：共享 TMPDIR 下 VM 内计数器产生相同临时夹具名称，第二次保留目录创建失败；杀 checker 后遗留目录也会影响下一次检查。最小源码修复在既有唯一 harness 下创建 0700 `tmp`，将 TMPDIR 设置到全阶段及嵌套进程环境；原锁路径和 FD 继承、资源预算、冻结检查均未改。新增实际嵌套 Python/Elixir VM、SIGKILL 残留与下一次目录隔离回归通过，定向 10 项全通过，scripts 89 项、0 失败、17 条件跳过；独立审查无阻断。
+- 该 TMPDIR 修订另存 `.local/external-issue12-20261005/resource-payload-temp`，清单 SHA256 `6ec371083bf9b171d9a1c18b3056d5cac14729a13f0235c28fafd93999ee11ef`，四文件与当前源码逐摘要相同；对应 `install-resources-temp.py` SHA256 `2ee2b55f7a1b7df530692e8276150f3f43a4ce6a8f7f9a737c7ba93f435efb11`，仅替换源目录、清单绑定和备份名；`native_postinstall_resources_temp_probe.py` SHA256 `9493f37a4ac898e936b93dbcd33fe54b42d34ce2d8d41311fc21f00419762fd7`，仅替换两个封包路径。准备脚本已执行并保存新 seal，原清单 d5bf37d9 和历史产物未覆盖。新封包尚未安装，原生安装后验证未运行，不能以源代码回归声明活动 root runner 已修复。
+
+旧有效 Review 的全部阻塞为外部条件，所以原任务此前没有直接回流 coder。第 12 次在启动前被拒绝，第 13 次实际启动后遇到容量失败，均未产生有效新判定；第 14 次独立 Review 已核验新证据并明确三项代码缺陷，系统现已自动进入第 15 次 coder。新容量条件与初次 13 份会话的无额度故障证据分别保留，不将启动失败、格式重试和代码返工混算。
+
+此记录区分源码保存、固定 operator 运行、root 补丁激活和 #12 最终验收。本轮尚未对主工作区 Git 提交、推送、合并或部署；未追加额度，未把真实启动失败写成推理通过。root 四文件资源补丁尚未激活，A04 的真实推理仍未通过，不以源码门禁或准备好的恢复入口宣称运行环境已经全部修复。
+
+### 16:51 至 17:00 前：原任务闭合与 main 基础设施实际安装
+
+- 16:51:22 原 operator 完成链以 `{:error, :mvp_recovery_resource_exhausted}` 闭合，原回执为 `blocked`，SHA256 `4eca2a310f6e5a4bb2446759f1fc1d4c369428509d70929735d269b2a00aab23`。累计 Agent 尝试 15、恢复计数 5，原八小时／16 次额度未追加。第 15 次模型 `wall_timeout`，round 6 候选为 null，没有该轮正式检查结果或新独立 Review；顶层 d87 候选保留。
+- 准确沙箱 `run-1791186184370600-8162` 的完成报告 SHA256 `0eac556e6882ea932322c525c65de8a296489d2de12e40aa67bc7a1a0c833cef`；cleanup／export／descendants／background_output_closed 均为 true，runner `exit_status=0`、正常关闭。该结果只证明清理及导出，模型和任务没有因此完成。`pids.events.max=3`、全部 OOM 计数为零。
+- 七文件 WIP 为增加 243 行、删除 32 行，297 个导出文件（排除独立检查证据；294 个跟踪文件及 3 个缓存文件）与保留工作区逐字节相同。部分产物已封存 `.local/external-issue12-20261005/partial-export-20261005T085122Z/`，补丁 SHA256 `705e318974210df7cb1d40fce9cceff854a6bd4f2bbc4b6943ff62049ef0f4c7`，summary 绑定七个文件摘要、回执和完成报告。静态独立复核已覆盖 Review14 三项代码反馈，未发现确证的新阻断；不是新候选、正式检查、模型 Review 或准确 A04 验收通过。
+- 16:53:35 main 基础设施固定包 `.local/releases/linux-infra-capacity-fixed-20261005/symphony` 已实际安装并启动，PID 2092760；二进制摘要 b779ceb7 保持，仍对应 688 项完整门禁。`.local/start-symphony.sh` 只替换二进制路径，launcher SHA256 `1e53d69fe80a0e2d40096f3d6149062f62b33be356a2d915bcdefc670e219e0a`。原工作流 SHA256 `6921c60074685850da15012346762889c640dcb16c958cfe05dfc9c399acf92f` 不变，完整 `mvp.enabled=false`、两条检查及宿主认证引用保留。
+- View PID 33304 未变，4000／8613 API HTTP 200，普通控制器 running／retrying／blocked 为零。安装前后的原回执和 51 份闭合审计逐摘要保持，57 项冻结文件核对无漂移，安装 guard 已释放。实际审计 `.local/external-issue12-20261005/infra-installed-audit-20261005T085332Z-eec094a5/installed.json` SHA256 `5b3acc66589c5800f779a1ad6a4374aa8a93ab3020f24e52eadc2bc3c534d44a`。
+- 本次安装是已授权的本机基础设施修复，未安装 #12 功能候选。root 四文件 temp 修订正在等待本机 PKexec 所有者认证；逐文件仍为旧摘要，未激活、未运行安装后原生验证。没有主工作区提交、推送、合并或候选升级，没有重领原任务或追加预算。当前 #12 已预算阻塞，部分产物安全保留；上方 coding 和封包未安装的表述保留各自历史时点，不作为当前状态。
+
+### 17:06 起：认证传输重试、验收采集准备与未批准接续提案
+
+- 旧 pkexec PID 2092629 只等待本机认证，输出 GLib UTF-8 critical；核对 comm／argv／真实 UID 1000 并确认未执行安装器后取消，会话退出 143。17:06 将相同安装器复制至 `/var/tmp/symphony-resource-auth-20261005/install.py`，SHA256 仍为 `2ee2b55f7a1b7df530692e8276150f3f43a4ce6a8f7f9a737c7ba93f435efb11`，以 ASCII cwd 重新发起会话 45104。新请求未再输出该 warning，但认证仍等待，root 四文件未匹配新封包。`.local/external-issue12-20261005/auth-ascii-retry.json` SHA256 `057276c9d28546161890320fc862462743effdfe60263f2db04403997505da73` 保存仅传输重试、未安装状态；不是认证或安装成功。
+- 后续路由采集只准备 `.local/external-issue12-20261005/role-probes-route.exs`，SHA256 `9ec999cc2047b02ba4cc1b4262fe0559c45cf7abb7af1b922150779cb7c0234c`。四个纯 TOML、三个不安全 URL 拒绝案例及 AST 检查通过；显式 builtin 顶层路由作为生成配置意图记录，实际网络 `effective_connection` 保持 unknown。未发起模型调用、未形成 A04 通过证据。
+- 17:12 新鲜 GitHub API 核对 PR #13 为 open／Draft、merged false、head d87ba1000cc26e077057e1c431a6f0923b976478；没有将部分修改发布为新候选。
+- 已向所有者提出但尚未获答复的有界预算方案：资源安装和原生验证通过后，从实际恢复时点增加 60 分钟，最多新增 1 次 coder、2 次 Review，累计 Agent 上限拟为 18，既有恢复计数 5 保留。方案未批准，不登记为新的用户决定，未修改任何预算或原回执。当前任务仍预算阻塞，root 认证仍待本机完成，A04 和新候选交付尚未通过。
+
+### 17:33 安装、17:45 实测与 IS-069 接续准备
+
+- 本机认证已完成，17:33:54 四个 root 受信文件实际安装，所有权及 755／644 模式、清单 `6ec37108` 全部匹配。普通桥接包装入口未变；实际 runner 为 `execution_sandbox.root.sh`，SHA256 `779c027ab5bbf55812999720c6e0f4febc712823e59eb6659515e84d0c0a32f2`，不再是等待认证状态。
+- 17:44 无模型资源实测通过：实际 Erlang／escript 普通 scheduler 总量和在线量均为 4，dirty CPU 总量和在线量均为 1，dirty IO 为 1；受信检查器在继承倍率、CLI／escript 覆盖下仍保持该配置，并拒绝继承解析控制参数。真实 BEAM 持锁 FD，SIGKILL Python checker 后锁仍占用；第二 checker 排队约 164 毫秒，释放后取得同一 inode。CPU 限额 400000/100000、内存 4 GiB、PID 256；超限／OOM 为零，清理、后代、导出及后台输出关闭均为 true。证据 `postinstall-resources-1791193456613219996.json`，SHA256 `15e18ffcd799641f93fe217546aa3e17794f271e891bf08079fd703e26c0a3c8`。
+- 17:45 扩展安装验证通过：安装版 `check_isolated.main` 的候选六阶段共用一个 0700 私有 TMPDIR，基线使用另一目录；两个真实 Elixir VM 创建同名临时夹具成功，完成后 harness 删除。项目准备与 stage runner 是受控夹具，不是新候选正式检查。证据 `postinstall-resources-1791193551158877430.json`，SHA256 `f251017fd2ace5c395622c92e514622eea71aa242a065549c7474f580f597634`，完整资源断言再次通过。
+- 早期失败独立保留：探针误把 `process/start.env={}` 当作继承环境，空 PATH 导致 Python `sys.executable` 为空；合成工作区只有 git init、无 HEAD，受信检查器正确拒绝；扩展夹具队列日志混入 JSON 导致严格解析失败。修订用绝对 Python 路径、隔离 exec-server 非秘密白名单环境、私有合成 Git 提交及单独夹具日志。产品脚本未在这些探针修订间变化，没有提取嵌入 JSON 或把失败标通过，没有 #12 模型调用。
+- 当前安装核查 `resource-installed-verified-20261005.json`，SHA256 `084aec34b7eca4c45e40e90ed8a9e48032509d689b84cbffc800ac05054c1979`，绑定 root 文件、探针、原 A11、部分导出、原回执及 134 项冻结文件。controller／View PID 2092760／33304、API 200，新领取关闭；原 Agent15 的 pids=3 历史保持。
+- 所有者已批准有界接续并要求增加 60 分钟时长，来源见 IS-069；助手安排实际恢复起算四小时，最多新增 1 次 coder、2 次 Review，累计上限 18、已用 15 次及返工计数 5 保留。授权文件 `bounded-resume-approved-20261005.json` SHA256 `826dea38555d3f550770bee69ae1df38942ae1f8f3b2de963b600784f189aa03`。`bounded-resume.exs` 首轮真实只读预检已通过，包括锁外原回执／闭合历史、完整冻结合同、七文件修改及角色次数限制负例；目前尚未执行，不把准备状态登记为预算已生效。
+
+- 17:57:34.629 锁内复核通过，操作 `linux-issue12-bounded-resume-20261005` 实际接续原 round 6，单元 PID 2106548。窗口截止北京时间 21:57:34.629；原起点和 external_wait_ms=10214937 保留，准备／闭合后闲置时间单列 3973146 毫秒，墙钟政策增加 18373146 毫秒，当前累计政策 47173146 毫秒；这不是从准备时起算四小时。`resume-window.json` 保存准确摘要、有效政策和角色额度。原 main、模型、两条检查、沙箱和返工计数 5 不变。
+- 第 16 次尝试为本次唯一 Coder，17:57:41 已真实启动 `gpt-6.1-sol` 模型会话 `01a10b7f-5245-7523-ae9b-4730eaab9f3f`，沿原部分修改继续；此时回执 recovering、累计尝试 16/18，还没有新候选。后续最多两次 Reviewer，诊断及第二次 coder 在预留之前拒绝；原 Attempts 的完整性、用量、独占证据及有限重试保持。限定入口从已门禁固定源码在新命名空间复用 Executor／Attempts，历史无产物例外仍要求真实闭合审计，开放第 6 轮不列入旧例外；未修改或升级普通控制器。
+
+### 18:05 后：真实自检发现 TMPDIR 位置回归，修订等待空闲安装
+
+- Agent16 的真实 candidate／baseline 自检分别为 719 项、57 失败、6 跳过及 669 项、53 失败、6 跳过，整体退出 1。`TMPDIR=harness/tmp` 位于实际编译源码树内，测试建立的正常 state／workspace 夹具被 `mvp_state_source_overlap` 正确拒绝。这是本次 root 检查修订引入的位置回归，不是 #12 功能代码故障；17:45 的受控准备／阶段夹具未覆盖实际编译后的 Config.source_root，不能据该探针宣布完整正式检查通过。失败记录与原断言保留。
+- 最小修正只将临时目录改为独立 `TemporaryDirectory(prefix=symphony-check-tmp-)`，与源码 harness 为同级目录，模式仍 0700，所有阶段和嵌套 VM 共用，每次检查独占、完成后清理。Config 的源码树、运行目录与状态／工作区隔离判断均不改。新增边界断言并修正 SIGKILL 回归的精确清理路径；实际重复／嵌套 Elixir VM、SIGKILL 遗留、下一检查隔离等 10 项通过，scripts 完整 89 项、0 失败、17 既有条件跳过。日志 `resources-sibling-tmp-tests.log`。
+- 新封包 `resource-payload-sibling` 清单 SHA256 `4c18395b2a1e37f1fa26f7748a90a2e86b608147cba9a652cc8c025a11de2732`，只有 `check_isolated.py` 内容变化，SHA256 `82361e6fa95abcadbbedcb54b73aa3962a8e6af12620800981269505aa345742`；其他三个资源文件保持已安装摘要。安装器 `install-resources-sibling.py` SHA256 `ee5b241fa55bbde39f79d0a773f754e19c078ab86cd44567079b1cc14a2d5fdd`，沿原审查安装器只替换封包、绑定、备份名和说明。新原生验证器 `native_postinstall_resources_sibling_probe.py` SHA256 `c36bd675804d2f65784fd34f8fdfa1a60e3997d3e00961b532f989c34f30d390`，新增 TMPDIR 不处于源码 harness 的断言，静态预检通过；尚未安装或实际验证。
+- 当前 root guest 和 Agent16 仍在运行，不热换受信脚本或操作客体进程。Coder 已独立复现基线的同一回归，保留两项失败，并用源码树外临时目录做补充排查；补充结果不能标为两项正式门禁通过。修订在执行者完整结束后安装，再复检同一新候选；不为这项操作者基础设施问题追加 coder 或删改原失败。
+
+### 18:21 实际安装源码树外 TMPDIR，Coder16 完成
+
+2026-10-05 18:21:02.824，空闲安装器在第 16 次 Coder 客体完整结束、正式检查启动之前安装源码树外 TMPDIR 修订；root 文件摘要、所有权和模式与 `resource-payload-sibling` 清单匹配。安装记录为 [resource-installed-sibling-20261005.json](../.local/external-issue12-20261005/resource-installed-sibling-20261005.json)，SHA256 `2d6b136a12e3a0ff0513f60da4a264d4fdd93b05c1cbf41f082da9f4b06c0c91`。该安装记录自身不代表安装后原生验证或 #12 最终验收；17:45 的旧验证和 18:05 的真实失败保持各自来源。
+
+第 16 次 Coder 已正常完成，模型终态 `turn_completed`，客体退出 0，清理、后代清理、导出和后台输出关闭全部为 true，PID 超限与 OOM 事件均为零。控制器沿第 6 轮提交新候选 `d20c57463835be833d9a55d2495d7123689cc9e8`，七个文件较旧候选增加 286 行、删除 34 行；累计尝试 16/18、返工计数 5 保留。补充自主测试记录保留 719／669 零失败，但不替代受信正式检查。18:30 正式候选检查已完成 719 项、0 失败、6 既有跳过、覆盖率 100%，严格 Credo 和 Dialyzer 通过，构建尚在进行；冻结基线检查、独立 Review 和新候选 A04／A11 外部复验仍待完成。未安装 #12 功能候选，未提交或发布主工作区。
+
+18:36 控制器完成同一候选的两条正式检查：候选 719 项（713 通过、0 失败、6 既有外部跳过），覆盖率 100%，格式、规格、严格 Credo、Dialyzer（0 错误）和构建均通过；冻结基线 669 项（663 通过、0 失败、6 既有外部跳过）。未新增跳过或降低阈值。第 17 次只读独立 Reviewer 已启动，累计 17/18；新候选双角色实际 GPT 和新运行版本隔离证据尚未提交。既有 A04 失败和 A11 旧候选通过均保留，不能替代新候选验收。
+
+### 18:44 Reviewer17 拒绝、额度维度停点与 18:45 后原生验证
+
+用户已批准有界接续并要求增加 60 分钟时长；按 IS-069，实际恢复起算四小时已经生效，窗口为 17:57:34.629—21:57:34.629。Coder16 已完成第 6 轮，新候选为 `d20c57463835be833d9a55d2495d7123689cc9e8`。控制器正式候选 719 项、冻结基线 669 项均 0 失败、6 既有外部跳过；候选覆盖率 100%，格式、规格、严格 Credo、Dialyzer（0 错误）和构建通过。两项正式客体均退出 0，清理、后代、导出和后台输出关闭全部为 true，PID 超限／OOM 为零。
+
+18:44:33.985，独立 Reviewer17 拒绝 A01 一项代码缺陷，并保留 A04／A11 两项准确候选外部验证。新缺陷是旧非隔离配置解析白名单遗漏原生顶层 `openai_base_url`／`chatgpt_base_url`，令原可由客户端读取的明确连接配置变成 `legacy_model_service_migration_required`；这不是原连接资料缺失。准确候选源码和加载 BEAM 已绑定的[合成配置复现](../.local/external-issue12-20261005/candidate-d20c574-20261005/legacy-top-level-read-repro.json) SHA256 `7d965805a38a75822043f97a73c196a67e61d1c9e1c33898b2a15823e34e1bea`，四项结果为：旧 effort 控制通过、两个原生 URL 配置各自拒绝、旧隔离路径忽略 auth_home 配置仍通过。该复现不调用 GPT、不修改候选或真实账号配置。
+
+控制器按混合阻塞先修代码的合同尝试回流，但下一轮将是 round 7，超过已批准 `max_rework=5` 对应的最多六轮，因而停在 `blocked / :mvp_recovery_resource_exhausted`。累计 Agent 17/18、返工 5，IS-069 唯一新增 Coder 已用完；仍有一份 Reviewer 数量额度，但它不能替代代码返工。四小时墙钟仍有余量，单纯再加时长不解除这两个维度的限制。原操作完成链已封口、互斥释放、执行单元退出，回执 SHA256 `fa800afd1490aa7582b27fb28109732ac2b1bf08924343ce2a503f06438258d7`；未派发额外 Coder／Review，也未修改预算绕过拒绝。
+
+18:45 后已补齐安装后原生验证。源码树外 TMPDIR 修订、实际 scheduler／dirty scheduler 约束、受信覆盖参数拒绝、真实 BEAM 持锁、checker SIGKILL 后第二检查排队及同 inode 释放均通过；完整清理导出、PID 超限／OOM 为零。[安装后证据](../.local/external-issue12-20261005/postinstall-resources-1791197138217696260.json) SHA256 `9f0247bceed599ba3a6eb57c1840bb724bc6b042262e8a432614029e9fa2474b`，[当前安装核查](../.local/external-issue12-20261005/resource-installed-sibling-verified-20261005.json) SHA256 `928433d24be8561cec1cb90266603805bdf79eca82ea84d5056fd6f6f3c90d76`。新内核探针的只读 EROFS、宿主网络／凭据隐藏、本地 TCP、私有 tmp、PID 压力限额和后台后代清理均通过；[内核证据](../.local/external-issue12-20261005/candidate-d20c574-20261005/A11-kernel-operational.json) SHA256 `08cad144b402dbc76ae087f4dc64b7de021961ccf4e58a00b5fceae4ba78f57e`。
+
+上述内核证据分别绑定新候选源文件与已授权安装的资源修订。候选 runner 与已安装 runner 摘要不同，`candidate_runner_matches_trusted=false` 据实保留，未宣称字节等价；探针执行的是固定部署。未执行 4GiB 内存耗尽、8GiB 磁盘填满或 CPU 吞吐基准。该内核通过不消除 Review17 的代码拒绝，也不代替独立复审。新候选真实 GPT 推理尚未调用，修复后若生成下一候选仍须重新绑定证据。
+
+18:49 的 GitHub API 新鲜核对确认 [Draft PR #13](https://github.com/dailiuyi/innovation-symphony/pull/13) 仍开放、Draft、未合并，远端 head 仍为旧候选 `d87ba1000cc26e077057e1c431a6f0923b976478`；`d20c574` 仅在原任务本地分支提交。普通控制器与 View API 均 HTTP 200，新领取继续关闭，未安装 #12 功能候选；主工作区未提交或推送。
+
+现有规则禁止预算耗尽后自动增额。下一步的具体待批准方案为：保留既有四小时窗口和截止时点，从当前已用 17 次起最多再 1 次 Coder、2 次 Review、0 次诊断，累计 Agent 上限 20；返工上限由 5 增至 6，现有返工计数和全部历史保留。仅修复该原生旧配置兼容性缺口及相应回归，完成原正式检查、修复后准确候选的双角色 GPT 与内核证据，再独立复审；通过受信的一任务接续，不改变普通控制器或通用默认限额。[提案封存](../.local/external-issue12-20261005/next-continuation-proposal-20261005.json) SHA256 `ea82a8167e1e4ed65774ce569e5443748833cce4b1f903d51e43f5ec1262bcd6`，状态为 proposal_not_authorized；它不是用户已确认决定，尚未激活。
+
+本轮补充的流程结论：外部条件分流和真实代码返工回流均已实际发生，当前缺的是额度以及旧／新配置路径之间的契约覆盖。应将原生 URL、定制 provider、auth_home／env_key、隔离／非隔离和低／高 effort 建成兼容矩阵，复用同一有效配置描述，避免生成端支持而旧配置读取端拒绝。100% 覆盖率和全部回归通过不能证明这类组合已覆盖。预算终态也应分别显示墙钟、Agent、Coder、Reviewer 和返工维度，避免统称 resource_exhausted 使操作者误以为仍需加时；此为待设计建议，未登记为新的已批准产品要求。
+
+18:52 后，所有者进一步明确“多给三次返工机会”，见 IS-070。最多再三轮修复，返工上限 5→8；原计数 5 和 Agent17 保留。为沿原第6／8轮诊断及最终补证 Review，工程额度配置为最多3次Coder、4次Review、2次诊断，累计26；先前一次返工／累计20的提案封存，不激活。四小时窗口仍截止21:57:34.629；当前仅授权计划已封存，尚未修改原回执或开始下一轮，接续须先核验可信输入、完整冻结合同及闭合链。
+
+19:02:21.535 已通过锁内复核，操作 `linux-issue12-three-reworks-20261005` 实际接续。新政策 `max_rework=8`、`max_agent_attempts=26` 已落盘，当前返工计数仍为5；原开始时间和 external_wait_ms=10214937、max_elapsed_ms=47173146 不变，没有增时或重置。预算过渡写入 `budget-transition.json`，角色上限在预留前检查，保留原 Attempts 的证据、用量和有限重试。第18次为既有第6轮周期性只读诊断，19:02:28实际启动；它先核验新的旧配置缺陷，再沿原恢复逻辑返回 Coder。限定入口复用已经688项门禁的固定 Executor，只增加该任务审计接续和角色上限；原周期性诊断、编码、检查、独立Review、外部等待和交付分流保持。
+
+源快照／compiled模块、安装版四资源文件、134项历史输入及两项当前正式报告均核验。历史清单中的原 live回执／head 指针已合法推进，分别在IS-069的不可变receipt-before和其前序completion核验原字节，当前新回执／head仍由统一前序链校验，未豁免摘要。只读预检及角色上限正负例通过，未开启新领取或升级普通控制器；现时累计18/26、recovering，还没有下一候选或最终批准。
+
+19:05，第18次诊断有效返回repair_code，明确不能只改白名单，须提取有效连接、按认证模式及参数冻结，并补非隔离原生URL和真实客户端离线加载回归。控制器已自动派发第19次Coder进入round7，当前返工6/8、Agent19/26；新增三次机会中的第一轮实际开始。未派发额外用户chat或重领原Issue，未绕过诊断或Review。准确新候选外部采集和下一受信接续已准备为独立证据文件；现时仅准备，尚未发起新候选实际GPT验证或最终批准。
+
+
+### IS-070 后 Coder19 导出停点与受信成果恢复（20:17）
+
+三次增额已实际触发诊断18和Coder19。Coder19 task_complete后原root报告清理成功但export_complete=false，未产新SHA，原回执保留 :sandbox_cleanup_incomplete。没有将其空output.txt或failed outcome改为成功。按不可变会话7次FileChange重建5个文件，并在独立受管沙箱施加冻结格式化、完整自测和导出验证；两门禁均0，294个跟踪文件中其余289个逐字不变、执行位相同。原失败具体条目未确认，结果不伪称为原沙箱成功。
+
+linux-issue12-coder19-restoration-20261005 在20:07经原OperatorRecheck互斥和双重只读preflight派发，只恢复5个已比对文件，原控制器固定新候选 d71e5b27c9c9983f6d0b4beec36ddc0b4b4dcd22（184增／11删），继续原完整检查和独立Review。Agent保持19、返工6／8、max_agent_attempts26；无新时间和次数增额，21:57:34.629仍是硬截止。scope仅原Issue12。
+
+同时修复existing Draft不能换候选／不推进分支的交付缺口；45项external-handoff回归、specs.check和strict Credo通过。其旧意图／旧证明／唯一OPEN Draft／旧正文／旧head／同仓库分支base／祖先约束和exact lease全部保留，旧approved候选拒绝更换，推送后再次核对再PATCH，不创建重复PR或覆盖人工推进。仅该操作注入源码及测试摘要绑定的回调，普通控制器、普通WORKFLOW和关闭的ready领取不变；未合并／安装Issue12候选。20:17候选正式门禁0、基线进行中，后续Review、准确候选外部证据和远端实际交付仍待完成。
+
+
+### Review20 代码拒绝并自动派回 Coder21（20:38）
+
+第7轮正式候选722项／冻结基线669项均退出0、0失败、6既有外部跳过。独立Review20指出旧 `--config/-c` 启动参数及合法带引号项目表两处A01兼容代码缺陷；A04／A11仍待准确新候选外部补证。原恢复单元未结束，控制器自动进入round8、启动Coder21，会话01a10c0e-3ff3-7b43-adc2-5ee11c8e7585，返工7／8、Agent21／26。原历史、模型及21:57:34.629硬截止保留，无重领、预算重置或功能安装。新候选和最终交付尚未产生。
+
+
+### 2026-10-06 IS-071 宿主中断闭合与恢复准备
+
+2026-10-05 21:14正常关机中断Coder21；原截止21:57:34.629到期。旧boot `e66faf42-4649-42f7-9b50-e4c937f74fbb`，当前boot `fed8fb82-a236-4f38-bd62-2c50f9ffa8dc`。私有审计见 `.local/external-issue12-20261006/reboot-interruption/manifest.json` 与 `boot-closure-observation.json`（SHA256 `8f162c2db0d29b466739a33b7e3919a05f1ac06c8f28b4bb05dbf77ea73beab4`）。通过原OperatorRecheck闭合 `linux-issue12-coder19-restoration-20261005`，结果为宿主中断，原回执SHA `ad0818584e715d8f75130941b8a30c08d7925b1820c8b977657beb64f1363a31` 未变，21次Agent／7次返工保留。缺失原生导出、Coder输出和outcome保持缺失；不补造完成记录。
+
+普通controller和View恢复为临时user unit，原root bridge恢复为临时system unit；均没有安装Issue12功能候选，普通领取关闭。Controller/View增加本地有限失败重启，持久开机单元未安装。原四个root资源脚本及bridge摘要核对一致，既有运行负载没有被旧安装器覆盖。
+
+IS-071用户已批准四小时实际恢复窗口、Agent27／返工8（当前7），剩余最多Coder2／Review3／诊断1，使用量不重置。批准封存SHA `df0d4f5be3cbf174cd50abef482bcb3781debeb8100693aacff8e15634ea8359`。01:14:21.041实际恢复时激活窗口，硬截止05:14:21.041；Coder22已在原第8轮、第2阶段尝试实际接收任务。重建检查为独立核验，不能替代正式Issue门禁或新Review。
+
+`ExecutionSandbox` 导出失败分类已在主源码修正：仅有效的原生完成记录同时证明cleanup=true、export=false时返回 `sandbox_export_incomplete`；清理失败、类型错误或scratch来源不符继续失败关闭，禁止导入。26项目标回归通过。该源码修订尚未安装到普通控制器固定包。
+
+接续 unit `innovation-symphony-issue12-host-resume-20261006` 的InvocationID为 `b7aa17784a2e41b5a2c674508d95894a`，RuntimeMaxSec=14400、KillMode=mixed、TimeoutStopSec=90。冻结基础设施源包保持d88b7399摘要，专用接续代码和角色约束单独存档；普通控制器不承担本次专用operator。
+
+同窗口外部补证unit `innovation-symphony-issue12-external-worker-20261006` 已启动，InvocationID `f742a28ac26c4d42ab7949a2159cce42`；源码绑定清单及派发记录保存于 `.local/external-issue12-20261006/`。严格外部入口扩展仅接受IS-071的确切审批摘要、原回执摘要、budget transition、原started_at／external_wait和历史前缀，拒绝增加到28、重置等待、替换批准或历史。角色仍累计限制Coder4／Review4／诊断2（从原第17次之后计算），包含已经消耗的调用。编译及负例通过，真实补证／外部Review结果仍待执行。
+
+01:33 View只读中断提示已上线（仅匹配同一回执字节／同一closed operator／明确host_shutdown_interrupted／无新锁时展示），不更改控制器状态。View最新InvocationID `f9dbec8ad94d473d9979b1ed10cdd81b`；API200、collection=ok。验证34项通用、11项本地采集、10项前端轮次全部通过；当前GH12仍为活跃编码，不误标中断。普通控制器新包首轮全量694项0失败／6跳过，覆盖99.95%不达标；缺少两条Draft身份与祖先拒绝回归，已补充，原完整门禁v2正在运行，新包尚未安装。
+
+01:48 新基础设施包已验证并安装：`.local/releases/linux-infra-export-draft-fixed-20261006/`，binary SHA `df4b8c142879ada027aecc214616d9ab1273e9c45806b75bdddd76748999d5c1`，manifest SHA `f9475a847fbc9ff94203ca0388bc48480c407c94c53f1fc4d805276fc53a97e0`；694项0失败／6跳过、100%覆盖、Dialyzer0错误，格式／规格／严格Credo通过。仅两项生产模块较d88冻结源变化，未新增ModelServices；普通controller PID351235／InvocationID441de902aca348a193a8436fe02f185b，API200、领取关闭，workflow摘要6921c600未变。旧launcher与安装审计见 `.local/external-issue12-20261006/infra-installed-audit/`。
+
+基础控制器与View持久用户单元保存于 `~/.config/systemd/user/`，default.target.wants链接及systemd静态验证通过，当前临时unit保持原PID／Invocation。不是本次Issue12执行的持久单元，也不自动恢复模型任务；真实重启未验证、linger未变。root持久unit及保护guard准备在 `.local/external-issue12-20261006/persistent-services/`；Unix socket保护2项测试通过，安装调用等待本机管理员验证。当前root桥不重启、不改四项运行payload。
+
+Coder22已提交候选bb9070daef522d9d9ef908924acb8a39e0526847，原轮8进入正式checking；已用Agent22／27、返工7／8，四小时窗口及所有历史保留。新候选的正式检查、独立Review和准确候选外部补证结果仍待完成。
+
+02:03 原轮8正式候选／基线检查均退出0；候选726项0失败／6既有跳过，基线669项0失败／6既有跳过，七阶段结果绑定bb9070da且child_exit／outcome为0。71个冻结基线测试及项目文件与base169ff8逐字节匹配。独立Review23已启动，Agent23／27、返工7／8；仍缺当前Review结论及准确候选A04／A11验收。独立核对见 `.local/external-issue12-20261006/bb9070da-formal-check-audit.json`，不修改原回执或审计绑定。
+
+02:12 Review23正常完成并拒绝A10当前授权读取：同一WORKFLOW重载后禁用／撤销／移除证据或旧白名单撤销，原context仍可能放行。A01两项兼容修复已审查通过；A04／A11仍待外部实测。原operator实际启动诊断24，当前Agent24／27、返工7／8；剩余最多Coder1／Review2／诊断0，仍同一05:14:21.041硬截止。外部worker保持等待，不给有代码阻塞的候选自动加验收通过；后续只按最终准确SHA补证。Review23独立审计保存在 `.local/external-issue12-20261006/bb9070da-review23-audit.json`。
+
+02:14 诊断24正常完成并回流Coder25，原round9／返工8开始，Agent25／27；本次批准剩余Coder0／Review2／诊断0，硬截止不变。旧bb9070da的检查与Review保留，不能替代后续候选正式检查／准确SHA外部补证；所有接续仍由原Elixir operator管理。
+
+02:21 只读完成审计 `.local/external-issue12-20261006/audit-completion.py` 已执行并保存 `current-completion-audit.json`；原15项验收及13项执行／交付／基础设施和历史完整性共28项，goal_complete=false。它不派发／不改回执或goal；只有新候选正式检查、新鲜批准Review、真实准确SHA证据导入、终态／operator闭合和Draft13最终头等证据齐备才可支持完成。root持久单元仍等待OS管理员认证；未把缺失证据当作代码测试失败。
+
+02:38 Coder25仍在执行：自检732项0失败／6跳过、100%覆盖；Dialyzer102条类型诊断、exit2／outcome10，门禁未通过，未派发新增Coder或放宽阈值。`coder25-self-check-observation.json`保留原始日志前缀摘要及安全摘要，明确不是新候选正式证明；后续仍需真实Turn成功、导出、提交和完整正式验收。
+
+02:49 等待补证观察器已版本化替换为 `innovation-symphony-issue12-external-worker-v2-20261006`（PID591391、Invocation5d8dc75cdca748a4a7409b2a2885d6c5）。原因是已复现回执／服务闭合读取竞态；v2闭合后重读，仍拒绝错误状态。原观察器无子进程、无探针定位文件，原operator仍活跃；替换前后operator与root桥PID／Invocation完全一致，未派发新探针或模型，deadline及次数不变。12文件新清单和4个有意义竞态／拒绝验证结果见 `.local/external-issue12-20261006/external-worker-v2-dispatch.json` 和 `external-worker-handoff-read-v2-verification.json`；旧源码及日志保留。
+
+
+### 2026-10-06 03:17：Coder25导出失败与日志源码恢复验证
+
+原Coder25模型Turn完成，但原沙箱清理完成、导出失败，exit_status=0，PID／OOM事件均0；原完成链02:51:51闭合。其固定旧控制器原因为 :sandbox_cleanup_incomplete，普通控制器的新分类不改写历史。原始回执、native result、rollout、messages及输出已封存于 `.local/external-issue12-20261006/coder25-export-failure/manifest.json`。暂未确认原导出拒绝的具体条目。
+
+从已完成的文件操作恢复14个白名单文件，含一个新增测试文件；失败的错误目录写入仍保留为失败，未执行记录中的任意Shell/Python。日志与重建摘要见 `coder25-reconstructed-v2/reconstruction.json`，原源码字节完全相等未证实。独立原生隔离验证正在运行，格式／规格／Credo已通过；它不是正式Issue检查，也不是一次新模型派发。下一步仅在验证通过后准备受审计的同轮源码恢复、完整正式检查与独立Review，原窗口与所有计数不变。
+
+
+### 2026-10-06 03:23：受审计恢复候选进入正式检查
+
+恢复副本原生门禁与安全导出均通过，733项／0失败／6既有跳过、100%覆盖率、Dialyzer0错误。来源证明 `coder25-restoration-proof.json` SHA256 `e2641770b58578f0137862d7557bbdb7996743a675eb34c3e2fa828c92b5848d` 绑定14个恢复文件、281个未改动跟踪文件和原失败；原临时工作区字节完全相等仍未证实。无派发的额度／角色／错误候选负例通过，只读前置核验通过后，受审计同轮恢复单元于03:22:02启动。候选 `aa12c85fd6ade88ffe4123c2a35629119cd05af1` 已进入原第9轮正式检查，Agent25与返工8计数不变。
+
+`innovation-symphony-issue12-coder25-restoration-20261006.service` invocation `cdbe94c6c70a45778c94b7d83e0b926e`，PID636165。外部worker v5只等待此单元关闭；沿用已验证的“关闭后重读回执”修复，以新的封存入口匹配恢复actor，窗口与角色额度不变。其manifest SHA256 `88f633bd05a2e9490bf47d5d84507fff50b73a7e33326c058da9a899b7e1a971`；单元invocation `1c3226627a0448db960a80ef34816537`，PID636462。它还没有生成实际角色或内核证据，也没有派发最终Review。
+
+
+### 2026-10-06 03:37：恢复候选正式门禁闭合，Reviewer26启动
+
+原第9轮恢复候选 `aa12c85fd6ade88ffe4123c2a35629119cd05af1` 的正式候选733项、冻结基线669项均0失败／6既有跳过；候选覆盖率100%，格式／规格／严格Credo／Dialyzer0错误／构建通过。控制器已实际启动独立Reviewer26，累计Agent26／27、返工8／8，剩余Review1；没有新增Coder或扩大窗口。该状态不能宣布A10验收通过、外部条件闭合或最终交付。
+
+
+### 2026-10-06：root持久安装仍等待本机认证的核查
+
+待安装pkexec PID364702仍存在并sleeping，真实UID1000、有效UID0、NoNewPrivs=0；安装证明尚未产生。读取其受保护environ被Linux权限拒绝，没有使用root执行桥绕过读取。该停点不是Codex no_new_privs限制，也不能从等待时间推断本机认证已完成。原Reviewer26和桥仍正常运行；继续等待用户本机管理员认证，不再申请已经获得的任务权限。
+
+
+### 2026-10-06 03:58：代码复审通过，真实补证导入，最后接续启动
+
+Reviewer26未发现新代码阻塞，确认A10真实WORKFLOW撤权实现与回归充分；仅A04／A11外部条件未闭合。新候选内核清理、隔离、PID压力和后代清理探针通过。旧角色helper在真实模型调用前被bin/erl路径断言拒绝；诊断证明Elixir将同一OTP28.5的erts-16.4/bin/erl置于PATH前列。版本、安装根和具体入口摘要绑定的helper v2通过无模型前置核验后，实际双角色Turn完成且输出、路由字段、凭据引用链接及原生清理校验通过。服务端实际型号仍unknown；第二账号、实际网络连接遥测未验证。
+
+角色helper v2 SHA256 `e5edc2918ecc92657c171c0fed21067afbef262eff7fe3ff3315dc3f6954f8c4`，旧失败完整保留。资源子报告原生没有candidate_sha字段；打包器v7通过准确候选summary、明确路径、verified runtime binding及原始摘要绑定资源结果，不篡改原报告。A11仍明确候选runner与安装runner字节不同、没有安装功能候选、未做内存／磁盘耗尽及CPU基准。
+
+Draft13出现分支已推进到aa12c85、正文仍为d87ba100的部分交付。只读核验唯一PR、精确head／base／仓库／分支／Draft状态与旧正文，以及错误head／正文／PR负例后，新的 `linux-issue12-draft-reconcile-20261006` 对账操作仅PATCH既定正文，使用原生ExternalDraft.reconcile确认交付；未重新push、改候选、派模型或增额。完成链保存原不确定结果和remote-before／after，计数与历史不变。
+
+最后严格入口v6完成只读前置核验后，03:57启动 `innovation-symphony-issue12-final-external-20261006.service`，原deadline05:14:21.041不变。当前Agent26／27、返工8／8；补证已导入，完整候选／冻结基线检查重跑中，最后独立Review尚未发生。
+
+
+### 2026-10-06 04:12：补证后门禁闭合，最后Reviewer27实际启动
+
+准确候选aa12c85的补证后正式候选733项、冻结基线669项均0失败、6既有跳过；候选覆盖率100%，格式／规格／严格Credo／Dialyzer0错误／构建通过。最后独立Reviewer27已实际启动，Agent27／27、返工8／8，Coder／Reviewer／诊断余量均0，原硬截止时点05:14:21.041不变。尚无最终Review或交付完成证明，不自动扩额或继续派发。
+
+
+### 2026-10-06 04:36：最终Reviewer27拒绝，原额度全部耗尽
+
+Reviewer27真实Turn正常完成，04:28:17 operator闭合，approved=false。两项P1公共边界缺陷为SYMPHONY_MODEL_KEY启动覆盖／快照秘密保存，以及持久注册表初始解析异常原文泄露；另缺准确候选runner的实际内核验收。合成复现已保存于 `.local/external-issue12-20261006/review27-verification/`，不调用模型或读取真实凭据，公共snapshot与load均复现；调度／CLI输出回归尚待修复轮执行。
+
+原回执状态blocked／:mvp_recovery_resource_exhausted，SHA25619c4f85e23d80993b05d2fb445c182e7794ca3929edd26bf11ef8e543163b5aa；Agent27／27、返工8／8、Coder／Review／诊断余量0，截止仍05:14:21.041。单元MainPID0且failed为实际终态，没有新派发。准确候选aa12c85工作区干净，Draft13 OPEN／Draft且head一致；严格完成审计goal_complete=false（7／28证明条件），未合并／安装功能候选。root持久安装仍等待本机管理员认证，安装证明缺失。
+
+有界接续提案 `review27-followup-proposal-20261006.json` SHA2569797fd2124e408ed0937556f29f49a597f6255ecec3ce3cf6319b84854d7db2a已保存，尚未授权／生效：实际恢复追加最多四小时、Agent27→30、返工8→9、最多1Coder／2Review／0诊断，仅修复上述两处公共边界并完成准确候选验收。全部原失败、历史和计数保留，不自动合并或安装。
+
+
+### 2026-10-06 14:48：IS-072已批准，Coder28实际接续
+
+直接用户指令批准Agent27→30、返工8→9、最多1Coder／2Review／0诊断，从实际恢复追加最多四小时。授权封存 `review27-followup-approved-20261006.json` SHA2567e10e9feb0b1985c3a23c8fe2d5540e9afa0922977e3011cda6287f4bad9696c。
+
+首入口14:44:54在模型派发前遇到通用Recovery累计时长24小时校验上限，失败记录已闭合、未消耗模型。v2保留原失败和既有14:44:54.696—18:44:54.696窗口，以专用审计context承载精确累计额度，通用配置上限和运行版本不改。窗口文件摘要f8d730779e1270e8298120ed79a15fac9827086a434448aaa9d4c3ab8e711c8a，原started_at、external_wait、全部事件前缀及28／30和9／9计数均保留。v2只读范围／历史／角色／Review核验通过；预算31、等待重置及历史清空负例拒绝。
+
+`innovation-symphony-issue12-review27-resume-v2-20261006.service` MainPID901536、Invocation9901668e1894475b99e88cb4b971961c，14:48:01实际启动Coder28，thread01a10ff8-05f9-7482-8b65-a1ad236d13ee、turn01a10ff8-1eb3-7140-9868-a2d717bacfdb；原第10轮正在编码，剩余最多Review2，无新增Coder／诊断额度。当前普通领取关闭，功能候选未合并或安装。
+
+root持久单元安装证明已产生：固定unit、guard摘要与既定方案一致，systemd验证exit0，wanted链接已保存；安装前后桥MainPID88446和Invocation527cbf8048f848cca679d690aab124b2一致，四项payload未变。下次宿主启动生效，真实开机仍未验证。本机认证旧进程已结束。
+
+
+14:54 本机管理员认证已完成，准确候选验收进程以root进入等待，原native session48213／PID906110。固定helper摘要d4c9e3ad82e0ca833580422678b28597e8cc80c6f1b6e9087737848fc68faea0；开始证明 `/var/tmp/innovation-symphony-issue12-exact-acceptance-20261006/started.json` 绑定原四小时硬截止、批准摘要、原桥身份和四项payload。仅等待闭合且无代码阻塞的新候选；实际执行准确runner后记录EROFS、网络／秘密／凭据隐藏、私有tmp、PID限额及后代清理。尚无内核通过报告。
+
+实际角色采集单元 `innovation-symphony-issue12-is072-proof-collector-20261006.service`（PID920743／Invocationcfc628acb0bc4888854eeb0ae354b1b6）同样等待原operator闭合，严格重读状态后才归档准确源码／编译BEAM并执行合成双角色调用；不派task Agent、不改原回执。最后外部接续入口的累计时长加载只接受IS-072精确批准和固定窗口，原公开请求、范围、元数据及证据校验保留；编译及增至31／重置等待／删除历史／替换授权负例通过，尚未派发最后Review。
+
+15:08 Coder28仍执行自检：首轮736项0失败／6既有跳过，但99.98%覆盖和长行导致整体失败；修复后补充结构无效JSON和真实领取脱敏回归通过，严格Credo通过，首轮Dialyzer0错误／escript通过。基线与修正candidate完整重跑进行中；这些是编码自检，不是新候选正式证明。
+
+
+### 2026-10-06 15:34：Coder28模型完成但导出失败，原轮成果恢复验证
+
+Coder28真实模型Turn正常完成，自检候选736项／基线669项均0失败、6既有跳过，覆盖率100%、Dialyzer0错误及构建通过；这些仍为编码自检。15:26:16原operator闭合，固定旧版本返回sandbox_cleanup_incomplete；原生result明确cleanup／descendants／background关闭均true、exit0、export=false、OOM／PID事件0。没有新候选提交，原失败和回执封存于`.local/external-issue12-20261006/coder28-export-failure/`。失败回执SHA2560a6ad47fbf507a671fe74b4a72bb6373fcf483aea262d3156913e84de8cecc17，原生result摘要bf81b9d6af7a89362cea03d14dd7fdc9a2a5f06ccfdbb8b95633fdb525a7b821。
+
+最后RPC diff记录六个更新文件；从aa12c85重建的每个文件均匹配记录的原始及结果Git blob摘要。不执行日志里的任意命令，原沙箱导出成功不被追认。原工作区完整字节一致尚未证明，正式检查和新独立Review仍必需。副本路径`/var/tmp/innovation-symphony-linux-runtime/workspaces/coder28-reconstructed-20261006`。
+
+独立验证首入口因非数字run标识被执行桥运行前拒绝；v2因缺少预备scratch父目录再次运行前拒绝，均为操作者入口错误、退出125，原失败保存，不是额外模型或正式检查。v3按桥既定输入合同创建规范数字标识和父目录，于15:33实际进入原生编译；unit innovation-symphony-coder28-recovery-validation-v3-20261006，Invocation87d54295286c45298d987d21aa56e724、PID1031385。尚无恢复副本安全导出通过证明。
+
+同轮恢复入口及后续严格外部入口v2已编译并通过原授权／预算／历史拒绝负例；只接受既有IS-072、原窗口与六个固定文件，最多剩余Review2、Coder0、诊断0，Agent28／30、返工9／9、18:44:54.696硬截止不变。旧角色采集进程明确拒绝blocked状态并退出；新版本尚未启动，root认证验收进程继续等待准确新候选。未安装／合并功能候选，普通领取仍关闭。
+
+
+15:42 恢复验证v3暴露preflight夹具无父目录；进一步只读取证确认这不是已经证实的Coder源码缺陷：最终turn/diff漏掉Coder28通过两条已成功Shell/Python命令完成的改写，第一条06:51:19已把新增回归移到既有state目录的打包测试中，第二条07:01:53扩展授权测试的结构无效分支。仅按RPC diff恢复的副本不等于完整最终源码。额外Coder提案已撤回，未应用最小补丁、未派模型或增额；按完整已完成FileChange、两个安全字面量AST改写和固定formatter顺序重建v2，原错误副本和失败保留。此为操作者恢复工具缺陷，不能归因于Coder或环境。
+
+
+### 2026-10-06 22:41：完整恢复验证已通过，原墙钟窗口已到期
+
+完整日志副本v2的独立原生门禁于15:55:27完成，736项／0失败／6既有跳过、100%覆盖、Dialyzer0错误、escript通过；native exit0，cleanup／descendants／background关闭／export全true，PID／OOM事件0。六个恢复文件及289个未改动跟踪文件逐字节核对通过，证明`coder28-restoration-proof.json` SHA256b1dbcad5e7d366a42ebd455adf7f5a639879ae9a4f478c21cfd74c209dc21d56。这是独立恢复副本证明，不能替代原任务新候选正式检查或新鲜Review；原完整沙箱字节等价仍未证明。
+
+本主会话工具调用在15:54:31.884至22:36:19.891之间没有继续推进，独立本机验证已完成但同轮接续尚未派发。系统日志记录15:53:21合盖及期间持续NTP请求超时，未找到可证明主会话停顿具体原因的证据；不据此断言宿主挂起、重启或账号故障。root准确候选验收等待器于18:42:09主动拒绝继续等待，原因authorized deadline insufficient，原桥PID88446／Invocation527cbf8048f848cca679d690aab124b2及四项payload不变，没有执行候选runner探针。
+
+22:36同轮恢复严格只读前置核验通过，但派发器末尾检查发现原18:44:54.696硬截止已过，在操作begin、源码写回、提交和Review前拒绝。回执仍为原0a6ad47fbf507a671fe74b4a72bb6373fcf483aea262d3156913e84de8cecc17，blocked／sandbox_cleanup_incomplete、Agent28／30、返工9／9；没有新增Coder／Review，未增加时间。22:41 GitHub新鲜核对Draft13仍OPEN／Draft、head aa12c85，未合并或安装功能候选。
+
+只读完整审计v4为goal_complete=false（5／29证明条件），新增检查要求完整日志恢复及安全导出；门槛未放宽。`is072-expired-window-observation.json`封存原过期窗口及时间间隔证据。新的仅时间提案`is072-time-only-resume-proposal.json` SHA2564502b4d17f3d8de0f48aaf19d617b88e36ebbfd2e256134c3add0cad1805e177尚未批准、生效：从实际恢复追加最多四小时，仍Agent30／返工9、Coder0／Review最多2／诊断0、全部历史保留，仅完成原范围的恢复、正式检查、准确候选验收和Draft交付。不自动合并／安装功能候选。此前额外Coder提案已撤回，不再需要。
+
+### 2026-10-07 00:40：IS-073实际增额及本机连续执行
+
+所有者直接要求充足时间和更多返工／Review，本次追加12小时、返工上限12、Agent上限39；从第28次后Coder最多3、Review最多6、诊断最多2。授权封存于`.local/external-issue12-20261007/is073-approved.json`，SHA256 d13850b0be632f0af32c187966353321be68a31f65ffaca7ffe3ae648b83c981。实际窗口00:40:29.373—12:40:29.373，过渡摘要465f5b4be7d47ef33bf4879d1c01009f41f06120b76de0bd21e139f6c5938abb；原已用28／9和全部历史保持，累计max_elapsed_ms185926526。准确过渡的正向及错Agent上限、清空历史、外部等待清零负向核验在写回前通过。
+
+受信操作`linux-issue12-is073-restoration-20261007`重新读取原回执0a6及完整源码恢复证明b1dbc、所有不可变证据摘要，通过只读原范围／模型／基线／检查／审计链前置检查。六个文件已恢复至原工作区并提交候选`13d4c04a1dd30c32a89058d6c14709e3c237da1a`，原Coder28失败保留，没有新Coder调用；原两项正式检查正在执行。
+
+本机unit `innovation-symphony-issue12-is073-20261007.service`实际启动，Invocation0ca89324ec6848ebb50a48ea855e7c8e。它复用原Elixir Executor并在安全闭合后自动接固定准确候选探针和严格原生外部Review入口；泛用调度器和Recovery解析不变。入口、授权、workflow及固定后续脚本均绑定摘要，RuntimeMaxSec43230是含启动开销的服务外层上限，原任务精确12小时截止独立核验。临时systemd-inhibit的sleep:block实际存在；它降低普通睡眠／合盖停顿风险，不阻止人为关机、断电或网络服务故障，也不修改全局电源策略。
+
+独立准确runner验收另由root本机unit `innovation-symphony-issue12-is073-kernel-20261007.service`执行，采用新窗口和独立root-owned staging，实际本机认证后已启动；冻结helper摘要d948a02281ea5f75c7ea75eaad6a8d1a73305b37ac31cbea92ea201d1aa329ac。旧过期等待器失败保留，生产runner和bridge不更换。新候选正式检查、独立Review、准确候选双角色／内核证明和最终Draft交付尚未完成；预算生效及服务启动不记作任务完成。
+
+
+00:51准确runner等待器v2已通过本机认证实际接替：先验证旧Invocation2c5cc63024cf41109829cceaea711f51及PID1201701、没有实际probe目录，再仅停止该等待器，保留旧started记录，复核原锁文件root所有权与排他锁。新unit `innovation-symphony-issue12-is073-kernel-v2-20261007.service`、Invocationab3a6bf9433c434aa26505552b0ea6a3、PID1242779，helper SHA2562468c833186d1a1397412606f4508ef3c4914cadceb7deefc952bad3c78677b1。它在awaiting_external但原operator仍持锁或head未闭合时继续等待，避免过渡状态竞态造成误报；不清任务锁，不更改回执、预算、生产bridge或runner。过渡证据在独立root staging的validator-v2-transition.json。
+
+
+00:58回读：政策、原started_at、外部等待、完整事件前缀、原范围、模型、基线和隔离等12项核对通过，activation-readback.json保存。第一项正式check-1.json已退出0：736项测试、0失败、6既有跳过、100%覆盖，Dialyzer0错误，格式／规格／Credo／打包均退出0；check-2冻结基线正在执行。原生task和root内核等待器v2均active，Agent28／39、返工9／12；GitHub认证查询可用，Draft13仍OPEN／Draft、head aa12c85。模型与内核实际新候选验收尚未完成，不把环境预检或已通过第一项检查登记为任务成功。
+
+
+01:02原两项正式检查均退出0，冻结基线669项、0失败、6既有跳过；第一项候选736项、0失败、6既有跳过、100%覆盖、Dialyzer0错误及打包退出0。原生流程已自动启动Reviewer29，回执reviewing、Agent29／39、返工9／12；首次正式检查摘要记录于first-formal-checks-passed.json。任务unit及root内核等待器v2均确认存活，独立审查尚未正常结束或给出正式判定。
+
+
+### 2026-10-07 01:33：Review29仅外部阻塞、准确候选证明及同一Draft对账
+
+Reviewer29实际Turn正常结束，13项正文勾选验收中11项充分，仅A04与A11要求新的准确候选外部证明，没有新的代码阻塞；计数29／39、返工9／12。原任务正文第4节的调用来源／未知用量和明确错误／统一预算继续以A14、A15追踪，最终独立Review提示明确要求原15项准确原文，不把13项输出当完整验收。
+
+root等待器v2于01:17实际执行准确13d4c04 runner，summary摘要aeae2927824ab573ee162d0216a31acfab1fad20a077676226fec355c3739831；实际runner摘要e2700ba6205c6f59bc213ea632f1d43eec3b6cb83f71ba47dd5bc39b03ec0bc9。只读EROFS、宿主凭据隐藏、网络隔离／本地TCP、私有TMPDIR、PID压力和后代清理均通过，生产bridge及四项payload前后不变。未宣称完成RAM／磁盘耗尽或CPU吞吐基准。
+
+初始连续链在模型探针开始前因操作者采集器把TextIOWrapper传给chmod而退出；原空日志、脚本、服务失败与pins保留。v2使用fchmod(f.fileno())，重用并复核295个Gitblob归档及准确BEAM，01:29两个真实角色Turn正常结束，A04与A11及probes-complete已封存。实际网络路由及服务端型号无法确认，报告保留unknown，第二账号／服务商未验证；此轮采集没有派发任务Coder或Review。
+
+原生Draft发布曾只推进head，正文仍旧，保留mvp_publish_uncertain_reconcile_before_retry。受审计操作linux-issue12-is073-draft-reconcile-20261007复核唯一OPEN／Draft13、准确head／分支／base、旧正文和不可变intent，只完成预定正文PATCH并原生reconcile，不重推Git、不建新PR；完成回执摘要1692c17973d9293eed5746bb993a253ed6011572ae9ff6587a3fa94f6a182511，原恢复／rounds完整相等。
+
+严格入口v2只读预检因未给Commands绑定专用WORKFLOW而拒绝，诊断确认Config.settings!/Tracker.bind_agent_tools的ArgumentError，未派模型、未改回执。v3在入口前设置同一冻结WORKFLOW，严格九字段请求不变；准确增额根和闭合对账链的正向、错actor／政策／候选／清空事件负向校验通过，原生只读预检返回verified_without_dispatch。新unit innovation-symphony-issue12-is073-final-v2-20261007.service，Invocation9388186997294cdbacd26fe47ebb4d26，21项输入摘要绑定、临时sleep:block，复用原Elixir Executor完成原两项正式门禁和独立Review；旧服务失败保留。不安装功能候选、不合并、不启用普通领取，最终完成仍待审计。
+
+
+01:47最终原生外部复检的两项正式命令和七阶段全部退出0，准确候选13d4c04；候选736项／0失败／6既有跳过、100%覆盖、Dialyzer0及构建通过，冻结基线669项／0失败／6跳过。证据final-formal-checks-passed.json保存实际argv、日志／子报告摘要与候选绑定。独立Reviewer30已实际启动，Agent30／39、返工9／12，覆盖原15项并读取准确候选新A04／A11证明，尚未完成或批准。
+
+
+### 2026-10-07 02:02：准确候选最终验收与Draft交付完成
+
+独立Reviewer30于01:59正常完成，完整候选13d4c04a1dd30c32a89058d6c14709e3c237da1a，approved=true、原15项criteria均adequate=true、blockers为空。review摘要18ecccbfde508efb247c27168493ef479ddb8bfb47cec70bb17e5eb92dae0f3c。最终正式候选736项／0失败／6既有跳过、100%覆盖、Dialyzer0及七阶段门禁全通过，冻结基线669项／0失败／6跳过；准确候选双角色实际GPT和实际runner内核证明已通过原审计入口导入。最终只读完整审计audit-completion-is073-v2.py为29／29通过、goal_complete=true，包含远端准确正文／head／分支／base，未缩减原15项验收。
+
+原生交付更新同一OPEN／Draft PR13，external_delivery.status=approved、intent.mode=approved，最终回执awaiting_human／reason=null，摘要143cf16378c2acbd3b1b1a21989e6611e2fa6776a1cfd51356fc1fe2eeccb0e0。最终operator成功闭合、head与回执摘要一致、互斥已释放；本机连续链01:59:18退出0，unit inactive／MainPID0／Resultsuccess。21项固定输入摘要在执行后再次核对全部一致，原预算／事件前缀／失败与所有历史保留；最后Agent30／39、返工9／12，本轮新增Coder0、任务Review2（29、30）、诊断0，实际角色补证单独记录，不算任务Coder。
+
+bridge仍PID88446／Invocation527cbf8048f848cca679d690aab124b2，四项已安装payload摘要不变；普通controller与View身份保持，API正常，mvp.enabled=false。临时睡眠阻止锁随执行服务完成释放。本地主工作区文档已保存，未提交／推送；候选13d在原任务分支提交并更新Draft13，未合并、未安装功能候选，未替换生产runner。此前基础设施固定包和持久启动配置已安装／静态验证的证明仍独立保留，真实重启未测。原导出具体拒绝条目、实际网络／服务端型号、第二账号／服务商及完整RAM／磁盘耗尽和CPU吞吐均未宣称已验证。
+
+
+## 2026-10-07 14:17 CST：IS-074 最新 main 本机部署完成
+
+来源：所有者直接要求“拉取最新代码并部署”。SSH fetch 被连接关闭拒绝，随后使用现有
+GitHub CLI 凭据通过 HTTPS 成功获取 main。固定 SHA
+`66b9b25fe55ff0f95b7f8e719b740a62e4c6f001`，已合入 PR #13；准确 SHA 的
+[远端 CI](https://github.com/dailiuyi/innovation-symphony/actions/runs/37572236294)
+中 make-all 与 view 均成功。
+
+在 `.local/releases/main-66b9b25-20261007/` 建立 detached 固定 worktree，
+沿用既有 Elixir 1.19.5／OTP 28.5、依赖及 Codex 0.160.0，重新编译打包。
+二进制 `elixir/bin/symphony` SHA256 `e519dc6cd899dbb6bdf09c7488505287996d6eb22bd583812f41944d44e7bacf`。
+固定 worktree 的 tracked 源码无修改；部署日志、清单和数据链接为本机未跟踪产物。
+开发工作区的 main 没有重置或合并，原未提交文件和未跟踪文档保留；未提交或推送本轮记录。
+
+本机验证：格式／specs／严格 Credo／构建通过，Dialyzer 0 错误；View 34 项 Python、
+10 项 JS、10 项 Linux 集成用例、固定迁移比较与渲染通过；原生 Codex 路由 23 项及
+独立配置环境下生命周期／恢复／授权／模型服务 57 项通过。首次 make all 因 PATH 中
+Node Codex 包装入口的退出断言及个人 Codex 配置影响而失败；关键回归修正环境后通过。
+独立空 CODEX_HOME 的完整复跑约 18 分钟仍未完成，已停止，不登记本机完整门禁通过。
+完整日志留存 build-gate.log、build-clean-gate.log、native-routing-gate.log、
+clean-environment-targeted.log 和 dialyzer-gate.log。未修改个人 Codex 配置或生产凭据。
+
+只读 escript 预检使用独立工作流副本返回 passed／issue_count=1，不启动调度器；
+活动 WORKFLOW 保持原摘要和 mvp.enabled=false。部署仅修改 `.local/start-symphony.sh`
+的二进制路径及 `.local/launch-view.py` 的导入源目录，再依次重启既有用户服务。
+控制器 PID67269／Invocation decde8bced4c4eafa87d2842a1059233；
+View PID67283／Invocation ec42a286b6da4646955b6dbc10f8ab02，均 active／running。
+控制器实际命令绑定上述固定 escript，API 返回 200，running／retrying／blocked 均为0。
+View API 和采集正常，仍为5条任务、2个故事、35个会话、1个运行根；未用演示数据证明接入。
+
+View 固定安装的数据、生成页及 rollout 缓存链接回原 `view/data`、`view/prototypes`、
+`view/build/rollouts`，数据库与缓存没有迁移或清空。活动 WORKFLOW 与全部顶层任务
+回执部署前后 SHA256 相同。原服务开机启用设置沿用，本次不做宿主重启验收。
+访问地址：[View](http://127.0.0.1:8613/)／[Symphony](http://127.0.0.1:4000/)。
+
+部署证明为 `.local/releases/main-66b9b25-20261007/deployment-result.json`；
+`deployment-backup/` 保存原两个启动入口、工作流副本及回执摘要。回退时先确认控制器
+无执行任务且领取关闭，恢复备份中的 start-symphony.sh 与 launch-view.py 到原 .local
+路径，再依次重启这两个用户服务并复核 API；旧固定安装保留。回退不重写工作流、
+注册表或任务回执；已冻结的新服务任务不得交由不认识其快照的旧执行器自动续跑。
+
+本轮仅本机安装和服务切换，不执行 GitHub 写入、人工合并、真实派发或云部署。

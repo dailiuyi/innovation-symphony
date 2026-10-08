@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Mvp.Config do
   alias SymphonyElixir.Workflow
 
   @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery sandbox model_services)
+  @execution_keys ~w(coder_model reviewer_model allowed_models allowed_actors checks state_dir)
   @shell_names ["sh", "bash", "dash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]
 
   @type settings :: %{
@@ -36,11 +37,22 @@ defmodule SymphonyElixir.Mvp.Config do
   @doc "Validate an explicitly loaded workflow without changing the runtime workflow."
   @spec settings(Workflow.loaded_workflow(), Path.t()) :: {:ok, settings()} | {:error, term()}
   def settings(workflow, workflow_dir) do
+    load_settings(workflow, workflow_dir, false)
+  end
+
+  @doc "Fully validate a claimed task's execution contract, without enabling new intake."
+  @spec execution_settings(Workflow.loaded_workflow(), Path.t()) :: {:ok, settings()} | {:error, term()}
+  def execution_settings(workflow, workflow_dir) do
+    load_settings(workflow, workflow_dir, true)
+  end
+
+  defp load_settings(workflow, workflow_dir, require_execution) do
     with {:ok, settings} <-
            validate_mvp_config(
              Map.get(workflow.config, "mvp", %{}),
              workflow.config,
-             workflow_dir
+             workflow_dir,
+             require_execution
            ) do
       {:ok,
        settings
@@ -49,7 +61,7 @@ defmodule SymphonyElixir.Mvp.Config do
     end
   end
 
-  defp validate_mvp_config(config, workflow_config, workflow_dir) when is_map(config) do
+  defp validate_mvp_config(config, workflow_config, workflow_dir, require_execution) when is_map(config) do
     unknown = Map.keys(config) -- @keys
     enabled = Map.get(config, "enabled", false)
 
@@ -61,15 +73,15 @@ defmodule SymphonyElixir.Mvp.Config do
         {:error, :invalid_mvp_enabled}
 
       true ->
-        if enabled do
-          enabled_settings(config, workflow_config, workflow_dir)
+        if enabled or require_execution or Enum.all?(@execution_keys, &Map.has_key?(config, &1)) do
+          execution_contract(config, workflow_config, workflow_dir, enabled)
         else
           disabled_settings(config)
         end
     end
   end
 
-  defp validate_mvp_config(_config, _workflow_config, _workflow_dir), do: {:error, :invalid_mvp_config}
+  defp validate_mvp_config(_config, _workflow_config, _workflow_dir, _require_execution), do: {:error, :invalid_mvp_config}
 
   defp disabled_settings(config) do
     with {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
@@ -95,7 +107,7 @@ defmodule SymphonyElixir.Mvp.Config do
     end
   end
 
-  defp enabled_settings(config, workflow_config, workflow_dir) do
+  defp execution_contract(config, workflow_config, workflow_dir, enabled) do
     with {:ok, coder_model} <- required_string(config, "coder_model"),
          {:ok, reviewer_model} <- required_string(config, "reviewer_model"),
          {:ok, allowed_models} <- string_list(config["allowed_models"], :allowed_models),
@@ -113,7 +125,7 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, services} <- ModelServices.load(Path.join(state_dir, "model-services.json"), config["model_services"]) do
       {:ok,
        %{
-         enabled: true,
+         enabled: enabled,
          model_services: services,
          model_command: get_in(workflow_config, ["codex", "command"]) || "codex app-server",
          coder_model: coder_model,

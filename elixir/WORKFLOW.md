@@ -1,4 +1,8 @@
 ---
+# GitHub MVP uses WORKFLOW.github.example.md. Pausing intake with mvp.enabled=false
+# retains a complete execution contract; claimed-task external resume still validates
+# ready authorization, frozen models/services and checks. Agent wall budgets are
+# independent of check_timeout_ms and cannot exceed the remaining task budget.
 tracker:
   kind: linear
   provider:

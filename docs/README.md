@@ -18,6 +18,9 @@
 | 隔离自主测试实测与恢复记录 | [VALIDATION_CODER_ISOLATION.md](VALIDATION_CODER_ISOLATION.md) |
 | 自动恢复实测与 Issue #3 交付记录 | [VALIDATION_AUTOMATIC_RECOVERY.md](VALIDATION_AUTOMATIC_RECOVERY.md) |
 | 已批准的结构化检查与复检修复 | [004-structured-check-recovery.md](issue-drafts/004-structured-check-recovery.md) |
+| Issue #12 角色模型服务的本地审查修订稿与待定项 | [006-role-model-services.md](issue-drafts/006-role-model-services.md) |
+| Linux 保留补丁的整合审查与代码门禁 | [VALIDATION_LINUX_PATCHES.md](VALIDATION_LINUX_PATCHES.md) |
+| Issue #12 全部会话、返工原因与外部等待分析 | [ISSUE12_PROCESS_ANALYSIS.md](ISSUE12_PROCESS_ANALYSIS.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |
 | 官方来源及改动接缝 | [UPSTREAM.md](UPSTREAM.md) |
 | GH-12 角色模型服务、目录、管理与迁移 | [MODEL_SERVICES.md](MODEL_SERVICES.md) |

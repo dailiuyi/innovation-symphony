@@ -805,6 +805,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 role_counts[item["role"]] = role_counts.get(item["role"], 0) + 1
             preflights = [public_session(s) for s in sessions if s.get("runtime") == name and role_of(s) == "预检"]
             flow, gap = workflow_of(publics, evidence, STATUS_LABEL.get(status, status), reason)
+            health = receipt.get("_execution_health") or {}
+            stopped = health.get("kind") == "closed_host_interruption"
+            if stopped:
+                gap = "宿主关机中断已核验并闭合；回执保留历史编码状态，等待受审计接续。"
             session_ids = [(s.get("meta") or {}).get("session_id") or "" for s in matched]
             agent_msgs = [msg for s in matched for msg in s.get("agent_msgs") or []]
             events = task_events(log_entries, workspace, session_ids, agent_msgs, issue_no, reason)
@@ -831,9 +835,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "title": title,
                 "meta": meta,
                 "status": status,
-                "statusLabel": STATUS_LABEL.get(status, status),
-                "badge": badge_class(status),
-                "stage": list(stage_of(status, cand, reason)),
+                "statusLabel": "宿主中断 · 历史编码状态" if stopped else STATUS_LABEL.get(status, status),
+                "badge": badge_class("blocked" if stopped else status),
+                "stage": [1, None] if stopped else list(stage_of(status, cand, reason)),
+                **({"executionHealth": health} if stopped else {}),
                 "duration": duration,
                 "coder": models.get("coder", "—"),
                 "reviewer": models.get("reviewer", "—"),
@@ -856,7 +861,7 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "roundsAuthority": "controller" if round_rows else "legacy",
                 "evidence": evidence,
                 "logs": events,
-                "result": result_text(status, reason, cand or "—",
+                "result": gap if stopped else result_text(status, reason, cand or "—",
                                       [f"{role} {count} 次" for role, count in role_counts.items()], current_evidence),
                 "viewer": publics[0]["href"] if publics else "#",
                 "receipt": receipt,
