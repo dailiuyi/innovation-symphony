@@ -118,6 +118,10 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 
 旧 `defaults` 字符串继续使用预设原模型及参数。新对象严格包含 `preset`、`model`、
 `parameters`，示例 `{"preset":"main-gpt","model":"gpt-example","parameters":{"reasoning_effort":"high"}}`。
+旧 OpenAI 预设及冻结快照中的 `reasoning_effort: null` 继续表示未指定参数，加载、
+领取和执行均保留原值及能力绑定，不重写旧快照。执行不生成该思考参数；新默认对象
+不得保存显式 null，未指定参数使用空对象并须有精确角色证据。兼容不绕过当前撤权
+或凭据校验。
 页面保存只修改双角色 defaults，保留预设 version、catalog 和历史证据，不用修改预设
 切换角色。独立模型评论继续取当前角色默认组合的渠道和参数，只替换模型。
 
@@ -125,6 +129,10 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 空参数集合为 fixed、非空为 effort 兼容。未知能力禁止选择；过期角色证据禁止保存
 或调用。发现中全部未知的未来 effort 不能当作不支持调节，已知参数保留独立校验。
 DeepSeek Responses 实际发送 `reasoning.effort`，只允许 none／low／high／max；
+适配器关闭 Codex 默认添加的 reasoning summary：DeepSeek 只发送所选 effort，
+固定渠道的空参数配置不发送 effort 或 summary；Codex 可序列化空 reasoning 容器，
+该容器没有有效参数。旧 OpenAI null 预设继续保留未指定
+effort 的既有行为，不改写其冻结参数或能力证据。
 OpenAI 可选值取对应账号 AppServer 目录，max 仅在该渠道目录明确支持时开放。
 DeepSeek `/models` 不提供参数能力，因此发现只登记 unknown，来源记录为 provider，
 与 OpenAI 的 appserver 来源区分；管理员必须在后台

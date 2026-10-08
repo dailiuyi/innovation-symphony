@@ -488,65 +488,111 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:ok, _} = ModelServices.save(Path.join(root, "first.json"), nil, 0, registry)
   end
 
-  test "bounded retries, malformed Review and diagnosis use the frozen service after a default change", %{root: root, settings: s} do
-    alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
-    {:ok, choices} = Intake.resolve_comments([], s)
-    {:ok, policy} = Recovery.settings(%{"enabled" => true})
-    receipt = Path.join(root, "attempts.json")
+  for parameters <- [nil, %{"reasoning_effort" => nil}] do
+    @parameters parameters
+    test "bounded retries, malformed Review and diagnosis use the frozen service after a default change with #{inspect(parameters)}", %{root: root, settings: s} do
+      alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
+      s = if @parameters, do: F.settings(root, @parameters), else: s
+      {:ok, choices} = Intake.resolve_comments([], s)
+      {:ok, policy} = Recovery.settings(%{"enabled" => true})
+      receipt = Path.join(root, "attempts.json")
 
-    File.write!(
-      receipt,
-      Jason.encode!(%{
-        "status" => "coding",
-        "rounds" => [%{"evidence" => root, "usage" => %{}}],
-        "recovery" => %{"policy" => policy, "started_at" => DateTime.to_iso8601(DateTime.utc_now()), "agent_attempts" => 0, "events" => []}
-      })
-    )
+      File.write!(
+        receipt,
+        Jason.encode!(%{
+          "status" => "coding",
+          "rounds" => [%{"evidence" => root, "usage" => %{}}],
+          "recovery" => %{"policy" => policy, "started_at" => DateTime.to_iso8601(DateTime.utc_now()), "agent_attempts" => 0, "events" => []}
+        })
+      )
 
-    context = %{workspace: root, receipt: receipt, services: choices.services, models: Map.take(choices, [:coder, :reviewer]), issue: %{}, settings: Map.put(s, :recovery, policy), limit: 0, opts: []}
+      context = %{
+        workspace: root,
+        receipt: receipt,
+        services: choices.services,
+        models: Map.take(choices, [:coder, :reviewer]),
+        issue: %{},
+        settings: Map.put(s, :recovery, policy),
+        limit: 0,
+        opts: []
+      }
 
-    agent = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["coder"]
-      count = Receipt.read(receipt)["recovery"]["agent_attempts"]
+      agent = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["coder"]
+        count = Receipt.read(receipt)["recovery"]["agent_attempts"]
 
-      if count == 1 do
-        proposed = put_in(s.model_services, ["defaults", "coder"], "reviewing")
-        {:ok, switched} = ModelServices.snapshot(%{s | model_services: proposed}, "reviewing", :coder, "fixture")
-        {:ok, proposed} = ModelCatalog.attest(proposed, switched, F.proof(:coder))
-        {:ok, _} = ModelServices.save(ModelServices.path(s), s.model_services, 0, proposed)
-        {:error, {:model_call_failed, :model_rate_limited}}
-      else
-        {:ok, %{output_text: "fixed", actual_model: "gpt-confirmed"}}
+        if count == 1 do
+          proposed = put_in(s.model_services, ["defaults", "coder"], "reviewing")
+          {:ok, switched} = ModelServices.snapshot(%{s | model_services: proposed}, "reviewing", :coder, "fixture")
+          {:ok, proposed} = ModelCatalog.attest(proposed, switched, F.proof(:coder))
+          {:ok, _} = ModelServices.save(ModelServices.path(s), s.model_services, 0, proposed)
+          {:error, {:model_call_failed, :model_rate_limited}}
+        else
+          {:ok, %{output_text: "fixed", actual_model: "gpt-confirmed"}}
+        end
       end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: agent]}, :coder, "code", fn -> :ok end)
+      after_retry = Receipt.read(receipt)
+      requests = List.last(after_retry["rounds"])["model_requests"]
+      assert requests["coder_attempt_1"]["actual_model"] == nil
+      assert requests["coder_attempt_2"]["actual_model"] == "gpt-confirmed"
+      assert requests["coder_attempt_2"]["provider"] == "openai"
+      assert after_retry["usage"]["total_tokens"]["complete"] == false
+      assert after_retry["usage"]["total_tokens"]["observed"] == nil
+
+      diagnosis = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["coder"]
+        assert opts[:read_only] and opts[:output_schema] == Recovery.schema()
+        {:ok, %{output_text: Jason.encode!(%{action: "repair_code", summary: "diagnosed", steps: ["fix"], external_conditions: []})}}
+      end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: diagnosis]}, :diagnosis, "diagnose", fn -> :ok end)
+
+      review = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["reviewer"]
+        assert opts[:read_only]
+        count = Receipt.read(receipt)["recovery"]["agent_attempts"]
+        {:ok, %{output_text: if(count == 4, do: "prose", else: Jason.encode!(%{approved: true, summary: "valid"}))}}
+      end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: review]}, :reviewer, "review", fn -> :ok end)
+      System.delete_env("GH12_CODER_KEY")
+      assert {:error, :model_credential_missing} = Attempts.run(%{context | opts: [agent: fn _, _, _, _ -> flunk("credential revoked") end]}, :coder, "code", fn -> :ok end)
+    end
+  end
+
+  test "legacy null OpenAI presets load embedded and persisted with unchanged evidence bindings", %{root: root} do
+    s = F.settings(root, %{"reasoning_effort" => nil})
+    assert :ok = ModelServices.validate(s.model_services)
+    assert {:ok, embedded} = ModelServices.load(ModelServices.path(s), s.model_services)
+    assert embedded == s.model_services
+    assert {:ok, selected} = Intake.resolve_comments([], s)
+    File.write!(ModelServices.path(s), Jason.encode!(embedded))
+    assert {:ok, ^embedded} = ModelServices.load(ModelServices.path(s), nil)
+
+    for role <- [:coder, :reviewer, :diagnosis] do
+      key = if role == :reviewer, do: "reviewer", else: "coder"
+      service = selected.services[key]
+      assert service["parameters"] == %{"reasoning_effort" => nil}
+      assert :ok = ModelServices.validate_snapshot(service)
+      assert embedded["validations"][ModelServices.binding(service)] == service["capability_evidence"]
+      assert {:ok, opts} = ModelServices.options(%{settings: s, services: selected.services}, role)
+      assert opts[:model_service] == service
     end
 
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: agent]}, :coder, "code", fn -> :ok end)
-    after_retry = Receipt.read(receipt)
-    requests = List.last(after_retry["rounds"])["model_requests"]
-    assert requests["coder_attempt_1"]["actual_model"] == nil
-    assert requests["coder_attempt_2"]["actual_model"] == "gpt-confirmed"
-    assert requests["coder_attempt_2"]["provider"] == "openai"
-    assert after_retry["usage"]["total_tokens"]["complete"] == false
-    assert after_retry["usage"]["total_tokens"]["observed"] == nil
+    revoked = Map.put(embedded, "disabled_models", ["gpt-test"])
+    File.write!(ModelServices.path(s), Jason.encode!(revoked))
 
-    diagnosis = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["coder"]
-      assert opts[:read_only] and opts[:output_schema] == Recovery.schema()
-      {:ok, %{output_text: Jason.encode!(%{action: "repair_code", summary: "diagnosed", steps: ["fix"], external_conditions: []})}}
+    for role <- [:coder, :reviewer, :diagnosis] do
+      assert {:error, :model_disabled} = ModelServices.options(%{settings: s, services: selected.services}, role)
     end
 
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: diagnosis]}, :diagnosis, "diagnose", fn -> :ok end)
+    File.write!(ModelServices.path(s), Jason.encode!(embedded))
+    System.delete_env("GH12_REVIEWER_KEY")
 
-    review = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["reviewer"]
-      assert opts[:read_only]
-      count = Receipt.read(receipt)["recovery"]["agent_attempts"]
-      {:ok, %{output_text: if(count == 4, do: "prose", else: Jason.encode!(%{approved: true, summary: "valid"}))}}
-    end
-
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: review]}, :reviewer, "review", fn -> :ok end)
-    System.delete_env("GH12_CODER_KEY")
-    assert {:error, :model_credential_missing} = Attempts.run(%{context | opts: [agent: fn _, _, _, _ -> flunk("credential revoked") end]}, :coder, "code", fn -> :ok end)
+    assert {:error, :model_credential_missing} =
+             ModelServices.options(%{settings: s, services: selected.services}, :reviewer)
   end
 
   test "safe references and private home files contain no API key values", %{root: root, settings: s} do

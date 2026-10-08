@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {settingsFixture} = require('./browser-model-settings.cjs');
 const fixture = path.resolve(process.argv[2] || '');
 const web = path.resolve(__dirname, '../app/web');
 const json = (res, value, status = 200) => {
@@ -16,6 +17,7 @@ const json = (res, value, status = 200) => {
   assert.equal(require('playwright/package.json').version, '1.62.1');
   const snapshot = JSON.parse(await fs.readFile(path.join(fixture, 'fixture-snapshot.json')));
   const contexts = JSON.parse(await fs.readFile(path.join(fixture, 'fixture-contexts.json')));
+  const settings = settingsFixture(json);
   assert.equal(snapshot.tasks.length, 1);
   assert.equal(snapshot.sessions.length, 6);
   const bootstrap = {title:'GH-7 FIXTURE', interval:3600, port:0, rev:1, generated:'生成 Fixture',
@@ -24,8 +26,9 @@ const json = (res, value, status = 200) => {
     collection:{status:'ok',source:'fixture',lastSuccess:new Date().toISOString(),lastError:''}};
   const server = http.createServer(async (req, res) => {
     try {
-      assert.equal(req.method, 'GET');
       const url = new URL(req.url, 'http://fixture.invalid');
+      if (url.pathname.startsWith('/api/model-settings/')) return await settings(req, res, url.pathname);
+      assert.equal(req.method, 'GET');
       if (url.pathname === '/api/bootstrap') return json(res, bootstrap);
       if (url.pathname === '/api/snapshot') return json(res, snapshot);
       const match = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]+)\/context$/);
@@ -52,16 +55,23 @@ const json = (res, value, status = 200) => {
     } catch (error) {json(res, {error:String(error)}, 500);}
   });
   let passed = false;
+  let smoke;
   try {
     await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
     const child = spawn(process.execPath, [path.join(__dirname, 'browser-smoke.cjs'), '--url',
-      'http://127.0.0.1:' + server.address().port, '--out', path.join(fixture, 'browser')], {stdio:'inherit'});
+      'http://127.0.0.1:' + server.address().port, '--out', path.join(fixture, 'browser'), '--model-settings'], {stdio:'inherit'});
     const code = await new Promise((resolve, reject) => {child.once('error', reject); child.once('exit', resolve);});
     assert.equal(code, 0, 'fixture browser smoke failed');
+    smoke = JSON.parse(await fs.readFile(path.join(fixture, 'browser/smoke-result.json')));
+    assert.equal(smoke.passed, true);
+    assert.deepEqual(smoke.errors, []);
+    assert(smoke.checks.includes('model settings keyboard, native controls, two repositories and roles, failures, conflict, refresh and narrow layout'),
+      'settings browser acceptance must execute before the fixture can pass');
     passed = true;
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await fs.writeFile(path.join(fixture, 'browser-fixture-result.json'), JSON.stringify({passed,
+      environment:smoke?.environment, checks:smoke?.checks || [],
       synthetic:true, real_windows_wsl:false, formal_acceptance:false}) + '\n');
   }
 })().catch(error => {console.error(error); process.exitCode = 1;});

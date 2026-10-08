@@ -19,6 +19,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         with (root/'requests.jsonl').open('a') as stream:
             stream.write(json.dumps({'path': self.path, 'body': body, 'auth': self.headers.get('Authorization')})+'\n')
+        # Empty Responses envelopes carry no parameters. Reject every actual
+        # reasoning key for fixed channels; graded channels accept effort only.
+        expected = {} if body['model'].endswith('-fixed') else {'effort': 'max'}
+        if (body.get('reasoning') or {}) != expected:
+            self.send_error(400, 'Unsupported reasoning parameters')
+            return
         tool_results = [item for item in body.get('input', []) if item.get('type') == 'function_call_output']
         completed_tool = bool(tool_results)
         if completed_tool and not any('offline-tool-token' in item.get('output', '') for item in tool_results):

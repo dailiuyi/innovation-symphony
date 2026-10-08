@@ -115,6 +115,16 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     end
   end
 
+  test "all four repository role selections persist without changing any other configuration", c do
+    saved = save_four_defaults!(c.config)
+
+    for id <- ["a", "b"] do
+      assert {:ok, shown} = ModelSettings.show(c.config, id)
+      assert shown == saved[id]
+      assert shown["revision"] == 3
+    end
+  end
+
   test "administrator entrypoint binds loopback; HTTP auth, origin, input and scope protection", c do
     assert ModelSettingsServer.init(c.path) == c.path
     assert {:ok, pid} = CLI.model_settings_start(c.path)
@@ -169,6 +179,16 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     {:ok, registry} = ModelCatalog.attest(registry, fixed, F.proof(:coder))
     {:ok, registry} = ModelCatalog.register(registry, "fixed", "gpt-switch", ~w(none high))
     registry = put_in(registry, ["catalog", "fixed", "models", "gpt-switch", "discovery", channel, "reasoning_mode"], "switch")
+
+    registry =
+      Enum.reduce([:coder, :reviewer], registry, fn role, acc ->
+        Enum.reduce(~w(none high), acc, fn effort, acc ->
+          service = template |> Map.put("role", Atom.to_string(role)) |> Map.put("model", "gpt-switch") |> Map.put("parameters", %{"reasoning_effort" => effort})
+          {:ok, acc} = ModelCatalog.attest(acc, service, F.proof(role))
+          acc
+        end)
+      end)
+
     {:ok, registry} = ModelCatalog.register(registry, "fixed", "gpt-unknown", [])
     registry = put_in(registry, ["catalog", "fixed", "models", "gpt-unknown", "discovery", channel, "reasoning_mode"], "unknown")
     assert {:error, :model_reasoning_capability_unknown} = ModelCatalog.available(registry, Map.put(template, "model", "gpt-unknown"))
@@ -181,12 +201,49 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     unknown = Enum.find(show["roles"]["coder"], &(&1["selection"]["model"] == "gpt-unknown"))
     assert unknown["reasoning_mode"] == "unknown"
     refute unknown["state"] == "available"
-    assert Enum.any?(show["roles"]["coder"], &(&1["reasoning_mode"] == "switch"))
+
+    for role <- ~w(coder reviewer) do
+      choices = Enum.filter(show["roles"][role], &(&1["selection"]["model"] == "gpt-switch"))
+      assert Enum.sort(Enum.map(choices, & &1["selection"]["parameters"]["reasoning_effort"])) == ~w(high none)
+      assert Enum.all?(choices, &(&1["reasoning_mode"] == "switch" and &1["state"] == "available"))
+
+      for choice <- choices do
+        {:ok, current} = ModelSettings.show(c.config, "a")
+        request = %{"defaults" => Map.put(current["defaults"], role, choice["selection"]), "revision" => current["revision"], "workflow_version" => current["workflow_version"]}
+        assert {:ok, saved} = ModelSettings.save(c.config, "a", request)
+        assert saved["effective_defaults"][role] == choice["selection"]
+        other = if role == "coder", do: "reviewer", else: "coder"
+        assert saved["defaults"][other] == current["defaults"][other]
+        invalid = put_in(request, ["defaults", role, "parameters", "reasoning_effort"], "low")
+        assert {:error, :model_reasoning_effort_unsupported} = ModelSettings.save(c.config, "a", %{invalid | "revision" => saved["revision"]})
+        assert {:ok, ^saved} = ModelSettings.show(c.config, "a")
+      end
+    end
+
     stale = %{"defaults" => show["defaults"], "revision" => 1, "workflow_version" => "stale"}
     assert {:error, :model_services_conflict} = ModelSettings.save(c.config, "a", stale)
     service = Map.put(template, "model", "gpt-fixed")
     registry = put_in(registry, ["validations", ModelServices.binding(service), "expires_at"], DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -1)))
     assert {:error, :model_validation_expired} = ModelCatalog.available(registry, service)
+
+    {:ok, current} = ModelSettings.settings(c.config, "a")
+    expiry = registry["validations"][ModelServices.binding(service)]["expires_at"]
+    expired = put_in(current.model_services, ["validations", ModelServices.binding(service), "expires_at"], expiry)
+    assert {:ok, _} = ModelServices.save(ModelServices.path(current), current.model_services, current.model_services["revision"], expired)
+    {:ok, unchanged} = ModelSettings.show(c.config, "a")
+    original = File.read!(ModelServices.path(current))
+
+    for {model, parameters, reason} <- [
+          {"gpt-unknown", %{}, :model_reasoning_capability_unknown},
+          {"gpt-fixed", %{"reasoning_effort" => "high"}, :model_reasoning_effort_unsupported},
+          {"gpt-fixed", %{}, :model_validation_expired}
+        ] do
+      selected = %{"preset" => "fixed", "model" => model, "parameters" => parameters}
+      request = %{"defaults" => Map.put(unchanged["defaults"], "coder", selected), "revision" => unchanged["revision"], "workflow_version" => unchanged["workflow_version"]}
+      assert {:error, ^reason} = ModelSettings.save(c.config, "a", request)
+      assert File.read!(ModelServices.path(current)) == original
+      assert {:ok, ^unchanged} = ModelSettings.show(c.config, "a")
+    end
 
     illegal =
       put_in(registry, ["presets", "fixed", "provider"], "deepseek")
@@ -266,37 +323,80 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     {:ok, {_, port}} = :inet.sockname(socket)
     :gen_tcp.close(socket)
     File.write!(c.path, Jason.encode!(Map.put(c.config, "port", port)))
-    url = "http://127.0.0.1:#{port}/repositories/a"
     headers = [{"authorization", "Bearer " <> String.duplicate("a", 40)}]
-    {:ok, initial} = ModelSettings.show(c.config, "a")
-    {:ok, saved} = ModelSettings.save(c.config, "a", %{"defaults" => initial["defaults"], "revision" => 0, "workflow_version" => initial["workflow_version"]})
-
-    before_files = File.ls!(c.config["repositories"]["a"]["state_dir"]) |> Enum.sort()
+    saved = save_four_defaults!(c.config)
+    before_files = Map.new(~w(a b), &{&1, Enum.sort(File.ls!(c.config["repositories"][&1]["state_dir"]))})
 
     for _ <- 1..2 do
       child = Port.open({:spawn_executable, executable}, [:binary, :exit_status, :stderr_to_stdout, args: ["--model-settings", c.path]])
       {:os_pid, pid} = Port.info(child, :os_pid)
 
       try do
-        response =
-          Enum.reduce_while(1..40, nil, fn _, _ ->
-            case Req.get(url, headers: headers, retry: false, connect_options: [timeout: 200], receive_timeout: 1000) do
-              {:ok, response} ->
-                {:halt, response}
+        for id <- ~w(a b) do
+          url = "http://127.0.0.1:#{port}/repositories/#{id}"
 
-              _ ->
-                Process.sleep(50)
-                {:cont, nil}
-            end
-          end)
+          response =
+            Enum.reduce_while(1..40, nil, fn _, _ ->
+              case Req.get(url, headers: headers, retry: false, connect_options: [timeout: 200], receive_timeout: 1000) do
+                {:ok, response} ->
+                  {:halt, response}
 
-        assert %{status: 200, body: ^saved} = response
-        assert Enum.sort(File.ls!(c.config["repositories"]["a"]["state_dir"])) == before_files
+                _ ->
+                  Process.sleep(50)
+                  {:cont, nil}
+              end
+            end)
+
+          assert %{status: 200, body: body} = response
+          assert body == saved[id]
+          assert Enum.sort(File.ls!(c.config["repositories"][id]["state_dir"])) == before_files[id]
+        end
       after
         System.cmd("kill", ["-TERM", Integer.to_string(pid)])
         assert_receive {^child, {:exit_status, _}}, 5000
       end
     end
+  end
+
+  defp save_four_defaults!(config) do
+    targets = %{"a" => [{:coder, "reviewing", "high"}, {:reviewer, "coding", "medium"}], "b" => [{:coder, "coding", "high"}, {:reviewer, "reviewing", "medium"}]}
+
+    Enum.reduce(~w(a b), %{}, fn id, results ->
+      {:ok, s} = ModelSettings.settings(config, id)
+
+      registry =
+        Enum.reduce(targets[id], s.model_services, fn {role, preset, effort}, acc ->
+          {:ok, template} = ModelServices.snapshot(%{s | model_services: acc}, preset, role, "fixture")
+          service = Map.put(template, "parameters", %{"reasoning_effort" => effort})
+          {:ok, acc} = ModelCatalog.attest(acc, service, F.proof(role))
+          acc
+        end)
+
+      assert {:ok, prepared} = ModelServices.save(ModelServices.path(s), s.model_services, 0, registry)
+      invariant = Map.drop(prepared, ~w(defaults revision))
+      other_id = if id == "a", do: "b", else: "a"
+      {:ok, other_repo} = ModelSettings.show(config, other_id)
+
+      for {role, preset, effort} <- targets[id] do
+        {:ok, current} = ModelSettings.show(config, id)
+        key = Atom.to_string(role)
+        selected = %{"preset" => preset, "model" => "gpt-test", "parameters" => %{"reasoning_effort" => effort}}
+        request = %{"workflow_version" => current["workflow_version"], "revision" => current["revision"], "defaults" => Map.put(current["defaults"], key, selected)}
+        assert {:ok, saved} = ModelSettings.save(config, id, request)
+        assert saved["revision"] == current["revision"] + 1
+        assert saved["defaults"][key] == selected
+        assert saved["effective_defaults"][key] == selected
+        untouched = %{"coder" => "reviewer", "reviewer" => "coder"}[key]
+        assert saved["defaults"][untouched] == current["defaults"][untouched]
+        assert {:ok, ^other_repo} = ModelSettings.show(config, other_id)
+        {:ok, persisted} = ModelServices.load(ModelServices.path(s), nil)
+        assert Map.drop(persisted, ~w(defaults revision)) == invariant
+        assert {:ok, ^saved} = ModelSettings.show(config, id)
+      end
+
+      {:ok, saved} = ModelSettings.show(config, id)
+      Map.put(results, id, saved)
+    end)
   end
 
   test "DeepSeek discovery does not infer depth from a model ID and reports safe failures", c do

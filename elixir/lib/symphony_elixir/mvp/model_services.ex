@@ -48,7 +48,8 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp valid_default?(registry, %{"preset" => id, "model" => model, "parameters" => parameters} = selection),
     do:
       map_size(selection) == 3 and Map.has_key?(registry["presets"], id) and
-        identifier?(model) and valid_parameters?(parameters)
+        identifier?(model) and valid_parameters?(parameters) and
+        (not Map.has_key?(parameters, "reasoning_effort") or not is_nil(parameters["reasoning_effort"]))
 
   defp valid_default?(_, _), do: false
 
@@ -96,8 +97,10 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp provider_parameters?(_), do: true
 
   defp valid_parameters?(parameters) when is_map(parameters) do
+    # Existing presets and frozen snapshots used null to mean unspecified.
+    # Keep their exact representation so capability bindings remain unchanged.
     Enum.all?(parameters, fn
-      {"reasoning_effort", value} -> value in ~w(none minimal low medium high xhigh max)
+      {"reasoning_effort", value} -> is_nil(value) or value in ~w(none minimal low medium high xhigh max)
       _ -> false
     end)
   end
@@ -517,10 +520,11 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec write_home(Path.t(), map(), tuple()) :: :ok | {:error, term()}
   def write_home(home, service, credential) do
     service = effective_connection(service)
-    provider = "web_search = \"disabled\"\n" <> effort_config(service) <> provider_config(service, credential)
 
     restrictions =
       ~s([features]\napps = false\nplugins = false\nhooks = false\ncodex_hooks = false\ncode_mode = false\njs_repl = false\nbrowser_use = false\ncomputer_use = false\nskip_host_skill_discovery = true\nmulti_agent = false\nshell_snapshot = false\n)
+
+    provider = "web_search = \"disabled\"\n" <> effort_config(service) <> summary_config(service) <> provider_config(service, credential)
 
     with :ok <- connection_ready(service), :ok <- File.write(Path.join(home, "config.toml"), provider <> restrictions, [:exclusive]), do: link_auth(home, credential)
   end
@@ -557,6 +561,14 @@ defmodule SymphonyElixir.Mvp.ModelServices do
       effort -> "model_reasoning_effort = #{Jason.encode!(effort)}\n"
     end
   end
+
+  # Responses clients otherwise add reasoning.summary even when effort is absent.
+  # Fixed channels support no reasoning controls; DeepSeek maps effort only.
+  # Preserve the existing unspecified OpenAI preset/null behavior.
+  defp summary_config(%{"source" => source}) when source in ["catalog", "legacy_migration"], do: ""
+  defp summary_config(%{"provider" => "deepseek"}), do: "model_reasoning_summary = \"none\"\n"
+  defp summary_config(%{"parameters" => parameters}) when map_size(parameters) == 0, do: "model_reasoning_summary = \"none\"\n"
+  defp summary_config(_), do: ""
 
   defp link_auth(home, {:home, original}), do: File.ln_s(Path.join(original, "auth.json"), Path.join(home, "auth.json"))
   defp link_auth(_, {:env, _, _}), do: :ok

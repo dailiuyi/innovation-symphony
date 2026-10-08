@@ -66,6 +66,31 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "fixed and legacy null services omit unsupported reasoning in AppServer configuration and turns", c do
+    for parameters <- [%{}, %{"reasoning_effort" => nil}], {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      settings = F.settings(Path.join(c.root, "unspecified-#{role}-#{map_size(parameters)}"), parameters)
+      assert {:ok, selected} = Intake.resolve_comments([], settings)
+      trace = Path.join(c.root, "unspecified-#{role}-#{map_size(parameters)}.json")
+      service = Map.put(selected.services[Atom.to_string(role)], "command", "python3 #{c.binary} #{trace} success")
+      assert service["id"] == id
+      assert service["parameters"] == parameters
+      assert {:ok, result} = ModelServices.run(c.workspace, "test", c.issue, model: "gpt-test", model_service: service, read_only: role == :reviewer, tools: false)
+      assert result.output_text == "{\"ok\":true}"
+      data = trace |> File.read!() |> Jason.decode!()
+      refute data["config"] =~ "model_reasoning_effort"
+
+      if parameters == %{},
+        do: assert(data["config"] =~ ~s(model_reasoning_summary = "none")),
+        else: refute(data["config"] =~ "model_reasoning_summary")
+
+      turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
+      refute Map.has_key?(turn, "effort")
+      assert turn["model"] == service["model"]
+      assert data["config"] =~ service["connection"]["base_url"]
+      if role == :reviewer, do: assert(turn["sandboxPolicy"] == %{"type" => "readOnly"})
+    end
+  end
+
   test "DeepSeek Responses roles preserve selected max effort, tool probe and read-only schema contract", c do
     presets =
       Map.new(c.settings.model_services["presets"], fn {id, preset} ->
@@ -89,6 +114,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       assert data["config"] =~ ~s(name = "deepseek")
       assert data["config"] =~ ~s(wire_api = "responses")
       assert data["config"] =~ ~s(model_reasoning_effort = "max")
+      assert data["config"] =~ ~s(model_reasoning_summary = "none")
       turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
       assert turn["model"] == "deepseek-test"
       assert turn["effort"] == "max"
@@ -154,23 +180,26 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       codex = System.get_env("SYMPHONY_TEST_CODEX") || "/opt/codex"
       schema = %{"type" => "object", "additionalProperties" => false, "required" => ["token"], "properties" => %{"token" => %{"type" => "string"}}}
 
-      for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      channels = [{"deepseek", %{"reasoning_effort" => "max"}}, {"deepseek", %{}}, {"openai", %{}}]
+
+      for {provider, parameters} <- channels, {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
         {:ok, template} = ModelServices.snapshot(c.settings, id, role, "fixture")
+        fixed_model = %{"openai" => "gpt-fixed", "deepseek" => "deepseek-fixed"}[provider]
 
         service = %{
           template
-          | "provider" => "deepseek",
-            "adapter" => "deepseek_responses",
-            "model" => "deepseek-test",
+          | "provider" => provider,
+            "adapter" => if(provider == "deepseek", do: "deepseek_responses", else: "codex_app_server"),
+            "model" => if(parameters == %{}, do: fixed_model, else: "deepseek-test"),
             "role" => Atom.to_string(role),
             "connection" => %{"base_url" => endpoint, "protocol" => "responses"},
-            "parameters" => %{"reasoning_effort" => "max"},
+            "parameters" => parameters,
             "command" => "env TOKIO_WORKER_THREADS=2 CODEX_CA_CERTIFICATE=#{tls}/cert.pem SSL_CERT_FILE=#{tls}/cert.pem #{codex} app-server"
         }
 
         # This is a native protocol/tool fixture in the outer offline task sandbox,
         # not proof of the production kernel mounts. Existing isolation gates remain.
-        home = Path.join(c.root, "wire-home-#{role}")
+        home = Path.join(c.root, "wire-home-#{provider}-#{role}-#{map_size(parameters)}")
         File.mkdir!(home)
         {:ok, credential} = ModelServices.credential(service["credential_ref"])
         :ok = ModelServices.write_home(home, service, credential)
@@ -186,7 +215,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
         result =
           ModelServices.run(c.workspace, "Read model-probe.txt using a command tool, then return the required token JSON.", c.issue,
-            model: "deepseek-test",
+            model: service["model"],
             model_service: service,
             read_only: role == :reviewer,
             tools: false,
@@ -219,11 +248,26 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       end
 
       calls = (tls <> "/requests.jsonl") |> File.stream!() |> Enum.map(&Jason.decode!/1)
-      assert length(calls) >= 4
+      assert length(calls) >= 12
       accounts = MapSet.new(Enum.map(calls, & &1["auth"]))
       expected = MapSet.new(["Bearer synthetic-route-coder", "Bearer synthetic-route-reviewer"])
       assert accounts == expected
-      assert Enum.all?(calls, &(&1["path"] == "/v1/responses" and &1["body"]["model"] == "deepseek-test" and &1["body"]["reasoning"]["effort"] == "max"))
+      assert Enum.all?(calls, &(&1["path"] == "/v1/responses"))
+
+      for model <- ~w(deepseek-test deepseek-fixed gpt-fixed) do
+        model_calls = Enum.filter(calls, &(&1["body"]["model"] == model))
+        assert length(model_calls) >= 4
+        assert MapSet.new(Enum.map(model_calls, & &1["auth"])) == expected
+
+        if String.ends_with?(model, "-fixed") do
+          # Codex serializes an empty envelope; it must contain no effective
+          # parameters, including summary (which otherwise defaults to auto).
+          assert Enum.all?(model_calls, &(&1["body"]["reasoning"] in [nil, %{}]))
+        else
+          assert Enum.all?(model_calls, &(&1["body"]["reasoning"] == %{"effort" => "max"}))
+        end
+      end
+
       assert Enum.any?(calls, fn call -> Enum.any?(call["body"]["input"], &(&1["type"] == "function_call_output")) end)
     after
       if Port.info(port), do: Port.close(port)

@@ -13,6 +13,7 @@ GH-7 使用固定净化源码快照，来源和差异见 `docs/MIGRATION.md`。�
 相对 `--config`、`--out` 按调用 cwd 解析，默认文件与资源按源码位置解析。
 
 使用根目录 `scripts/run_view_checks.py` 执行 Python、JS、self_check 和固定夹具比较；
-浏览器检查使用 `tests/browser-fixture.cjs`，原 `browser-smoke.cjs` 仍可用于获准的真实环境。
+该标准入口包含设置页 JS 及 `tests/browser-fixture.cjs` 的真实浏览器合成验收，需固定
+Playwright／Chromium 依赖；原 `browser-smoke.cjs` 仍可用于获准的真实环境。
 缺依赖、skip、零执行或渲染失败不得报告通过。真实 Windows＋WSL 验收另行记录准确候选 SHA。
 源码保存、提交、发布、安装、合并及服务切换分别确认；禁止自动移动或删除旧数据。

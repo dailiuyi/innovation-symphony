@@ -1,5 +1,7 @@
-// Portable interaction regression: node or gjs -m. Synthetic DOM/API, no account proof.
+// Synthetic DOM/API regression; browser acceptance runs separately.
+import { test } from 'node:test';
 import { mountModelSettings, dirty, depthLabel } from '../app/web/assets/js/model-settings.js';
+test('model settings drafts, cancel, failures, conflicts and persistence', async () => {
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const copy = value => JSON.parse(JSON.stringify(value));
 if (!globalThis.structuredClone) globalThis.structuredClone = copy;
@@ -81,8 +83,30 @@ await control('repository').fire('change', 'b');
 assert(!dirty(), 'Accepted repository switch must discard unsaved changes');
 await control('repository').fire('change', 'a');
 assert(root.html.includes('配置版本 1'), 'Re-read did not show persisted configuration');
+for (const [id, updates] of [['a', [['coder', 'switch', {reasoning_effort:'none'}], ['reviewer', 'fixed', {}]]], ['b', [['coder', 'b', {reasoning_effort:'low'}], ['reviewer', 'switch', {reasoning_effort:'high'}]]]]) {
+  await control('repository').fire('change', id);
+  for (const [role, model, parameters] of updates) {
+    const previous = copy(state);
+    await control(role + '-model').fire('change', model);
+    await control(role + '-effort').fire('change', JSON.stringify(parameters));
+    await control('save').fire('click');
+    assert(!dirty(), 'Save left a dirty role: ' + id + '/' + role);
+    assert(state[id].revision === previous[id].revision + 1, 'Role save revision mismatch');
+    assert(JSON.stringify(state[id].defaults[role]) === JSON.stringify(selection('p', model, parameters.reasoning_effort)), 'Saved role mismatch');
+    const other = role === 'coder' ? 'reviewer' : 'coder';
+    assert(JSON.stringify(state[id].defaults[other]) === JSON.stringify(previous[id].defaults[other]), 'Other role changed');
+    const otherRepo = id === 'a' ? 'b' : 'a';
+    assert(JSON.stringify(state[otherRepo]) === JSON.stringify(previous[otherRepo]), 'Other repository changed');
+  }
+}
+for (const id of ['a', 'b']) {
+  await control('repository').fire('change', id);
+  assert(!dirty() && root.html.includes('配置版本 ' + state[id].revision), 'All persisted roles must reread cleanly');
+}
 assert(depthLabel(options[3]) === '关闭思考 (none)', 'Off control mislabeled');
 assert(depthLabel(options[4]) === '开启思考 (high)', 'Switch control mislabeled');
 assert(depthLabel(options[6]) === '思考能力未知', 'Unknown capability mislabeled');
 assert(!root.html.includes('synthetic_admin'), 'Token leaked into rendered content');
 console.log('Model settings interaction regression passed (synthetic DOM/API).');
+
+});

@@ -88,17 +88,17 @@ Body 严格为 `revision`、`workflow_version`、`defaults`；后者只包含 co
 
 | GH-16 合同条目 | 仓库内验证 | 外部停点 |
 | --- | --- | --- |
-| 两仓库、双角色、持久读取及重启 | MvpModelSettingsTest：独立持久化、两个 packaged 管理进程读取 | 真实受管仓库配置与部署 |
-| 未保存、取消、切换、保存／失败／冲突 | model-settings.test.mjs：草稿、精确旧默认、CAS、角色隔离、焦点保持 | 真浏览器键盘、窄屏及刷新 |
-| OpenAI 兼容与 DeepSeek 工具／输出 | MvpModelRoutingTest：原 OpenAI 回归，原生 Codex + 本地 TLS Responses + 外部执行器工具往返 | 真实账号双角色权限与推理 |
-| 分档、开关、不可关闭、固定、未知、过期／绕过 | MvpModelSettingsTest／MvpModelServicesTest：按渠道目录、角色证据、非法参数及未来未知值拒绝；JS 深度标签与切换清除 | 当前真实账号目录 |
-| 参数、连接、凭据引用与角色隔离 | 路由测试检查独立 home、模型、provider、effort、HTTP 请求与冻结 options | 真实账号准确有效参数和返回 |
-| 写入失败／CAS／权限／跨站／秘密 | Elixir 管理测试：busy、并发、版本、畸形默认、原值保留；Python API 测试：Host／Origin／头／路径／限长；auth_home 脱敏 | 受控凭据注册 |
-| 内网监听和访问范围 | 管理 listener_info、View socket 及配置拒绝测试；两服务均 loopback | 所有者获准代理地址、来源限制和 TLS 实机验收 |
-| 只影响新领取、评论兼容、冻结与撤权 | 管理测试冻结旧 coder／diagnosis，新默认与独立评论；原模型服务／恢复测试 | 控制器准确候选验收 |
-| Reviewer 只读、隔离、预算、正式检查、SHA | 原 ExecutionSandbox／Review／Executor／Recovery／外部 handoff 冻结回归 | 生产内核挂载与准确候选正式证据 |
-| 同步规格与可追溯历史 | IS-079、REQUIREMENTS、MODEL_SERVICES、README 和 AGENTS | 同一个功能 PR 由控制器另行处理 |
-| 完整门禁及独立 Review | candidate／baseline 固定检查与下方实际结果 | 独立 Reviewer 由控制器执行 |
+| GH16-A01 两仓库、双角色、持久读取及重启 | MvpModelSettingsTest：分别保存四份组合，逐次核验角色／仓库隔离、版本及目录不变；两个 packaged 管理进程重启后读取全部组合 | 真实受管仓库配置与部署 |
+| GH16-A02 未保存、取消、切换、保存／失败／冲突 | model-settings.test.mjs 草稿和失败保留；browser-model-settings.cjs 原生键盘选择／保存／取消、切换确认、409／503、刷新及 390×844 控件可见与操作 | 已完成合成数据真浏览器检查；真实部署另验 |
+| GH16-A03 OpenAI 兼容与 DeepSeek 工具／输出 | ModelServices／Routing 测试旧 null 配置加载、领取和执行；原生 Codex + 本地 TLS Responses + 外部执行器工具往返 | 真实账号双角色权限与推理 |
+| GH16-A04 分档、开关、不可关闭、固定、未知、过期／绕过 | MvpModelSettingsTest 为双角色 none／high 建立精确证据并分别保存，非法 low／未知／过期／固定参数请求拒绝且原值不变；Routing 断言 fixed 不携带任何思考参数，分档仅发送所选 effort；JS 模型切换清除深度 | 当前真实账号目录 |
+| GH16-A05 参数、连接、凭据引用与角色隔离 | 路由测试检查独立 home、模型、provider、effort、HTTP 请求与冻结 options | 真实账号准确有效参数和返回 |
+| GH16-A06 写入失败／CAS／权限／跨站／秘密 | Elixir 管理测试：busy、并发、版本、畸形默认、原值保留；Python API 测试：Host／Origin／头／路径／限长；auth_home 脱敏 | 受控凭据注册 |
+| GH16-A07 内网监听和访问范围 | 管理 listener_info、View socket 及配置拒绝测试；两服务均 loopback | 所有者获准代理地址、来源限制和 TLS 实机验收 |
+| GH16-A08 只影响新领取、评论兼容、冻结与撤权 | ModelServices／RecoveryResume 同时回归字符串深度及旧 null 快照的重试、Review、诊断、返工和审计恢复；撤权及凭据失效拒绝 | 控制器准确候选验收 |
+| GH16-A09 Reviewer 只读、隔离、预算、正式检查、SHA | 原 ExecutionSandbox／Review／Executor／Recovery／外部 handoff 冻结回归 | 生产内核挂载与准确候选正式证据 |
+| GH16-A10 同步规格与可追溯历史 | IS-079、REQUIREMENTS、MODEL_SERVICES、README 和 AGENTS | 同一个功能 PR 由控制器另行处理 |
+| GH16-A11 完整门禁及独立 Review | candidate／baseline 固定检查；标准 run_view_checks 包含新增 JS 及设置页浏览器，浏览器报告必须包含设置用例完成项 | 独立 Reviewer 由控制器执行 |
 
 TLS 夹具使用实际 Codex AppServer 和 exec-server 完成命令工具读取及结构化 JSON，
 请求包含 DeepSeek 实际 reasoning.effort=max。两角色使用各自的模拟凭据；夹具只在
@@ -368,3 +368,59 @@ umask=077，退出 0：seed=628418，789 项中 783 通过、0 失败、6 项既
 尚未启动，真实账号双角色、获准内网部署及最终候选控制器正式验证／独立 Review
 继续单列。`git diff --check` 通过。本轮源码仅修改恢复回归与本页记录，没有提交、
 push、PR、合并、部署或升级运行服务；维护验证的独立探针留在本会话之后执行。
+
+## GH-16 审查缺口续修
+
+本轮继续保留既有工作区补丁，核验旧 OpenAI null 参数不改写快照／证据绑定，
+补齐四份默认选择保存与 packaged 管理进程重启、双角色 switch 精确证据和
+fixed 原生请求不发送有效思考参数的回归。设置页用原生键盘完成操作，修复异步重绘
+后的焦点保持；错误令牌、503 后保存重试和 409 冲突都保留明确失败反馈。
+标准 `scripts/run_view_checks.py` 与 CI 同时执行新增 JS 和设置页真浏览器用例。
+浏览器夹具必须读取包含设置页完成项的 smoke 报告，不能仅凭旧看板进程退出 0
+认定 GH16-A02 通过；浏览器环境和执行项目进入标准检查报告。
+
+使用维护者提供的只读 `/opt/toolchain/view-validation/playwright/node-playwright`，
+Playwright 1.62.1、Chromium 151.0.7922.34；本会话没有安装工具链或改运行配置。
+首次标准 View 检查输出 `/tmp/gh16-current-view/` 退出 0：38 项 Python、11 项 JS、
+11 项 Linux 来源回归，均零失败／跳过；固定迁移比较、self_check、8 种入口及
+真实浏览器 9 组操作通过。设置页浏览器操作含两仓库双角色、键盘、刷新、取消、
+409／503、切换提示及 390×844 窄屏；管理 API、凭据和任务数据均为合成夹具。
+另行使用指定 wrapper 调用 `view/tests/browser-fixture.cjs` 的新报告断言退出 0，
+输出 `/tmp/gh16-current-browser.log`。增加登录和保存重试回归后再次运行完整标准
+View 检查，最终结果另记下文。
+
+首次 candidate 检查 `.check-evidence/candidate-vz8or4zr/` 退出 10：804 项测试中
+1 失败、6 项既有外部 E2E 跳过，另有 3 项 Credo 问题。新的原生 fixed 请求回归
+捕获 Codex 默认添加 `reasoning.summary=auto`；适配器现在对固定配置和 DeepSeek
+关闭该默认。Credo 的两处长行及测试 helper 嵌套已修复，没有改检查政策。
+协议诊断进一步证明，Codex 0.160.0 即使关闭 summary 仍会序列化空 `reasoning: {}`。
+这个空容器没有有效参数；测试因此按实际参数合同核验全部键，而不要求客户端省略
+空容器。TLS 服务端严格拒绝 fixed 的任何实际思考键、分档的任何额外键；请求断言
+同时检查 fixed 为缺省／空对象、graded 恰为 `{"effort":"max"}`，防止 summary、
+未知键或隐式 effort 混入。既有模型目录、系统指令、冻结快照和参数证据未被替换。
+单项 native DeepSeek 双角色 max／fixed 工具往返修复后通过；最终全量进一步覆盖
+OpenAI fixed 双角色，不用合成凭据标记真实账号可用。
+
+最终标准 View 检查 `/tmp/gh16-final-view/code-check-result.json` 退出 0：38 项 Python、
+11 项 JS、11 项 Linux 专用回归均零失败／跳过；固定迁移比较、self_check、8 种
+入口和 9 组真实浏览器操作全部通过。浏览器报告记录 Node v24.19.0、Playwright
+1.62.1、Chromium 151.0.7922.34，新增错误令牌后登录及 503 后保留草稿再成功保存
+也已执行。标准入口及 CI 必须执行设置页 JS／浏览器用例，失败返回非零。
+
+最终固定 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0，目录
+`.check-evidence/candidate-1u1h5dli/`：format、specs、Credo、全量覆盖测试、Dialyzer
+及 escript build 全通过。804 项中 798 通过、0 失败、6 项既有外部 E2E 跳过、
+0 排除，覆盖率 100%，`policy_changes: []`。检查继承 umask=077，没有注入候选
+基线夹具维护。最终 baseline 的重新检查结果见下文。
+
+最终固定 `python3 /opt/symphony/scripts/check_isolated.py baseline` 退出 0，目录
+`.check-evidence/baseline-q1g6ko5h/`：789 项中 783 通过、0 失败、6 项既有外部
+E2E 跳过、0 排除，`policy_changes: []`。受信入口的维护记录仅作用于临时
+baseline harness，保留原冻结文件和所有篡改断言；本会话未改入口或控制器证据。
+六项既有跳过仍为 Jira、Asana、Linear SSH／本地、GitLab、GitHub；没有新增跳过。
+`git diff --check` 通过。源码仅保存，未提交、push、创建 PR、合并、部署或升级服务。
+
+上述自检针对未提交工作区；检查报告中的原 HEAD 不能充当包含这些修改的最终
+候选 SHA。控制器仍须绑定准确最终候选、完成其正式检查和独立 Review。
+真实 GPT／DeepSeek 双角色账号探测、获准内网代理／来源限制／TLS、生产执行
+隔离实测及运行安装仍为外部停点，不以合成 HTTP、模型返回或浏览器结果替代。

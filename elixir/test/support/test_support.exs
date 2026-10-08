@@ -338,7 +338,7 @@ defmodule SymphonyElixir.ModelServicesFixture do
     end
   end
 
-  def settings(root) do
+  def settings(root, parameters \\ nil) do
     presets =
       Map.new([{"coding", "GH12_CODER_KEY", "medium"}, {"reviewing", "GH12_REVIEWER_KEY", "high"}], fn {id, key, effort} ->
         {id,
@@ -347,7 +347,7 @@ defmodule SymphonyElixir.ModelServicesFixture do
            "provider" => "openai",
            "adapter" => "codex_app_server",
            "model" => "gpt-test",
-           "parameters" => %{"reasoning_effort" => effort},
+           "parameters" => parameters || %{"reasoning_effort" => effort},
            "connection" => %{"base_url" => "https://#{id}.example/v1", "protocol" => "responses"},
            "credential_ref" => "env:" <> key
          }}
@@ -367,7 +367,8 @@ defmodule SymphonyElixir.ModelServicesFixture do
 
     registry =
       Enum.reduce(Map.keys(presets), registry, fn id, acc ->
-        {:ok, acc} = ModelCatalog.register(acc, id, "gpt-test", ~w(medium high))
+        efforts = if parameters == %{}, do: [], else: ~w(medium high)
+        {:ok, acc} = ModelCatalog.register(acc, id, "gpt-test", efforts)
         acc
       end)
 

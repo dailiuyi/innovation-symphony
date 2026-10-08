@@ -80,9 +80,16 @@ function paint() {
 function accept(data) { saved = data; draft = structuredClone(normalizedDefaults(data)); message = '已读取当前配置'; }
 async function perform(action, login = false) {
   if (busy) return;
+  const root = document.getElementById('model-settings');
+  const focused = root?.contains(document.activeElement) ? document.activeElement.id : null;
   busy = true; paint();
   try { await action(); } catch (error) { message = '操作失败：' + error.message; if (login) token = ''; }
-  finally { busy = false; paint(); }
+  finally {
+    busy = false; paint();
+    const control = focused && root?.querySelector('#' + focused);
+    // A successful save disables its button; keep keyboard navigation in the form.
+    (control && !control.disabled ? control : root?.querySelector('#model-repository'))?.focus();
+  }
 }
 function renderRole(role) {
   const available = saved.roles[role].filter(x => x.state === 'available');

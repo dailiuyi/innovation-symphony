@@ -96,26 +96,27 @@ WSL 列表带纳秒修改时间；WSL 发布前将完整缓存固定为不可变
 从主仓根目录运行完整的仓库内代码检查（输出目录必须不存在）：
 
 ```sh
-python -B scripts/run_view_checks.py --output view/build/checks
+NODE_PATH="$PWD/view/build/browser/node_modules" python -B scripts/run_view_checks.py --output view/build/checks
 ```
 
-它执行全部 Python unittest、10 项 JS 轮次测试、实际 self_check 会话解析与第三方 HTML
+它执行全部 Python unittest、10 项 JS 轮次测试及设置页交互测试、实际 self_check 会话解析与第三方 HTML
 生成，以及迁移前固定结果的逐值比较；首次目录、配置路径、重叠采集及异常清理回归
-包含在新增检查中。跨平台 Python suite 保留原全部用例和新增分流/WSL 模拟回归；
+包含在新增检查中。浏览器依赖准备见下文；缺失时完整命令失败。跨平台 Python suite 保留原全部用例和新增分流/WSL 模拟回归；
 Linux 描述符、符号链接、FIFO 等专用用例仅在独立 Linux 阶段执行，不在 Windows
 suite 中加入 skip。缺依赖、零执行、skip、解析或渲染失败均返回非零。
 Linux 上该命令另在独立复制目录和解释器执行真实本地子进程扫描、复制、解析、SQLite、
 loopback HTTP/context/HTML 合成集成，以及坏 JSON、权限、消失、超时和恢复检查；前后
 源文件 SHA256 必须一致，临时 HTTP 服务收尾停止。冻结 worker 继续禁止真实子进程，
-没有放宽原门禁或更新迁移预期。该命令不证明真实运行接入，报告列出未执行的浏览器
-UI 和真实 Windows＋WSL；非 Linux 平台明确记录未执行 Linux 集成。
-主仓 CI 独立 View job 另执行下述浏览器检查，不改变 Elixir 或隔离门禁。
+没有放宽原门禁或更新迁移预期。该命令不证明真实运行接入，报告标明浏览器使用
+合成数据，真实 Windows＋WSL 未验收；非 Linux 平台明确记录未执行 Linux 集成。
+同一标准入口及主仓 CI 执行下述固定浏览器检查，包含设置页原生键盘操作、双角色和
+双仓库保存、失败／冲突／未保存提示、刷新及 390px 布局。不改变 Elixir 或隔离门禁。
 
 检查准备交给控制器的候选时，将 `--output` 指向仓库外尚不存在的临时目录，
 避免包括 ignored 文件在内的候选库存被检查产物污染。固定浏览器夹具的截图与
 smoke 报告写入该结果目录的 `fixture/browser/`，不另写源码树。
 
-浏览器固定依赖为 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
+完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
 
 ```sh
 npm install --prefix view/build/browser --no-audit --no-fund playwright@1.62.1
@@ -147,6 +148,7 @@ browser-smoke 检查任务／会话深链接、前进后退、关闭重开、刷
 ```bash
 python -m unittest discover -s tests -v
 node --test tests/rounds.test.mjs
+node --test tests/model-settings.test.mjs
 ```
 
 浏览器烟雾检查需要 Node.js、本机 Playwright、Chrome，以及至少一条任务和一条已采集的编码会话。先在一个终端启动服务，再在另一个终端运行脚本；把 `<Chrome 可执行文件路径>` 替换为本机路径：
