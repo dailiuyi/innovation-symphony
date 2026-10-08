@@ -981,6 +981,9 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
   test "trusted import recovery refuses altered state and closes a verified rollback under audit" do
     for tampered <- [false, :content, :mode] do
       context = context!()
+      source = Path.join(context.workspace, "source.txt")
+      # Make the journal's original mode independent of the process umask.
+      File.chmod!(source, 0o644)
 
       agent = fn _, _, _, options ->
         export!(scratch(options), %{"source.txt" => "new"})
@@ -991,6 +994,7 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       operation = fn _, _, _ -> {:error, :enospc} end
       context = context |> with_agent(agent) |> update_in([:opts], &Keyword.put(&1, :sandbox_import_file, operation))
       assert {:error, {:sandbox_import_failed, transaction, _, :ok}} = ExecutionSandbox.agent(context, :coder, "task", [])
+      assert Bitwise.band(File.stat!(source).mode, 0o777) == 0o644
       receipt = Path.join(context.root, "receipt.json")
       File.write!(receipt, Jason.encode!(%{"status" => "blocked", "rounds" => [%{"evidence" => Path.join(context.evidence, "round-1")}]}))
       context = context |> Map.put(:receipt, receipt) |> put_in([:settings, :checks], [["true"]])
@@ -1007,8 +1011,12 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
 
       if tampered do
         case tampered do
-          :content -> File.write!(Path.join(context.workspace, "source.txt"), "another actor")
-          :mode -> File.chmod!(Path.join(context.workspace, "source.txt"), 0o600)
+          :content ->
+            File.write!(source, "another actor")
+
+          :mode ->
+            File.chmod!(source, 0o600)
+            assert Bitwise.band(File.stat!(source).mode, 0o777) == 0o600
         end
 
         assert {:error, :sandbox_import_recovery_required} = ExecutionSandbox.recover_import(context, digest, audit)

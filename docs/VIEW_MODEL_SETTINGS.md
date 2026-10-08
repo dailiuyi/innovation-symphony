@@ -106,7 +106,7 @@ TLS 夹具使用实际 Codex AppServer 和 exec-server 完成命令工具读取�
 或真实 DeepSeek 能力证明。原正式隔离回归保留。夹具仅在工具返回正确随机／指定内容
 后给出有效结果，父 Port 关闭即退出，不留下维持检查输出管道的后台进程。
 
-## 本次自检结果
+## 上一候选自检结果（历史）
 
 固定 `python3 /opt/symphony/scripts/check_isolated.py candidate` 的 format、lint、
 Credo、test、Dialyzer 和 build 全部通过；799 项测试中 793 通过、0 失败、6 跳过，
@@ -137,3 +137,40 @@ HTML 等价比较未执行。没有模拟渲染库、修改原预期或弱化检
 完成合成 DOM／API 交互回归（包括键盘焦点），不替代真实浏览器验收。目标 Elixir
 模型路由及管理 34 项测试通过，包括原生 Codex 工具链路和打包管理重启。所有真实账号
 验证、获准内网代理、服务安装和最终候选独立 Review 保持待外部验收。
+
+## 控制器检查失败后的最小修复
+
+控制器 `/evidence/check-1.log` 的唯一失败为导入恢复权限篡改测试：进程
+`umask=077` 将原文件创建为 0600，测试再 chmod(0600) 未改变权限，恢复合法通过。
+只读基线的同一测试在本环境复现该失败（1 项失败），不据此放宽生产恢复校验。
+本轮仅将该用例的原始夹具权限显式设为 0644，断言失败导入后保持 0644、篡改后为
+0600，并保留内容篡改拒绝、权限篡改拒绝及完整回滚的全部断言。
+修复用例分别在 umask=077 和 022 下通过；目标运行每次 1 项通过，39 项未选中。
+生产权限、恢复实现、冻结配置、门禁及控制器证据不修改，不新增用户决定。
+
+候选完整固定检查保留本环境 umask=077；冻结 baseline 含未修复的旧用例，沿用
+历史 umask=022 单独运行。baseline 的结果不能作为旧用例在 077 下通过的证据。
+本次检查结果及外部停点以下列实际记录为准，不沿用上节历史候选的通过状态。
+
+`python3 /opt/symphony/scripts/check_isolated.py candidate` 在 umask=077 下退出 0：
+format、specs、Credo、全量覆盖测试、Dialyzer 和 escript build 均通过。
+799 项中 793 通过、0 失败、6 个既有真实外部 E2E 跳过，0 排除，覆盖率 100%；
+恢复／隔离文件的独立整文件运行另有 40 项通过、0 失败。
+本次候选检查目录为 `.check-evidence/candidate-6gopxn7w/`，`policy_changes: []`。
+
+`umask 022; python3 /opt/symphony/scripts/check_isolated.py baseline` 退出 0：789 项中
+783 通过、0 失败、6 个既有真实外部 E2E 跳过，0 排除。检查目录为
+`.check-evidence/baseline-k6e17r4r/`，`policy_changes: []`；`git diff --check` 通过。
+仅保存测试修复及本记录，没有提交、push、PR、合并、安装、部署或升级服务。
+准确最终候选的控制器验证、独立 Review、真实账号及获准内网验收仍待外部执行。
+
+本轮 View 验证：指定 `/opt/toolchain/view-validation/python/bin/python` 与
+`/opt/toolchain/view-validation/node/bin/node` 仍不存在；指定 Python 检查命令退出 127
+（No such file or directory）。系统 `python3 -B scripts/run_view_checks.py` 退出 1：
+38 项中 37 通过、1 错误、0 跳过，原首次缓存／渲染用例缺少
+`codex_transcript_viewer`（ModuleNotFoundError，随后报告需要 codex-transcript-viewer）。
+私有副本的 root-default 入口退出 1，同样在 self_check 渲染处失败；其余 7 个入口模式、
+固定 HTML 比较、Node 轮次检查及真实浏览器／窄屏检查未执行。未使用替代渲染器、
+修改预期或放宽检查。本轮 3 项 Python 模型管理 API 测试及 gjs 合成 DOM 交互回归通过，
+不替代完整 View 验收。检查输出位于 `/tmp/gh16-repair-view-check/`，入口诊断位于
+`/tmp/gh16-repair-entrypoint.log`；缺失的离线依赖须由执行环境提供。
