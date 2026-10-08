@@ -12,6 +12,8 @@ GH-5 的同一打包 escript 提供 `--watchdog run|start|pause|resume|recover|s
 
 IS-033 新增显式 `mvp.sandbox`：在 Linux bubblewrap/cgroup 环境内执行 coder 自检与正式检查，宿主保留模型连接，任务使用 Codex stdio execution environment；未启用时保留兼容行为。所需路径、离线依赖、资源参数和审计恢复见 [CODER_EXECUTION_RULES.md](../docs/CODER_EXECUTION_RULES.md)。支持该能力的 Codex、bubblewrap 与 cgroup 必须先验收，失败不得自动回到宿主执行。
 
+GitHub MVP 的 `mvp.enabled=false` 只暂停新领取；完整执行合同仍校验和保留，已领取任务可通过受信 `mvp.external` 入口补证接续。入口仍要求当前 ready 授权、冻结模型／服务和检查一致，不会自动恢复任务。隔离 Agent 时限取剩余任务预算与单次模型执行上限的较小值，独立于正式检查超时；非法时限在准备环境前拒绝。历史未产出轮只在原始回执与闭合操作者审计链一致时接受，同一 Draft 的候选修订必须为快进且满足准确远端引用租约。当前审查和验证见 [VALIDATION_LINUX_PATCHES](../docs/VALIDATION_LINUX_PATCHES.md)。
+
 GitHub MVP 每轮派发前校验 MVP 配置；错误记录为 `MVP dispatch disabled by invalid configuration`，修正工作流后下一轮重新校验。escript 的运行路径边界使用解析符号链接后的实际工件所在目录；普通 OTP/Mix 运行仍使用应用目录。启动验收须覆盖打包产物的 ready 候选门槛，不能仅检查 HTTP 或 `mix mvp.check`。
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on

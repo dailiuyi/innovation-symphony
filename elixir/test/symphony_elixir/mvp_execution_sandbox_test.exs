@@ -143,6 +143,19 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     end
   end
 
+  test "invalid operator agent caps refuse before preparing an executor" do
+    context = context!()
+
+    for cap <- [nil, false, 0, -1, "30000"] do
+      invalid = Map.update!(context, :opts, &Keyword.put(&1, :agent_timeout_ms, cap))
+
+      assert {:error, :invalid_wall_timeout} =
+               ExecutionSandbox.agent(invalid, :coder, "test", wall_timeout_ms: 30_000)
+
+      refute File.exists?(context.settings.sandbox["root"])
+    end
+  end
+
   test "isolated homes use role services instead of shared auth and reasoning defaults" do
     context = context!()
     System.put_env("GH12_CODER_KEY", "sandbox-synthetic-coder")
@@ -245,6 +258,51 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), :reviewer, "task", model_service: service)
     unsafe = Map.put(service, "credential_ref", "auth_home:" <> context.workspace)
     assert {:error, :sandbox_unsafe_trusted_paths} = ExecutionSandbox.agent(with_agent(context, agent), :reviewer, "task", model_service: unsafe)
+  end
+
+  test "a separate operator agent cap respects remaining budget for all roles" do
+    write_workflow_file!(Workflow.workflow_file_path(), codex_turn_timeout_ms: 300)
+
+    for role <- [:coder, :reviewer, :diagnosis], remaining <- [50, 900] do
+      context = context!()
+
+      agent = fn _, _, _, options ->
+        assert options[:wall_timeout_ms] == min(remaining, 600)
+        environment = options[:execution_environment]
+        [_, raw] = Regex.run(~r/^args = (.+)$/m, File.read!(Path.join(environment.codex_home, "environments.toml")))
+        assert argv_value(Jason.decode!(raw), "--timeout-seconds") == "1"
+        result!(scratch(options))
+        if role == :coder, do: export!(scratch(options), %{"source.txt" => "unchanged"})
+        {:ok, %{output_text: "done"}}
+      end
+
+      context = context |> with_agent(agent) |> Map.update!(:opts, &Keyword.put(&1, :agent_timeout_ms, 600))
+      assert {:ok, _} = ExecutionSandbox.agent(context, role, "Continue", wall_timeout_ms: remaining)
+      assert context.settings.check_timeout_ms == 100
+    end
+  end
+
+  test "configured turn cap bounds the launcher and agent without extending remaining activity budget" do
+    turn_timeout = 7_200_000
+    write_workflow_file!(Workflow.workflow_file_path(), codex_turn_timeout_ms: turn_timeout)
+
+    for role <- [:coder, :reviewer, :diagnosis], remaining <- [60_000, 7_671_000] do
+      context = context!()
+      expected = min(remaining, turn_timeout)
+
+      agent = fn _, _, _, options ->
+        assert options[:wall_timeout_ms] == expected
+        environment = options[:execution_environment]
+        [_, raw] = Regex.run(~r/^args = (.+)$/m, File.read!(Path.join(environment.codex_home, "environments.toml")))
+        assert argv_value(Jason.decode!(raw), "--timeout-seconds") == to_string(div(expected, 1_000))
+        result!(scratch(options))
+        if role == :coder, do: export!(scratch(options), %{"source.txt" => "unchanged"})
+        {:ok, %{output_text: "done"}}
+      end
+
+      assert {:ok, _} = ExecutionSandbox.agent(with_agent(context, agent), role, "Continue", wall_timeout_ms: remaining)
+      assert context.settings.check_timeout_ms == 100
+    end
   end
 
   test "review and diagnosis do not import their disposable changes" do
@@ -460,6 +518,48 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
       assert File.read!(Path.join(context.workspace, "replace_dir/old")) == "keep old file"
       refute File.exists?(Path.join(context.workspace, "unrelated.txt"))
+    end
+  end
+
+  test "complete cleanup with a failed export stops before importing and reports the export failure" do
+    context = context!()
+
+    agent = fn _, _, _, options ->
+      scratch = scratch(options)
+      export!(scratch, %{"source.txt" => "must not import"})
+      result!(scratch)
+      path = Path.join(scratch, "result.json")
+      report = path |> File.read!() |> Jason.decode!() |> Map.put("export_complete", false)
+      File.write!(path, Jason.encode!(report))
+      {:ok, %{output_text: "passed"}}
+    end
+
+    assert {:error, :sandbox_export_incomplete} = ExecutionSandbox.agent(with_agent(context, agent), :coder, "Repair", [])
+    assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+  end
+
+  test "an export diagnosis still requires authentic cleanup, root and status evidence" do
+    for changes <- [
+          %{"cleanup_complete" => false},
+          %{"scratch_root" => "/another-run"},
+          %{"exit_status" => "0"},
+          %{"export_complete" => "false"},
+          %{"export_complete" => nil}
+        ] do
+      context = context!()
+
+      agent = fn _, _, _, options ->
+        scratch = scratch(options)
+        export!(scratch, %{"source.txt" => "must not import"})
+        result!(scratch)
+        path = Path.join(scratch, "result.json")
+        report = path |> File.read!() |> Jason.decode!() |> Map.put("export_complete", false) |> Map.merge(changes)
+        File.write!(path, Jason.encode!(report))
+        {:ok, %{output_text: "passed"}}
+      end
+
+      assert {:error, :sandbox_cleanup_incomplete} = ExecutionSandbox.agent(with_agent(context, agent), :coder, "Repair", [])
+      assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
     end
   end
 

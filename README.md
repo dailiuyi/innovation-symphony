@@ -14,6 +14,8 @@ GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复
 
 GH-7 将固定版本的 innovation-view 导入 [`view/`](view/README.md)，提供独立 Python 只读采集与展示服务，可维护本地数据库、缓存和日志；启停不影响 `elixir/` 控制器。PR #9 已合入 main；2026-10-03 按 IS-055 安装固定版本看板，本机网址为 [http://127.0.0.1:8613/](http://127.0.0.1:8613/)，真实 Windows＋WSL 采集和浏览器检查通过。控制器仍运行 `43ef956`，原 GH-7 交付回执的身份不一致停点保留。实际安装及验证局限见 [运行记录](docs/OPERATIONS.md)，通用步骤见 [View 说明](view/README.md)，[迁移记录](view/docs/MIGRATION.md) 与 [前置准备](docs/VIEW_PREPARATION.md) 保留历史与边界。
 
+Linux 执行补丁保留暂停领取后的既有任务合同，在受信审计入口处理外部补证和同一 Draft 的快进修订；固定检查按实际资源预算运行，View 只读标明已核验的宿主中断。代码审查与运行安装分别记录，见 [本轮补丁验证](docs/VALIDATION_LINUX_PATCHES.md)。
+
 ## 已确认的使用方式
 
 本轮按 IS-026 完善显式启用的自动恢复：可由模型解决的技术失败交回编码或新的只读诊断，普通修复窗口无需逐次人工批准，同时保留严格检查、独立 Review、资源熔断与完整证据。未启用策略的任务继续遵守上面的 0..5 兼容合同；旧回执只通过明确审计迁移，不批量重启。工程默认见 [自动恢复合同](docs/AUTOMATIC_RECOVERY.md)。控制器 `07f7493` 已发布并在本地运行，真实 Issue #3 经自动诊断、检查失败返工、完整检查和独立 Review 交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)，证据见 [验收记录](docs/VALIDATION_AUTOMATIC_RECOVERY.md)。按 IS-027，合并、合并冲突和升级交给人处理，系统不持续追赶 main。

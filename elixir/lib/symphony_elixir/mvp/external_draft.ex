@@ -159,12 +159,12 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     existing = data["external_delivery"]
 
     with :ok <- valid_journal(receipt, existing),
-         :ok <- previous_delivery(existing, repository, branch, sha),
+         :ok <- previous_delivery(existing, repository, branch, sha, workspace),
          {:ok, target} <- target_pull(existing, repository.repo, branch, opts),
          :ok <- ready(issue, opts),
          intent = %{"repository" => repository.repo, "branch" => branch, "base" => repository.base, "candidate_sha" => sha, "mode" => mode, "body" => body, "proof" => proof, "previous_pull" => target},
          {:ok, delivery} <- journal(receipt, intent, data),
-         {:ok, pull} <- write_pull(workspace, issue, repository, branch, sha, target, body, opts),
+         {:ok, pull} <- write_pull(workspace, issue, repository, branch, sha, target, body, {opts, existing}),
          :ok <- verify_pull(pull, intent) do
       confirm(receipt, delivery, pull)
     else
@@ -172,13 +172,33 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp previous_delivery(nil, _, _, _), do: :ok
+  defp previous_delivery(nil, _, _, _, _), do: :ok
 
-  defp previous_delivery(%{"status" => status, "intent" => old}, repository, branch, sha) when status in ["delivered", "approved"] do
-    if old["repository"] == repository.repo and old["branch"] == branch and old["base"] == repository.base and old["candidate_sha"] == sha, do: :ok, else: {:error, :mvp_pr_identity_mismatch}
+  defp previous_delivery(%{"status" => status, "intent" => old}, repository, branch, sha, workspace) when status in ["delivered", "approved"] do
+    identity = same_delivery_target?(old, repository, branch)
+
+    cond do
+      not identity ->
+        {:error, :mvp_pr_identity_mismatch}
+
+      old["candidate_sha"] == sha ->
+        :ok
+
+      status == "delivered" and old["mode"] == "external" ->
+        case Commands.git(["merge-base", "--is-ancestor", old["candidate_sha"], sha], workspace) do
+          {:ok, _} -> :ok
+          _ -> {:error, :mvp_pr_identity_mismatch}
+        end
+
+      true ->
+        {:error, :mvp_pr_identity_mismatch}
+    end
   end
 
-  defp previous_delivery(_, _, _, _), do: {:error, :mvp_publish_uncertain_reconcile_before_retry}
+  defp previous_delivery(_, _, _, _, _), do: {:error, :mvp_publish_uncertain_reconcile_before_retry}
+
+  defp same_delivery_target?(old, repository, branch),
+    do: old["repository"] == repository.repo and old["branch"] == branch and old["base"] == repository.base
 
   defp target_pull(existing, repo, branch, opts) do
     case pulls(repo, branch, opts) do
@@ -209,7 +229,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp write_pull(workspace, issue, repository, branch, sha, nil, body, opts) do
+  defp write_pull(workspace, issue, repository, branch, sha, nil, body, {opts, _existing}) do
     with {:ok, env} <- Delivery.git_env(opts),
          {:ok, _} <- Commands.git(["push", "--force-with-lease=refs/heads/#{branch}:", repository.url, "#{sha}:refs/heads/#{branch}"], workspace, env: env),
          {:ok, %{status: 201, body: pull}} <-
@@ -226,9 +246,36 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp write_pull(_workspace, _issue, repository, _branch, _sha, target, body, opts) do
-    case Client.request("PATCH", "/repos/#{repository.repo}/pulls/#{target["number"]}", %{}, %{"body" => body}, opts) do
-      {:ok, %{status: 200, body: pull}} -> {:ok, pull}
+  defp write_pull(workspace, _issue, repository, branch, sha, target, body, {opts, %{"intent" => old}}) do
+    with :ok <- advance_draft_branch(workspace, repository, branch, sha, old["candidate_sha"], opts),
+         :ok <- verify_revision_target(repository, branch, sha, old, target, opts),
+         {:ok, %{status: 200, body: pull}} <- Client.request("PATCH", "/repos/#{repository.repo}/pulls/#{target["number"]}", %{}, %{"body" => body}, opts) do
+      {:ok, pull}
+    else
+      _ -> {:error, :mvp_publish_uncertain_reconcile_before_retry}
+    end
+  end
+
+  defp verify_revision_target(repository, branch, sha, old, target, opts) do
+    with {:ok, [current]} <- pulls(repository.repo, branch, opts),
+         :ok <- verify_pull(current, Map.put(old, "candidate_sha", sha)),
+         true <- Map.take(current, ["number", "html_url"]) == target do
+      :ok
+    else
+      _ -> {:error, :mvp_pr_identity_mismatch}
+    end
+  end
+
+  defp advance_draft_branch(_workspace, _repository, _branch, sha, sha, _opts), do: :ok
+
+  defp advance_draft_branch(workspace, repository, branch, sha, previous, opts) do
+    # The ancestry check permits only a forward revision. The exact lease
+    # prevents replacing a branch advanced by somebody after PR lookup.
+    with {:ok, _} <- Commands.git(["merge-base", "--is-ancestor", previous, sha], workspace),
+         {:ok, env} <- Delivery.git_env(opts),
+         {:ok, _} <- Commands.git(["push", "--force-with-lease=refs/heads/#{branch}:#{previous}", repository.url, "#{sha}:refs/heads/#{branch}"], workspace, env: env) do
+      :ok
+    else
       _ -> {:error, :mvp_publish_uncertain_reconcile_before_retry}
     end
   end

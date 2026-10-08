@@ -18,8 +18,25 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   @spec resolve(Issue.t() | map(), map(), keyword()) :: {:ok, model_choice()} | {:error, term()}
   def resolve(issue, settings, opts) when is_map(settings) and is_list(opts) do
-    with :ok <- enabled(settings),
-         :ok <- validate_settings(settings),
+    with :ok <- enabled(settings) do
+      resolve_authorized(issue, settings, opts)
+    end
+  end
+
+  def resolve(_issue, _settings, _opts), do: {:error, :invalid_mvp_settings}
+
+  @doc "Revalidate ready authorization and model comments for an already claimed task."
+  def resolve_claimed(issue, settings, opts \\ [])
+
+  @spec resolve_claimed(Issue.t() | map(), map(), keyword()) :: {:ok, model_choice()} | {:error, term()}
+  def resolve_claimed(issue, settings, opts) when is_map(settings) and is_list(opts) do
+    resolve_authorized(issue, settings, opts)
+  end
+
+  def resolve_claimed(_issue, _settings, _opts), do: {:error, :invalid_mvp_settings}
+
+  defp resolve_authorized(issue, settings, opts) do
+    with :ok <- validate_settings(settings),
          {:ok, reference} <- issue_reference(issue),
          :ok <- ready_issue(issue, Map.get(settings, :ready_label, "ready")),
          {:ok, events} <- fetch_pages(reference, "events", opts),
@@ -33,8 +50,6 @@ defmodule SymphonyElixir.Mvp.Intake do
       resolve_comments(comments, settings)
     end
   end
-
-  def resolve(_issue, _settings, _opts), do: {:error, :invalid_mvp_settings}
 
   @spec ready?(term(), String.t()) :: boolean()
   def ready?(issue, ready_label), do: ready_issue(issue, ready_label) == :ok

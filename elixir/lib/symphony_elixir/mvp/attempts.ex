@@ -159,9 +159,16 @@ defmodule SymphonyElixir.Mvp.Attempts do
   defp retryable?(_, {:error, error}) when error in [:turn_timeout, :response_timeout], do: true
   defp retryable?(_, {:error, {:port_exit, _}}), do: true
   defp retryable?(_, {:error, {:model_call_failed, reason}}) when reason in [:model_rate_limited, :model_service_unavailable], do: true
+  defp retryable?(_, {:error, {:turn_failed, %{"codexErrorInfo" => "serverOverloaded"}}}), do: true
   defp retryable?(:reviewer, {:error, :mvp_invalid_review}), do: true
   defp retryable?(:diagnosis, {:error, :mvp_invalid_diagnosis}), do: true
   defp retryable?(_, _), do: false
+
+  defp retry_prompt(original, role, {:error, {:turn_failed, %{"codexErrorInfo" => "serverOverloaded"}}}, _, _)
+       when role in [:reviewer, :diagnosis] do
+    original <>
+      "\n\nThe previous independent session ended because the model service was temporarily at capacity. Re-evaluate the unchanged candidate independently using the same model and the original task requirements."
+  end
 
   defp retry_prompt(original, :coder, error, _output, _) do
     original <> "\n\nThe previous session ended with #{inspect(error)}. Continue from the existing partial work in this workspace. Preserve that work; do not commit, reset, or clean the workspace."

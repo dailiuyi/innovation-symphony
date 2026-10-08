@@ -135,6 +135,67 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
     refute_received {:published, _}
   end
 
+  test "external resume validates a paused workflow with the real claimed-task model resolver", %{fixture: f} do
+    paused = put_in(f.config, ["mvp", "enabled"], false)
+    write_workflow(f.workflow, paused)
+    receipt_before = File.read!(f.receipt)
+    workflow_path_before = Workflow.workflow_file_path()
+    supervisor_before = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
+    orchestrator_before = Process.whereis(SymphonyElixir.Orchestrator)
+    parent = self()
+
+    delegate = fn context, digest, _authorization ->
+      send(parent, {:paused_context, context, digest})
+      {:error, {:mvp_awaiting_external, "next-handoff"}}
+    end
+
+    opts =
+      resume_opts(delegate, f)
+      |> Keyword.delete(:resolve_models)
+      |> Keyword.put(:request_fun, fn "GET", path, _params, nil, _tracker ->
+        body =
+          if String.ends_with?(path, "/events"),
+            do: [%{"id" => 1, "event" => "labeled", "label" => %{"name" => "ready"}, "actor" => %{"login" => "alice"}}],
+            else: []
+
+        {:ok, %{status: 200, body: body}}
+      end)
+
+    assert {:error, {:mvp_awaiting_external, "next-handoff"}} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert_received {:paused_context, context, digest}
+    refute context.settings.enabled
+    assert context.settings.checks == f.record["checks"]
+    assert context.models == %{coder: "coder-model", reviewer: "reviewer-model"}
+    assert digest == f.receipt_digest
+    assert File.read!(f.receipt) == receipt_before
+    assert Workflow.workflow_file_path() == workflow_path_before
+    assert Process.whereis(SymphonyElixir.AgentRuntimeSupervisor) == supervisor_before
+    assert Process.whereis(SymphonyElixir.Orchestrator) == orchestrator_before
+
+    changed_comments = fn "GET", path, _params, nil, _tracker ->
+      body =
+        if String.ends_with?(path, "/events"),
+          do: [%{"id" => 1, "event" => "labeled", "label" => %{"name" => "ready"}, "actor" => %{"login" => "alice"}}],
+          else: [%{"id" => 2, "user" => %{"login" => "alice", "type" => "User"}, "body" => "/symphony models reviewer=coder-model"}]
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    assert {:error, :current_models_changed} = External.resume(f.workflow, f.receipt, f.request, Keyword.put(opts, :request_fun, changed_comments))
+    refute_received {:paused_context, _, _}
+    assert File.read!(f.receipt) == receipt_before
+
+    missing_contract = put_in(f.config, ["mvp"], %{"enabled" => false})
+    write_workflow(f.workflow, missing_contract)
+    assert {:error, :invalid_mvp_settings} = External.resume(f.workflow, f.receipt, f.request, opts)
+
+    changed_checks = put_in(paused, ["mvp", "checks"], [["true"]])
+    write_workflow(f.workflow, changed_checks)
+    assert {:error, :frozen_checks_mismatch} = External.resume(f.workflow, f.receipt, f.request, opts)
+    refute_received {:paused_context, _, _}
+    assert File.read!(f.receipt) == receipt_before
+  end
+
   test "audited recovery extensions restore a cumulative wall budget above one day", %{fixture: f} do
     f = add_recovery_extensions(f, [86_400_000, 86_400_000])
     parent = self()
@@ -275,15 +336,15 @@ defmodule SymphonyElixir.MvpExternalTaskTest do
     refute error.message =~ "test-token"
   end
 
-  test "resume rejects malformed workflow, disabled or invalid MVP config, and bad tracker config", %{fixture: f} do
+  test "resume rejects malformed workflow, incomplete or invalid MVP config, and bad tracker config", %{fixture: f} do
     opts = [runtime_validator: fn _ -> :ok end]
     missing_workflow = Path.join(f.root, "absent.md")
     assert {:error, :invalid_workflow} = External.resume(missing_workflow, f.receipt, f.request, opts)
     assert {:error, :invalid_workflow} = External.resume(nil, f.receipt, f.request, opts)
 
-    disabled = put_in(f.config, ["mvp", "enabled"], false)
+    disabled = put_in(f.config, ["mvp"], %{"enabled" => false})
     write_workflow(f.workflow, disabled)
-    assert {:error, :mvp_disabled} = External.resume(f.workflow, f.receipt, f.request, opts)
+    assert {:error, :invalid_mvp_settings} = External.resume(f.workflow, f.receipt, f.request, opts)
 
     invalid_mvp = put_in(f.config, ["mvp", "reviewer_model"], nil)
     write_workflow(f.workflow, invalid_mvp)

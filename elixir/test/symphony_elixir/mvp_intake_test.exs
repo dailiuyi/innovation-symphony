@@ -60,6 +60,52 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     end
   end
 
+  test "pausing intake preserves and validates a complete execution contract" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    config = valid_mvp_config(Path.join(workflow_dir, "paused-state"))
+    workspace = Path.join(workflow_dir, "paused-workspaces")
+    write_mvp_workflow!(config, workspace)
+    assert {:ok, enabled} = MvpConfig.settings()
+
+    write_mvp_workflow!(Map.put(config, "enabled", false), workspace)
+    assert {:ok, paused} = MvpConfig.settings()
+    refute paused.enabled
+    assert Map.put(paused, :enabled, true) == enabled
+
+    forbidden_request = fn _, _, _, _, _ -> flunk("paused intake must not read GitHub") end
+    assert {:error, :mvp_disabled} = Intake.resolve(ready_issue(), paused, request_fun: forbidden_request)
+
+    write_mvp_workflow!(config |> Map.put("enabled", false) |> Map.put("checks", []), workspace)
+    assert {:error, :invalid_mvp_checks} = MvpConfig.settings()
+  end
+
+  test "strict execution settings reject incomplete disabled contracts and validate path boundaries" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    workspace = Path.join(workflow_dir, "execution-workspaces")
+
+    for raw <- [%{}, %{"enabled" => false}, %{"enabled" => false, "checks" => [["true"]]}] do
+      workflow = %{config: %{"mvp" => raw, "workspace" => %{"root" => workspace}}}
+      assert {:ok, %{enabled: false}} = MvpConfig.settings(workflow, workflow_dir)
+      assert {:error, {:missing_mvp_setting, :coder_model}} = MvpConfig.execution_settings(workflow, workflow_dir)
+    end
+
+    config = valid_mvp_config(Path.join(workflow_dir, "execution-state")) |> Map.put("enabled", false)
+    write_mvp_workflow!(config, workspace)
+    assert {:ok, workflow} = Workflow.current()
+    assert {:ok, %{enabled: false, checks: [["mix", "test"]]}} = MvpConfig.execution_settings(workflow, workflow_dir)
+
+    for {key, value, error} <- [
+          {"reviewer_model", nil, {:missing_mvp_setting, :reviewer_model}},
+          {"allowed_actors", [], {:invalid_mvp_setting, :allowed_actors}},
+          {"checks", [], :invalid_mvp_checks},
+          {"state_dir", workspace, :mvp_state_workspace_overlap}
+        ] do
+      write_mvp_workflow!(Map.put(config, key, value), workspace)
+      assert {:ok, workflow} = Workflow.current()
+      assert {:error, ^error} = MvpConfig.execution_settings(workflow, workflow_dir)
+    end
+  end
+
   test "enabled settings reject missing or unsafe required values" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     workspace_root = Path.join(workflow_dir, "workspace")
@@ -265,6 +311,26 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       assert {:error, reason} = Intake.resolve(current_issue, settings())
       assert reason in [:invalid_issue_reference, :issue_not_ready]
     end
+  end
+
+  test "claimed-task model revalidation preserves authorization while intake is paused" do
+    paused = %{settings() | enabled: false}
+
+    request_fun = fn "GET", path, _params, nil, _github_settings ->
+      body = if String.ends_with?(path, "/events"), do: [ready_event(1, "alice")], else: [comment(2, "alice", "/symphony models coder=coder-b")]
+      {:ok, %{status: 200, body: body}}
+    end
+
+    opts = [request_fun: request_fun, tracker_settings: github_tracker_settings()]
+    assert {:ok, %{coder: "coder-b", reviewer: "reviewer-a"}} = Intake.resolve_claimed(ready_issue(), paused, opts)
+    assert {:error, :mvp_disabled} = Intake.resolve(ready_issue(), paused, opts)
+    assert {:error, :issue_not_ready} = Intake.resolve_claimed(%{ready_issue() | labels: []}, paused, opts)
+    assert {:error, :invalid_mvp_settings} = Intake.resolve_claimed(ready_issue(), %{})
+    assert {:error, :invalid_mvp_settings} = Intake.resolve_claimed(ready_issue(), %{}, opts)
+    assert {:error, :invalid_mvp_settings} = Intake.resolve_claimed(ready_issue(), :invalid, opts)
+
+    unauthorized = fn "GET", _path, _params, nil, _settings -> {:ok, %{status: 200, body: [ready_event(1, "mallory")]}} end
+    assert {:error, {:unauthorized_ready_actor, "mallory"}} = Intake.resolve_claimed(ready_issue(), paused, Keyword.put(opts, :request_fun, unauthorized))
   end
 
   test "issue reference variants encode repository segments and accept ready labels" do

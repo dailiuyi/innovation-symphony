@@ -88,12 +88,11 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   @spec agent(map(), atom(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def agent(context, role, prompt, options) do
     config = role_config(context.settings.sandbox, Keyword.get(options, :model_service))
-    timeout = Keyword.get(options, :wall_timeout_ms, SymphonyElixir.Config.settings!().codex.turn_timeout_ms)
     import_options = Keyword.put(context.opts, :sandbox_max_bytes, config["disk_mb"] * 1_048_576)
 
     read_only = role != :coder
 
-    with true <- (is_integer(timeout) and timeout > 0) or {:error, :invalid_wall_timeout},
+    with {:ok, timeout} <- agent_wall_timeout(context, options),
          {:ok, run} <- prepare(config, context, timeout, read_only),
          :ok <- prepare_home(run, config, Keyword.get(options, :model_service)),
          {:ok, before} <- source_files(context.workspace, import_options[:sandbox_max_bytes]) do
@@ -111,6 +110,18 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
       record_artifact(context, run.scratch, Atom.to_string(role))
       outcome
+    end
+  end
+
+  defp agent_wall_timeout(context, options) do
+    turn_timeout = SymphonyElixir.Config.settings!().codex.turn_timeout_ms
+    remaining = Keyword.get(options, :wall_timeout_ms, turn_timeout)
+    cap = Keyword.get(context.opts, :agent_timeout_ms, turn_timeout)
+
+    if is_integer(remaining) and remaining > 0 and is_integer(cap) and cap > 0 do
+      {:ok, min(remaining, cap)}
+    else
+      {:error, :invalid_wall_timeout}
     end
   end
 
@@ -386,9 +397,9 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp read_result(path, scratch) do
     with true <- canonical?(scratch),
          {:ok, raw} <- File.read(path),
-         {:ok, %{"cleanup_complete" => true, "scratch_root" => ^scratch, "exit_status" => status} = report} <- Jason.decode(raw),
-         true <- is_integer(status) and status in 0..255 do
-      if report["export_complete"] == true, do: {:ok, status}, else: {:error, :sandbox_export_incomplete}
+         {:ok, %{"cleanup_complete" => true, "export_complete" => exported, "scratch_root" => ^scratch, "exit_status" => status}} <- Jason.decode(raw),
+         true <- is_integer(status) and status in 0..255 and is_boolean(exported) do
+      if exported, do: {:ok, status}, else: {:error, :sandbox_export_incomplete}
     else
       _ -> {:error, :sandbox_cleanup_incomplete}
     end

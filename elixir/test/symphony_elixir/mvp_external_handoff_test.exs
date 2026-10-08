@@ -22,6 +22,8 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
   }
 
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
+  alias SymphonyElixir.Mvp.OperatorRecheck
+  alias SymphonyElixir.Mvp.Usage
 
   @acceptance "The candidate must load the signed company feed"
   @url "https://github.com/owner/repo/pull/42"
@@ -526,6 +528,125 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     update_in(external_review(), ["blockers"], fn blockers -> Enum.map(blockers, &Map.put(&1, "external_kind", kind)) end)
   end
 
+  test "a reviewed forward revision updates the original Draft branch and keeps both delivery proofs" do
+    {context, opts, before} = revised_draft_waiting!()
+    candidate = Receipt.read(context.receipt)["candidate_sha"]
+    refute candidate == before["candidate_sha"]
+    assert {:ok, @url} = publish_waiting(context, opts)
+    revised = Receipt.read(context.receipt)
+    assert Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{revised["branch"]}"], context.root) == candidate
+    assert revised["status"] == "awaiting_external"
+    assert revised["external_delivery"]["intent"]["candidate_sha"] == candidate
+    assert List.last(revised["external_delivery_history"]) == before["external_delivery"]
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert length(writes(context, "PATCH", "/pulls/42")) == 1
+
+    accepted = revised
+    assert accepted["review"]["approved"] == false
+    assert accepted["status"] == "awaiting_external"
+    assert accepted["candidate_sha"] == candidate
+    assert length(calls(context, :coder)) == 2
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert Process.get({context.key, :remote_pull})["draft"] == true
+  end
+
+  test "forward Draft revisions reject human edits duplicate PRs and prior approval before writes" do
+    for mutation <- [:human_body, :human_head, :duplicate, :approved, :journal_target, :unrelated_candidate] do
+      {context, opts, _before} = revised_draft_waiting!()
+      original = File.read!(context.receipt)
+      data = Receipt.read(context.receipt)
+      remote_head = Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{data["branch"]}"], context.root)
+
+      case mutation do
+        :human_body ->
+          Process.put({context.key, :remote_pull}, Map.put(Process.get({context.key, :remote_pull}), "body", "human edit"))
+
+        :human_head ->
+          Process.put({context.key, :sync_remote_head}, false)
+          Process.put({context.key, :remote_pull}, put_in(Process.get({context.key, :remote_pull}), ["head", "sha"], String.duplicate("f", 40)))
+
+        :duplicate ->
+          Process.put({context.key, :duplicate_pulls}, true)
+
+        :approved ->
+          Receipt.update(context.receipt, "awaiting_external", %{"external_delivery" => Map.put(data["external_delivery"], "status", "approved")})
+
+        kind when kind in [:journal_target, :unrelated_candidate] ->
+          delivery = data["external_delivery"]
+
+          changed =
+            if kind == :journal_target do
+              Map.put(delivery["intent"], "base", "different-base")
+            else
+              tree = Commands.git!(["rev-parse", "#{data["candidate_sha"]}^{tree}"], context.workspace)
+              unrelated = Commands.git!(["commit-tree", tree, "-m", "Unrelated candidate ancestry"], context.workspace)
+              Map.put(delivery["intent"], "candidate_sha", unrelated)
+            end
+
+          raw = Jason.encode!(changed, pretty: true)
+          File.write!(delivery["intent_path"], raw)
+          journal = Map.merge(delivery, %{"intent" => changed, "intent_sha256" => digest(raw)})
+          Receipt.update(context.receipt, "awaiting_external", %{"external_delivery" => journal})
+      end
+
+      untouched = File.read!(context.receipt)
+      assert {:error, _} = publish_waiting(context, opts)
+      assert File.read!(context.receipt) == untouched
+      assert Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{data["branch"]}"], context.root) == remote_head
+      assert length(writes(context, "POST", "/pulls")) == 1
+      assert writes(context, "PATCH", "/pulls/42") == []
+      if mutation in [:human_body, :human_head, :duplicate], do: assert(untouched == original)
+    end
+  end
+
+  test "a fresh approval after recoding delivers the forward revision in the same audited operation" do
+    context = context!()
+    Process.put({context.key, :sync_remote_head}, true)
+    Process.put({context.key, :reviews}, [verification_review(), code_defect_review(), approved_review()])
+    opts = draft_options(context) |> Keyword.put(:agent, changing_agent(context))
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    before = Receipt.read(context.receipt)
+    proof = evidence_file!(context, "previous candidate external proof")
+    auth = authorization(context, before["external_handoff"], proof, "approve-forward-revision")
+    assert {:ok, @url} = Executor.resume_external(resume_context(context, settings(), opts), digest(File.read!(context.receipt)), auth)
+    accepted = Receipt.read(context.receipt)
+    refute accepted["candidate_sha"] == before["candidate_sha"]
+    assert accepted["status"] == "awaiting_human"
+    assert accepted["external_delivery"]["status"] == "approved"
+    assert List.last(accepted["external_delivery_history"]) == before["external_delivery"]
+    assert Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{accepted["branch"]}"], context.root) == accepted["candidate_sha"]
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert Process.get({context.key, :remote_pull})["draft"] == true
+  end
+
+  test "a branch advance after Draft lookup fails its exact lease without patching or duplicate publication" do
+    {context, opts, before} = revised_draft_waiting!()
+    Process.put({context.key, :advance_after_lookup}, true)
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = publish_waiting(context, opts)
+    data = Receipt.read(context.receipt)
+    assert data["external_delivery"]["status"] == "pending"
+    remote = Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{data["branch"]}"], context.root)
+    assert remote == Process.get({context.key, :concurrent_head})
+    refute remote in [before["candidate_sha"], data["candidate_sha"]]
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert writes(context, "PATCH", "/pulls/42") == []
+    assert {:error, :mvp_publish_uncertain_reconcile_before_retry} = publish_waiting(context, opts)
+  end
+
+  defp revised_draft_waiting! do
+    context = context!()
+    Process.put({context.key, :sync_remote_head}, true)
+    Process.put({context.key, :reviews}, [verification_review(), code_defect_review(), verification_review(), approved_review()])
+    opts = draft_options(context) |> Keyword.put(:agent, changing_agent(context))
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    before = Receipt.read(context.receipt)
+    proof = evidence_file!(context, "proof for the previous candidate")
+    auth = authorization(context, before["external_handoff"], proof, "revise-existing-draft")
+    parked = Keyword.put(opts, :publish_external, fn _, _, _, _, _, _, _ -> {:ok, @url} end)
+    assert {:error, {:mvp_awaiting_external, _}} = Executor.resume_external(resume_context(context, settings(), parked), digest(File.read!(context.receipt)), auth)
+    {context, opts, before}
+  end
+
   defp draft_waiting! do
     context = context!()
     Process.put({context.key, :reviews}, [verification_review()])
@@ -571,7 +692,25 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
   end
 
   defp draft_pulls(context) do
+    if Process.get({context.key, :sync_remote_head}) == true and is_map(Process.get({context.key, :remote_pull})) do
+      pull = Process.get({context.key, :remote_pull})
+      branch = pull["head"]["ref"]
+      sha = Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/#{branch}"], context.root)
+      Process.put({context.key, :remote_pull}, put_in(pull, ["head", "sha"], sha))
+    end
+
     pulls = List.wrap(Process.get({context.key, :remote_pull}))
+
+    if Process.get({context.key, :advance_after_lookup}) == true do
+      Process.put({context.key, :advance_after_lookup}, false)
+      [pull] = pulls
+      old = pull["head"]["sha"]
+      tree = Commands.git!(["rev-parse", "#{old}^{tree}"], context.workspace)
+      concurrent = Commands.git!(["commit-tree", tree, "-p", old, "-m", "Concurrent human branch update"], context.workspace)
+      Commands.git!(["push", context.repository.url, "#{concurrent}:refs/heads/#{pull["head"]["ref"]}"], context.workspace)
+      Process.put({context.key, :concurrent_head}, concurrent)
+    end
+
     pulls = if Process.get({context.key, :duplicate_pulls}), do: pulls ++ pulls, else: pulls
     if Process.get({context.key, :lookup_failure}), do: {:error, :network}, else: {:ok, %{status: 200, body: pulls}}
   end
@@ -682,6 +821,203 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     assert {:ok, @url} = Executor.resume_external(third_resume, digest(File.read!(context.receipt)), third_auth)
     assert length(calls(context, :reviewer)) == 4
     assert length(Receipt.read(context.receipt)["external_evidence_history"]) == 3
+  end
+
+  test "external evidence resumes with unchanged unproduced history authenticated by a completed operator chain" do
+    {context, opts} = unproduced_history!()
+    first = complete_history_audit!(context, opts, "legacy-history-first")
+    complete_history_audit!(context, opts, "legacy-history-latest")
+    before = Receipt.read(context.receipt)
+    assert File.regular?(Path.join(first.directory, "completion.json"))
+    evidence = evidence_file!(context, "real external acceptance for the current candidate")
+    auth = authorization(context, before["external_handoff"], evidence, "accept-after-history")
+
+    assert {:ok, @url} =
+             Executor.resume_external(resume_context(context, settings(), opts), digest(File.read!(context.receipt)), auth)
+
+    after_data = Receipt.read(context.receipt)
+    assert Enum.take(after_data["rounds"], 2) == Enum.take(before["rounds"], 2)
+    assert after_data["candidate_sha"] == before["candidate_sha"]
+    assert after_data["rework_count"] == before["rework_count"]
+    assert after_data["recovery"]["policy"] == before["recovery"]["policy"]
+    assert after_data["recovery"]["started_at"] == before["recovery"]["started_at"]
+    assert after_data["recovery"]["agent_attempts"] == before["recovery"]["agent_attempts"] + 1
+    assert length(calls(context, :coder)) == 3
+    assert length(calls(context, :reviewer)) == 4
+    assert length(after_data["external_evidence_history"]) == 1
+  end
+
+  test "unproduced external history rejects missing audit and altered history even with a rebound current completion" do
+    mutations = [
+      :no_audit,
+      :usage,
+      :first_nil,
+      :last_nil,
+      :unknown_nil,
+      :produced_empty_checks,
+      :missing_usage,
+      :completion_digest,
+      :head,
+      :input_digest,
+      :predecessor_digest,
+      :checks,
+      :policy,
+      :metadata
+    ]
+
+    for mutation <- mutations do
+      {context, opts} = unproduced_history!()
+      first = complete_history_audit!(context, opts, "history-first")
+      latest = complete_history_audit!(context, opts, "history-latest")
+
+      case mutation do
+        :no_audit ->
+          File.rm!(Path.join(latest.directory, "completion.json"))
+
+        :usage ->
+          change_history_round!(context, 1, fn round -> Map.put(round, "usage", %{"coder_attempt_3" => %{"total_tokens" => 999}}) end)
+
+        :first_nil ->
+          change_history_round!(context, 0, &Map.put(&1, "candidate_sha", nil))
+
+        :last_nil ->
+          change_history_round!(context, 2, &Map.put(&1, "candidate_sha", nil))
+
+        :unknown_nil ->
+          change_history_round!(context, 1, &Map.put(&1, "evidence", Path.join(context.root, "unknown")))
+
+        :produced_empty_checks ->
+          change_history_round!(context, 1, &Map.put(&1, "candidate_sha", Receipt.read(context.receipt)["base_sha"]))
+
+        :missing_usage ->
+          change_history_round!(context, 1, &Map.put(&1, "usage", %{}))
+
+        :completion_digest ->
+          change_audit_json!(Path.join(latest.directory, "completion.json"), &Map.put(&1, "final_receipt_sha256", String.duplicate("0", 64)))
+
+        :head ->
+          change_audit_json!(Path.join(latest.root, "head.json"), &Map.put(&1, "id", "different-head"))
+
+        :input_digest ->
+          change_audit_json!(Path.join(latest.directory, "authorization.json"), &Map.put(&1, "receipt_sha256", String.duplicate("0", 64)))
+
+        :predecessor_digest ->
+          change_audit_json!(Path.join(first.directory, "completion.json"), &Map.put(&1, "final_receipt_sha256", String.duplicate("0", 64)))
+
+        :checks ->
+          change_audit_json!(Path.join(latest.directory, "authorization.json"), &Map.put(&1, "checks", []))
+
+        :policy ->
+          before_path = Path.join(latest.directory, "receipt-before.json")
+          change_audit_json!(before_path, &put_in(&1, ["recovery", "policy", "max_agent_attempts"], 100))
+          change_audit_json!(Path.join(latest.directory, "authorization.json"), &Map.put(&1, "receipt_sha256", digest(File.read!(before_path))))
+          change_audit_json!(Path.join(first.directory, "completion.json"), &Map.put(&1, "final_receipt_sha256", digest(File.read!(before_path))))
+
+        :metadata ->
+          File.write!(Path.join(context.workspace, ".git/info/exclude"), "altered metadata\n")
+      end
+
+      raw = File.read!(context.receipt)
+      data = Receipt.read(context.receipt)
+      evidence = evidence_file!(context, "external proof for #{mutation}")
+      auth = authorization(context, data["external_handoff"], evidence, "reject-tampered-history")
+      resume = resume_context(context, settings(), opts)
+
+      assert {:error, reason} = Executor.resume_external(resume, digest(raw), auth), "mutation #{mutation}"
+      assert reason in [:mvp_resume_binding_mismatch, :mvp_external_handoff_mismatch]
+      assert File.read!(context.receipt) == raw
+      assert length(calls(context, :reviewer)) == 3
+      assert calls(context, :publish) == []
+      refute File.exists?(Path.join(latest.root, auth["id"]))
+    end
+  end
+
+  test "completed audits do not authorize checked, unmarked or empty-usage historical rounds" do
+    for mutation <- [:checked, :unmarked, :produced, :empty_usage] do
+      {context, opts} = unproduced_history!()
+      data = Receipt.read(context.receipt)
+
+      rounds =
+        case mutation do
+          :checked -> List.update_at(data["rounds"], 1, &Map.put(&1, "checks", settings().checks))
+          :unmarked -> List.update_at(data["rounds"], 0, &Map.delete(&1, "historical_v0"))
+          :produced -> List.update_at(data["rounds"], 1, &Map.put(&1, "candidate_sha", data["base_sha"]))
+          :empty_usage -> List.update_at(data["rounds"], 1, &Map.put(&1, "usage", %{}))
+        end
+
+      Receipt.update(context.receipt, data["status"], %{"rounds" => rounds})
+      completed = complete_history_audit!(context, opts, "invalid-history-completed")
+      before = File.read!(context.receipt)
+      waiting = Receipt.read(context.receipt)
+      evidence = evidence_file!(context, "external acceptance for #{mutation}")
+      auth = authorization(context, waiting["external_handoff"], evidence, "reject-invalid-history")
+
+      assert {:error, :mvp_resume_binding_mismatch} =
+               Executor.resume_external(resume_context(context, settings(), opts), digest(before), auth)
+
+      assert File.read!(context.receipt) == before
+      assert length(calls(context, :reviewer)) == 3
+      refute File.exists?(Path.join(completed.root, auth["id"]))
+    end
+  end
+
+  test "audit changes after binding validation fail before evidence import or model dispatch" do
+    for phase <- [:before_lock, :locked] do
+      {context, opts} = unproduced_history!()
+      completed = complete_history_audit!(context, opts, "binding-source-completed")
+      before = File.read!(context.receipt)
+      waiting = Receipt.read(context.receipt)
+      evidence = evidence_file!(context, "real external acceptance proof")
+      auth = authorization(context, waiting["external_handoff"], evidence, "binding-race-#{phase}")
+      last = List.last(waiting["rounds"])
+
+      original_evidence =
+        Map.new(
+          [waiting["external_handoff"]["record_path"], last["review_path"], Path.join(last["evidence"], "check-1.log"), evidence["path"]],
+          &{&1, File.read!(&1)}
+        )
+
+      parent = self()
+
+      opts =
+        Keyword.put(opts, :on_message, fn
+          %{event: :mvp_external_binding_verified, phase: ^phase} ->
+            change_audit_json!(Path.join(completed.directory, "completion.json"), &Map.put(&1, "final_receipt_sha256", String.duplicate("0", 64)))
+            send(parent, {:audit_changed_after_binding, phase})
+
+          _ ->
+            :ok
+        end)
+
+      assert {:error, :mvp_external_handoff_mismatch} =
+               Executor.resume_external(resume_context(context, settings(), opts), digest(before), auth)
+
+      assert_received {:audit_changed_after_binding, ^phase}
+      after_data = Receipt.read(context.receipt)
+
+      assert Map.take(after_data, ~w(candidate_sha rounds usage max_rework rework_count)) ==
+               Map.take(waiting, ~w(candidate_sha rounds usage max_rework rework_count))
+
+      assert after_data["recovery"]["policy"] == waiting["recovery"]["policy"]
+      assert after_data["recovery"]["started_at"] == waiting["recovery"]["started_at"]
+      assert after_data["recovery"]["agent_attempts"] == waiting["recovery"]["agent_attempts"]
+      assert after_data["external_evidence_history"] == waiting["external_evidence_history"]
+      assert length(calls(context, :reviewer)) == 3
+      assert length(calls(context, :coder)) == 3
+      assert calls(context, :publish) == []
+      operation = Path.join(completed.root, auth["id"])
+      refute File.exists?(Path.join(operation, "external-evidence"))
+      refute File.exists?(Path.join(operation, "check-1.log"))
+      assert Enum.all?(original_evidence, fn {path, bytes} -> File.read!(path) == bytes end)
+
+      if phase == :before_lock do
+        assert File.read!(context.receipt) == before
+        refute File.exists?(operation)
+      else
+        assert after_data["status"] == "awaiting_external"
+        assert File.regular?(Path.join(operation, "completion.json"))
+      end
+    end
   end
 
   test "a reparked handoff retains and verifies the original operator review audit" do
@@ -2043,6 +2379,59 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
       baseline_digest: tree_digest(baseline),
       limit: Recovery.limit(settings)
     })
+  end
+
+  defp unproduced_history! do
+    context = context!()
+    Process.put({context.key, :reviews}, [code_defect_review(), code_defect_review(), external_review(), approved_review()])
+    opts = Keyword.put(options(context), :agent, changing_agent(context))
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings(), opts)
+    data = Receipt.read(context.receipt)
+    [first, unfinished, last] = data["rounds"]
+
+    without_artifacts = fn round ->
+      round
+      |> Map.drop(~w(check_failure review review_path comment))
+      |> Map.put("checks", [])
+      |> Map.update!("usage", &Map.reject(&1, fn {role, _usage} -> String.starts_with?(role, "reviewer") end))
+    end
+
+    first =
+      first
+      |> without_artifacts.()
+      |> Map.merge(%{"candidate_sha" => data["base_sha"], "historical_v0" => true, "produced_candidate" => false})
+
+    unfinished = unfinished |> without_artifacts.() |> Map.put("candidate_sha", nil)
+    rounds = [first, unfinished, last]
+    usage = Usage.aggregate(rounds)
+    Receipt.update(context.receipt, data["status"], %{"rounds" => rounds, "usage" => usage})
+    update_handoff_record(context, &Map.put(&1, "usage", usage))
+    {context, opts}
+  end
+
+  defp complete_history_audit!(context, opts, id) do
+    raw = File.read!(context.receipt)
+    data = Receipt.read(context.receipt)
+    resume = resume_context(context, settings(), opts)
+    auth = recovery_authorization(context, id, "unused", data["operator_recheck"])
+    assert {:ok, operation} = OperatorRecheck.begin(resume, raw, data, auth)
+    Receipt.update(context.receipt, data["status"], %{"operator_recheck" => id})
+    :ok = OperatorRecheck.complete(operation, {:error, {:mvp_awaiting_external, data["external_handoff"]["id"]}})
+    operation
+  end
+
+  defp change_history_round!(context, index, change) do
+    data = Receipt.read(context.receipt)
+    rounds = List.update_at(data["rounds"], index, change)
+    Receipt.update(context.receipt, data["status"], %{"rounds" => rounds})
+    root = Path.join(context.receipt <> ".evidence", "operator-rechecks")
+    path = Path.join([root, data["operator_recheck"], "completion.json"])
+    change_audit_json!(path, &Map.put(&1, "final_receipt_sha256", digest(File.read!(context.receipt))))
+    File.write!(Path.join(root, "head.json"), File.read!(path))
+  end
+
+  defp change_audit_json!(path, change) do
+    File.write!(path, path |> File.read!() |> Jason.decode!() |> change.() |> Jason.encode!(pretty: true))
   end
 
   defp update_handoff_record(context, update) do

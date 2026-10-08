@@ -84,12 +84,13 @@ defmodule Mix.Tasks.Mvp.External do
          {:ok, app_settings} <- Schema.parse(workflow.config),
          :ok <- Config.validate_settings(app_settings),
          :ok <- runtime_valid?(app_settings, opts),
-         {:ok, settings} <- enabled_mvp_settings(workflow, workflow_file),
+         {:ok, settings} <- execution_mvp_settings(workflow, workflow_file),
          {:ok, receipt_file, receipt_raw, receipt} <- read_json_file(receipt_path),
          {:ok, _request_file, request_raw, request} <- read_json_file(request_path),
          {:ok, authorization, expected_digest} <- validate_request(request, request_raw, receipt_raw),
          {:ok, handoff} <- immutable_handoff(receipt_file, receipt),
          :ok <- receipt_models_match(receipt, handoff),
+         :ok <- frozen_checks_match(settings, handoff),
          :ok <- validate_bound_external_evidence(handoff, receipt, authorization),
          :ok <- ensure_request_runtime(opts),
          {:ok, issue} <- fetch_frozen_issue(handoff, app_settings.tracker, opts),
@@ -117,10 +118,9 @@ defmodule Mix.Tasks.Mvp.External do
 
   defp load_workflow(_path), do: {:error, :invalid_workflow}
 
-  defp enabled_mvp_settings(workflow, workflow_path) do
-    case MvpConfig.settings(workflow, Path.dirname(workflow_path)) do
-      {:ok, %{enabled: true} = settings} -> {:ok, settings}
-      {:ok, _settings} -> {:error, :mvp_disabled}
+  defp execution_mvp_settings(workflow, workflow_path) do
+    case MvpConfig.execution_settings(workflow, Path.dirname(workflow_path)) do
+      {:ok, settings} -> {:ok, settings}
       {:error, _reason} -> {:error, :invalid_mvp_settings}
     end
   end
@@ -331,6 +331,10 @@ defmodule Mix.Tasks.Mvp.External do
     if receipt["models"] == handoff["models"], do: :ok, else: {:error, :frozen_models_mismatch}
   end
 
+  defp frozen_checks_match(settings, handoff) do
+    if settings.checks == handoff["checks"], do: :ok, else: {:error, :frozen_checks_mismatch}
+  end
+
   defp fetch_frozen_issue(handoff, tracker_settings, opts) do
     fetch_issue =
       Keyword.get(opts, :fetch_issue, fn issue_id, tracker, request_fun ->
@@ -407,7 +411,7 @@ defmodule Mix.Tasks.Mvp.External do
   end
 
   defp resolve_current_models(issue, mvp_settings, tracker_settings, opts) do
-    resolve = Keyword.get(opts, :resolve_models, &Intake.resolve/3)
+    resolve = Keyword.get(opts, :resolve_models, &Intake.resolve_claimed/3)
     request_fun = Keyword.get(opts, :request_fun)
     intake_opts = [tracker_settings: tracker_settings] |> maybe_put(:request_fun, request_fun)
 

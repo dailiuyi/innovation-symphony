@@ -91,7 +91,7 @@ run_bounded_prep() {
   [[ $status -eq 0 && $prep_clean == true ]]
 }
 supervisor() {
-  local workspace= scratch= private= cg= toolchain= codex= scripts= deps= baseline= evidence= disk= timeout_s= host_netns= read_only=false
+  local workspace= scratch= private= cg= toolchain= codex= scripts= deps= baseline= evidence= disk= timeout_s= cpus= pids= schedulers= host_netns= read_only=false
   while (($#)); do
     case "$1" in
       --workspace) workspace=$2; shift 2;; --scratch-root) scratch=$2; shift 2;; --private) private=$2; shift 2;;
@@ -103,6 +103,11 @@ supervisor() {
       --) shift; break;; *) log "invalid supervisor argument: $1"; return 2;;
     esac
   done
+  # Erlang schedulers are OS threads charged to pids.max. Reserve capacity
+  # for the launcher, VM auxiliary threads and nested test subprocesses.
+  schedulers=$((pids / 32))
+  ((schedulers >= 1)) || schedulers=1
+  ((schedulers <= cpus)) || schedulers=$cpus
   local started ended pid code=125 clean=false exported=false outcome=failed
   local deadline_tick prep_status=125 prep_clean=false remaining
   started=$(date +%s)
@@ -226,7 +231,9 @@ PYRELAY
     --setenv PATH /opt/toolchain/data/installs/elixir/1.19.5-otp-28/bin:/opt/toolchain/data/installs/erlang/28.5/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
     --setenv MIX_HOME /home/coder/.mix --setenv MIX_ARCHIVES /opt/toolchain/data/installs/elixir/1.19.5-otp-28/.mix/archives
     --setenv MIX_REBAR3 /opt/toolchain/mix/elixir/1-19-otp-28/rebar3 --setenv HEX_HOME /opt/toolchain/hex --setenv TMPDIR /tmp
-    --setenv SYMPHONY_CHECK_CPUS "$cpus" --setenv SYMPHONY_CHECK_PIDS "$pids" --setenv ERL_FLAGS "+S $((cpus < pids / 32 ? cpus : (pids / 32 > 0 ? pids / 32 : 1))):$((cpus < pids / 32 ? cpus : (pids / 32 > 0 ? pids / 32 : 1))) +SDcpu 1:1 +SDio 1" --setenv LANG C.UTF-8 --setenv LC_ALL C.UTF-8 --setenv TERM dumb --setenv CI 1 --setenv HEX_OFFLINE 1
+    --setenv SYMPHONY_CHECK_CPUS "$cpus" --setenv SYMPHONY_CHECK_PIDS "$pids"
+    --setenv ERL_FLAGS "+S ${schedulers}:${schedulers} +SDcpu 1:1 +SDio 1 +SP 100:100 +SDPcpu 100:100"
+    --setenv LANG C.UTF-8 --setenv LC_ALL C.UTF-8 --setenv TERM dumb --setenv CI 1 --setenv HEX_OFFLINE 1
     --setenv GIT_CONFIG_NOSYSTEM 1 --setenv GIT_CONFIG_GLOBAL /dev/null --chdir /workspace)
   # OTP and trusted PLTs retain their installation prefix; expose the same
   # already-approved read-only toolchain there without mounting its parents.
