@@ -174,3 +174,42 @@ format、specs、Credo、全量覆盖测试、Dialyzer 和 escript build 均通�
 修改预期或放宽检查。本轮 3 项 Python 模型管理 API 测试及 gjs 合成 DOM 交互回归通过，
 不替代完整 View 验收。检查输出位于 `/tmp/gh16-repair-view-check/`，入口诊断位于
 `/tmp/gh16-repair-entrypoint.log`；缺失的离线依赖须由执行环境提供。
+
+## 本次冻结基线失败接续
+
+接续依据为控制器 `/evidence/round-2/check-2.log`：冻结 baseline 在 `umask=077`
+下运行，原权限篡改用例的 `chmod(0600)` 没有改变原本就是 0600 的文件。
+本次保留既有 GH-16 实现、生产恢复校验、只读基线及全部检查政策，仅扩展候选的
+回归用例：显式创建 0644／0600 两种原始权限，分别验证内容篡改、双向权限篡改
+拒绝；重复设置原权限仍合法恢复，并核验恢复后的内容和权限。共八个场景，避免
+将正常的无变化操作误判为生产缺陷。没有新增用户决定或修改运行配置。
+
+候选完整门禁使用继承的 `umask=077`；冻结 baseline 用原测试所需的 `umask=022`
+运行，命令为 `umask 022; python3 /opt/symphony/scripts/check_isolated.py baseline`。
+这不修改冻结测试或检查政策，也不能证明原测试在 077 下通过。控制器若继续以
+077 运行原测试，同一夹具假设仍存在，须由控制器提供正确的测试环境。
+
+View 指定 Python 和 Node 路径仍不存在，直接调用均退出 127。系统 Python 的完整
+检查执行 38 项，37 通过、1 错误、0 跳过，仍因缺少 `codex_transcript_viewer`
+退出 1。另行逐一执行八种私有副本入口（根目录／view 目录，默认／TOML／JSON／
+serve），均退出 1，且均报告同一缺失渲染依赖；不是通过。Linux 合成集成中的
+11 项采集回归通过，随后服务渲染同样失败，完整集成退出 1。3 项模型管理 Python
+测试通过，`gjs -m view/tests/model-settings.test.mjs` 合成交互回归通过。固定 HTML
+比较、Node 轮次测试和真实浏览器／窄屏验证未执行；没有替代渲染器、安装依赖或
+弱化门槛。输出分别位于 `/tmp/gh16-current-view-check/` 和
+`/tmp/gh16-current-view-entrypoints/`。
+
+本次 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0，格式、规格、
+Credo、覆盖测试、Dialyzer 和 escript build 全部通过。799 项测试中 793 通过、
+0 失败、6 个既有真实外部 E2E 跳过、0 排除，覆盖率 100%；扩展后的八场景权限
+回归通过。证据目录为 `.check-evidence/candidate-gbb0c6dv/`，`policy_changes: []`。
+这些结果针对本次未提交工作区，不将检查记录中的原 Git HEAD 当作包含本次改动的
+已提交候选身份；最终候选绑定由控制器完成。
+
+本次 `umask 022; python3 /opt/symphony/scripts/check_isolated.py baseline` 退出 0：
+789 项中 783 通过、0 失败、6 个既有外部 E2E 跳过、0 排除；原权限恢复用例通过。
+证据目录为 `.check-evidence/baseline-1k4k6os6/`，`policy_changes: []`。
+`git diff --check` 通过；源码改动仅为该权限回归与本节记录，生成的本地检查证据另存。
+
+真实账号、批准内网部署、最终候选的控制器正式验证及独立 Review 保持外部停点。
+本次仅保存仓库内测试与本记录，未提交、发布、合并、安装、部署或升级服务。
