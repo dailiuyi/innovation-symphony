@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Mvp.{Commands, Executor, Receipt, Recovery}
+  alias SymphonyElixir.ModelServicesFixture, as: ServiceFixture
+  alias SymphonyElixir.Mvp.{Commands, ExecutionSandbox, Executor, ModelCatalog, ModelServices, Receipt, Recovery}
 
   @url "https://github.com/owner/repo/pull/42"
 
@@ -404,6 +405,282 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
     refute File.exists?(context.receipt <> ".evidence/operator-rechecks")
   end
 
+  test "rootless environment failure retries every frozen check on the same candidate without spending rework" do
+    context = context!()
+    checks = [["python3", "scripts/check_candidate.py"], ["python3", "scripts/check_baseline.py"]]
+    outcomes = [:passed, :environment, :passed, :passed]
+    policy = %{"max_rework" => 1, "stage_attempts" => 2}
+    assert {:ok, @url} = rootless_run(context, outcomes, policy, checks: checks)
+
+    [first, failed, retry, retried_baseline] = calls(context, :formal_check)
+    assert first.sha == retry.sha
+    assert Enum.uniq(Enum.map(calls(context, :formal_check), & &1.sha)) == [first.sha]
+    assert first.started_at == retry.started_at
+    assert first.agent_attempts == retry.agent_attempts
+    assert first.command == retry.command
+    assert failed.command == retried_baseline.command
+    assert length(calls(context, :coder)) == 1
+    assert calls(context, :diagnosis) == []
+    assert length(calls(context, :reviewer)) == 1
+    assert length(calls(context, :publish)) == 1
+    data = Receipt.read(context.receipt)
+    assert data["rework_count"] == 0
+    assert data["stage_retries"] == 1
+    assert data["recovery"]["agent_attempts"] == 2
+    assert length(data["rounds"]) == 1
+    assert data["candidate_sha"] == first.sha
+    evidence = hd(data["rounds"])["evidence"]
+    failed = Path.join(evidence, "check-2.json") |> File.read!() |> Jason.decode!()
+    assert failed["category"] == "environment"
+    assert failed["candidate_sha"] == first.sha
+    assert failed["error"] =~ "sandbox_environment_failure"
+    assert File.regular?(Path.join(evidence, "check-attempt-2/check-1.json"))
+    assert File.regular?(Path.join(evidence, "check-attempt-2/check-2.json"))
+    assert File.read!(Path.join(context.receipt <> ".evidence/baseline", "source.txt")) == "base source\n"
+  end
+
+  test "rootless environment stage retries stop at their own bound without dispatching another coder" do
+    context = context!()
+
+    assert {:error, :mvp_recovery_stage_exhausted} =
+             rootless_run(context, [:environment, :environment, :passed], %{"max_rework" => 1, "stage_attempts" => 2})
+
+    [first, retry] = calls(context, :formal_check)
+    assert first.sha == retry.sha
+    assert length(calls(context, :coder)) == 1
+    assert calls(context, :diagnosis) == []
+    assert calls(context, :reviewer) == []
+    assert calls(context, :publish) == []
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "blocked"
+    assert data["reason"] == ":mvp_recovery_stage_exhausted"
+    assert data["rework_count"] == 0
+    assert data["stage_retries"] == 1
+    assert data["recovery"]["agent_attempts"] == 1
+    assert data["check_failure"]["category"] == "environment"
+    refute File.exists?(context.receipt <> ".evidence/round-1/check-attempt-3")
+  end
+
+  test "rootless export and integrity failures preserve evidence and stop before diagnosis or recoding" do
+    for {outcome, category, reason} <- [
+          {:export, "export", "sandbox_export_incomplete"},
+          {:cleanup, "integrity", "sandbox_cleanup_incomplete"},
+          {:exit_mismatch, "integrity", "sandbox_check_exit_mismatch"}
+        ] do
+      context = context!()
+      assert {:error, {:mvp_trusted_failure_requires_attention, failure}} = rootless_run(context, [outcome])
+      assert failure["category"] == category
+      assert failure["reason"] == reason
+      assert failure["retryable"] == false
+      assert length(calls(context, :formal_check)) == 1
+      assert length(calls(context, :coder)) == 1
+      assert calls(context, :diagnosis) == []
+      assert calls(context, :reviewer) == []
+      assert calls(context, :publish) == []
+      data = Receipt.read(context.receipt)
+      assert data["status"] == "blocked"
+      assert data["rework_count"] == 0
+      assert data["recovery"]["agent_attempts"] == 1
+      assert data["check_failure"]["candidate_sha"] == data["candidate_sha"]
+      assert File.regular?(data["check_failure"]["log_path"])
+      assert File.regular?(Path.rootname(data["check_failure"]["log_path"]) <> ".json")
+      refute File.exists?(context.receipt <> ".evidence/round-1/check-attempt-2")
+    end
+  end
+
+  test "rootless unknown failures permit only read-only diagnosis and cannot be downgraded to code repair" do
+    context = context!()
+    assert {:error, :mvp_trusted_failure_requires_attention} = rootless_run(context, [:unknown], %{}, diagnosis: "repair_code")
+
+    [diagnosis] = calls(context, :diagnosis)
+    assert diagnosis.read_only
+    assert diagnosis.prompt =~ "Do not modify files"
+    assert diagnosis.prompt =~ "\"category\":\"unknown\""
+    assert diagnosis.sha == hd(calls(context, :formal_check)).sha
+    assert length(calls(context, :coder)) == 1
+    assert calls(context, :reviewer) == []
+    assert calls(context, :publish) == []
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "blocked"
+    assert data["check_failure"]["category"] == "unknown"
+    assert data["recovery"]["agent_attempts"] == 2
+    assert data["rework_count"] == 0
+    assert File.read!(Path.join(context.workspace, "candidate.txt")) == "1"
+  end
+
+  test "rootless unknown failure diagnosis can repeat trusted checks without changing the candidate" do
+    context = context!()
+    assert {:ok, @url} = rootless_run(context, [:unknown, :passed], %{}, diagnosis: "retry_stage")
+
+    [first, retry] = calls(context, :formal_check)
+    assert first.sha == retry.sha
+    assert first.command == retry.command
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :diagnosis)) == 1
+    assert hd(calls(context, :diagnosis)).read_only
+    assert length(calls(context, :reviewer)) == 1
+    assert hd(calls(context, :reviewer)).sha == first.sha
+    assert Receipt.read(context.receipt)["rework_count"] == 0
+    assert Receipt.read(context.receipt)["stage_retries"] == 1
+    assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] == 3
+  end
+
+  test "finish preserves external waiting when enabled profiles omit the blocked acceptance" do
+    context = context!()
+    profiles = %{"another acceptance" => %{"kind" => "linux", "runner_sha256" => String.duplicate("a", 64), "timeout_ms" => 60_000}}
+    behavior = [external_review: true, profiles: profiles]
+    assert {:error, {:mvp_awaiting_external, handoff_id}} = rootless_run(context, [:passed], %{}, behavior)
+    assert_external_wait_preserved(context, handoff_id)
+    assert Receipt.read(context.receipt)["execution_sandbox"]["acceptance_profiles"] == profiles
+  end
+
+  test "finish with no acceptance profiles leaves the same reviewed candidate awaiting external evidence" do
+    context = context!()
+    assert {:error, {:mvp_awaiting_external, handoff_id}} = rootless_run(context, [:passed], %{}, external_review: true)
+    assert_external_wait_preserved(context, handoff_id)
+    assert Receipt.read(context.receipt)["execution_sandbox"]["acceptance_profiles"] == %{}
+  end
+
+  defp assert_external_wait_preserved(context, handoff_id) do
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_external"
+    assert data["external_handoff"]["id"] == handoff_id
+    assert data["external_handoff"]["candidate_sha"] == data["candidate_sha"]
+    assert data["candidate_sha"] == hd(calls(context, :formal_check)).sha
+    assert data["rework_count"] == 0
+    assert data["recovery"]["agent_attempts"] == 2
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :reviewer)) == 1
+    assert calls(context, :diagnosis) == []
+    assert calls(context, :publish) == []
+    assert length(calls(context, :formal_check)) == 1
+    refute File.exists?(context.receipt <> ".evidence/acceptance-jobs")
+    assert File.regular?(List.last(data["rounds"])["review_path"])
+  end
+
+  defp rootless_run(context, outcomes, policy \\ %{}, behavior \\ []) do
+    previous = Map.new(~w(GH12_CODER_KEY GH12_REVIEWER_KEY), &{&1, System.get_env(&1)})
+    on_exit(fn -> Enum.each(previous, &restore_environment/1) end)
+    for name <- Map.keys(previous), do: System.put_env(name, "synthetic-recovery-account")
+    trusted = Path.join(context.root, "trusted")
+    File.mkdir_p!(Path.join(trusted, "scripts"))
+    File.write!(Path.join(trusted, "scripts/execution_sandbox.sh"), "printf '%s' '{\"status\":\"ready\",\"backend\":\"rootless\"}'\n")
+
+    {:ok, sandbox} =
+      ExecutionSandbox.settings(%{
+        "enabled" => true,
+        "backend" => "rootless",
+        "profile" => "rootless-open-v1",
+        "network" => "public-egress-v1",
+        "image" => "fixture@sha256:" <> String.duplicate("a", 64),
+        "worker" => "fixture-worker",
+        "root" => Path.join(context.root, "sandboxes"),
+        "toolchain" => Path.join(trusted, "toolchain"),
+        "codex" => Path.join(trusted, "codex"),
+        "dependencies" => Path.join(trusted, "dependencies"),
+        "trusted_root" => trusted,
+        "auth_home" => Path.join(context.root, "auth"),
+        "acceptance_profiles" => Keyword.get(behavior, :profiles, %{})
+      })
+
+    authority = ServiceFixture.settings(Path.join(context.root, "authority"))
+    checks = Keyword.get(behavior, :checks, [["python3", "scripts/check_candidate.py"]])
+    config = Map.merge(authority, settings(checks, policy)) |> Map.put(:sandbox, sandbox) |> Map.put(:model_command, sandbox["codex"] <> " app-server")
+
+    registry =
+      Enum.reduce([{:coder, "coding"}, {:reviewer, "reviewing"}], config.model_services, fn {role, id}, registry ->
+        {:ok, service} = ModelServices.snapshot(%{config | model_services: registry}, id, role, "fixture")
+        {:ok, registry} = ModelCatalog.attest(registry, service, ServiceFixture.proof(role))
+        registry
+      end)
+
+    config = %{config | model_services: registry}
+    ServiceFixture.write_authority!(config)
+
+    services =
+      Map.new([{:coder, "coding"}, {:reviewer, "reviewing"}], fn {role, id} ->
+        {:ok, service} = ModelServices.snapshot(config, id, role, "fixture")
+        {Atom.to_string(role), service}
+      end)
+
+    selected = %{coder: "gpt-test", reviewer: "gpt-test", services: services}
+    opts = options(context, behavior)
+    agent = rootless_agent(context, opts[:agent])
+
+    command = fn argv, workspace, _timeout, log_path ->
+      scratch = argv |> Enum.drop_while(&(&1 != "--scratch-root")) |> Enum.at(1)
+      count = length(calls(context, :formal_check))
+      outcome = Enum.fetch!(outcomes, count)
+      sha = Commands.git!(["rev-parse", "HEAD"], workspace)
+      data = Receipt.read(context.receipt)
+      binding = %{sha: sha, command: Enum.drop_while(argv, &(&1 != "--"))}
+      resources = %{started_at: data["recovery"]["started_at"], agent_attempts: data["recovery"]["agent_attempts"]}
+      record(context, :formal_check, Map.merge(binding, resources))
+      status = if outcome in [:environment, :unknown, :exit_mismatch], do: 1, else: 0
+      sandbox_result!(scratch, outcome, status)
+      evidence = Path.join(scratch, "export/.check-evidence")
+      File.mkdir_p!(evidence)
+      category = if outcome == :environment, do: "environment", else: "unknown"
+      File.write!(Path.join(evidence, "result.json"), Jason.encode!(%{"identity" => %{"candidate_sha" => sha}, "failure_category" => category, "outcome" => status}))
+      File.write!(log_path, "retained #{outcome} check evidence for #{sha}\n")
+      {:ok, status}
+    end
+
+    opts = opts |> Keyword.put(:sandbox_agent_run, agent) |> Keyword.put(:sandbox_command_run, command) |> Keyword.put(:sandbox_cleanup_timeout_ms, 1)
+    Executor.run(context.workspace, context.issue, config, selected, context.receipt, opts)
+  end
+
+  defp restore_environment({name, nil}), do: System.delete_env(name)
+  defp restore_environment({name, value}), do: System.put_env(name, value)
+
+  defp rootless_agent(context, original) do
+    fn workspace, prompt, issue, opts ->
+      scratch = Path.join(Path.dirname(opts[:execution_environment].codex_home), "sandbox")
+      sandbox_result!(scratch, :passed, 0)
+
+      if agent_role(opts) == :coder,
+        do: isolated_coder(context, workspace, prompt, opts, scratch),
+        else: original.(workspace, prompt, issue, opts)
+    end
+  end
+
+  defp isolated_coder(context, workspace, prompt, opts, scratch) do
+    sha = Commands.git!(["rev-parse", "HEAD"], workspace)
+    record(context, :coder, %{sha: sha, model: opts[:model], prompt: prompt, read_only: opts[:read_only]})
+    export = Path.join(scratch, "export")
+    File.mkdir_p!(export)
+    for name <- File.ls!(workspace), name != ".git", do: File.cp_r!(Path.join(workspace, name), Path.join(export, name))
+    File.write!(Path.join(export, "candidate.txt"), "1")
+    opts[:on_message].(%{usage: %{input_tokens: 10, output_tokens: 5, total_tokens: 15}})
+    {:ok, %{output_text: "Implemented isolated candidate"}}
+  end
+
+  defp sandbox_result!(scratch, outcome, status) do
+    File.mkdir_p!(scratch)
+
+    File.write!(
+      Path.join(scratch, "result.json"),
+      Jason.encode!(%{
+        "cleanup_complete" => outcome != :cleanup,
+        "export_complete" => outcome != :export,
+        "scratch_root" => scratch,
+        "exit_status" => if(outcome == :exit_mismatch, do: 0, else: status)
+      })
+    )
+  end
+
+  defp external_review do
+    Map.put(review(false), "blockers", [
+      %{
+        "acceptance" => "Meet the checked candidate requirement",
+        "kind" => "external_condition",
+        "reason" => "The required signed external proof is unavailable",
+        "required_evidence" => "Signed proof bound to this candidate SHA",
+        "handoff" => "Authorized operator supplies the signed proof"
+      }
+    ])
+  end
+
   defp context! do
     root = Path.join(System.tmp_dir!(), "recovery-executor-#{System.unique_integer([:positive])}")
     workspace = Path.join(root, "workspace")
@@ -474,7 +751,8 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
 
           :reviewer ->
             approved = Keyword.get(behavior, :review, fn _ -> true end).(length(calls(context, :reviewer)))
-            {:ok, %{output_text: Jason.encode!(review(approved))}}
+            result = if Keyword.get(behavior, :external_review, false), do: external_review(), else: review(approved)
+            {:ok, %{output_text: Jason.encode!(result)}}
 
           :diagnosis ->
             diagnosis = %{"action" => Keyword.get(behavior, :diagnosis, "repair_code"), "summary" => "Investigate technical failure", "steps" => ["Read logs and fix the underlying cause"]}

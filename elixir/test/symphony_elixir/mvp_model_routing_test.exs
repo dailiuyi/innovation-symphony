@@ -624,6 +624,15 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     end
   end
 
+  test "the pinned Turn protocol rejects missing Turn and unknown protocol versions", c do
+    {:ok, service} = ModelServices.snapshot(c.settings, "reviewing", :reviewer, "fixture")
+    service = Map.put(service, "command", "python3 #{c.binary} #{c.root}/terminal.json no-turn")
+    options = [model: "gpt-test", model_service: service, read_only: true, tools: false]
+    assert {:error, :invalid_turn_completion} = AppServer.run(c.workspace, "test", c.issue, options ++ [turn_protocol: "codex-0.160.0-turn-v1"])
+    assert {:ok, _} = AppServer.run(c.workspace, "test", c.issue, options ++ [turn_protocol: "legacy-fixture-v0"])
+    assert {:error, :unsupported_turn_protocol} = AppServer.run(c.workspace, "test", c.issue, options ++ [turn_protocol: "unknown"])
+  end
+
   test "real Turn errors reject prior valid output and classify server revocation and recoverable errors", c do
     for {mode, category} <- [
           {"401", :model_account_forbidden},
@@ -971,6 +980,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                 elif mode == 'telemetry' and turns == 2: params['actualModel'] = {'invalid': 'gpt-invalid'}
                 if terminal_mode == 'bad-params': params = []
                 elif terminal_mode == 'legacy-error': params = {'error': error}
+                elif terminal_mode == 'no-turn': params = {'threadId': 'thread'}
                 send({'method': 'turn/completed', 'params': params})
     """)
   end

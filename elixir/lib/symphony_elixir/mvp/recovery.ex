@@ -121,7 +121,7 @@ defmodule SymphonyElixir.Mvp.Recovery do
   defp integer_in?(value, range), do: is_integer(value) and value in range
 
   defp failure_identity(%{"kind" => "check"} = feedback),
-    do: {:check, feedback["index"], feedback["exit_status"]}
+    do: {:check, feedback["index"], feedback["exit_status"], feedback["category"], feedback["reason"]}
 
   defp failure_identity(feedback), do: {:review, feedback["summary"], feedback["criteria"]}
 

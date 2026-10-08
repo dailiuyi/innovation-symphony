@@ -15,6 +15,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @wall_deadline_key {__MODULE__, :wall_deadline}
+  @turn_protocol_key {__MODULE__, :turn_protocol}
+  @turn_identity_key {__MODULE__, :turn_identity}
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -182,12 +184,27 @@ defmodule SymphonyElixir.Codex.AppServer do
       service_runtime = Map.get(session, :service_runtime)
       guarded_handler = fn message -> callbacks.on_message.(redact_service_error(message, service_runtime)) end
       guarded = %{callbacks | on_message: guarded_handler}
-      result = start_and_complete_turn(turn_state, guarded, prompt, issue, output_schema)
+      result = with_turn_protocol(Keyword.get(opts, :turn_protocol, "legacy-fixture-v0"), fn -> start_and_complete_turn(turn_state, guarded, prompt, issue, output_schema) end)
       protected_result(result, service_runtime)
     else
       {:error, :invalid_output_schema}
     end
   end
+
+  defp with_turn_protocol(protocol, fun) when protocol in ["legacy-fixture-v0", "codex-0.160.0-turn-v1"] do
+    previous = Process.get(@turn_protocol_key)
+    identity = Process.get(@turn_identity_key)
+    Process.put(@turn_protocol_key, protocol)
+
+    try do
+      fun.()
+    after
+      if is_nil(previous), do: Process.delete(@turn_protocol_key), else: Process.put(@turn_protocol_key, previous)
+      if is_nil(identity), do: Process.delete(@turn_identity_key), else: Process.put(@turn_identity_key, identity)
+    end
+  end
+
+  defp with_turn_protocol(_, _), do: {:error, :unsupported_turn_protocol}
 
   defp turn_tool_executor(true, dynamic_tool_binding, issue, opts) do
     Keyword.get(opts, :tool_executor, fn tool, arguments ->
@@ -221,6 +238,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp complete_started_turn(turn_state, callbacks, issue, turn_id) do
+    Process.put(@turn_identity_key, {turn_state.thread_id, turn_id})
     session_id = "#{turn_state.thread_id}-#{turn_id}"
     Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -843,7 +861,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp handle_decoded_incoming(port, on_message, %{"method" => "turn/completed"} = payload, raw, state) do
-    case completion_outcome(payload) do
+    case checked_completion_outcome(payload) do
       :ok ->
         emit_turn_event(on_message, :turn_completed, payload, raw, port, payload)
         {:ok, state.output_text}
@@ -890,15 +908,35 @@ defmodule SymphonyElixir.Codex.AppServer do
     continue_receive(port, on_message, state)
   end
 
-  defp completion_outcome(payload) when not is_map_key(payload, "params"), do: :ok
+  defp checked_completion_outcome(payload) do
+    case Process.get(@turn_protocol_key, "legacy-fixture-v0") do
+      "codex-0.160.0-turn-v1" ->
+        expected = Process.get(@turn_identity_key)
+        actual = {get_in(payload, ["params", "threadId"]), get_in(payload, ["params", "turn", "id"])}
+        if actual == expected, do: completion_outcome(payload), else: {:error, :invalid_turn_completion}
+
+      _ ->
+        completion_outcome(payload)
+    end
+  rescue
+    _ -> {:error, :invalid_turn_completion}
+  end
+
+  defp completion_outcome(payload) when not is_map_key(payload, "params"), do: missing_turn_outcome()
   defp completion_outcome(%{"params" => %{"turn" => turn}}), do: turn_outcome(turn)
 
   defp completion_outcome(%{"params" => %{"error" => error}}) when not is_nil(error),
     do: {:error, {:turn_failed, error}}
 
   # Older versions omit the entire Turn; explicit null/malformed Turns fail closed.
-  defp completion_outcome(%{"params" => params}) when is_map(params), do: :ok
+  defp completion_outcome(%{"params" => params}) when is_map(params), do: missing_turn_outcome()
   defp completion_outcome(_), do: {:error, :invalid_turn_completion}
+
+  defp missing_turn_outcome do
+    if Process.get(@turn_protocol_key, "legacy-fixture-v0") == "legacy-fixture-v0",
+      do: :ok,
+      else: {:error, :invalid_turn_completion}
+  end
 
   defp turn_outcome(%{"status" => "completed", "error" => error}) when not is_nil(error),
     do: {:error, {:turn_failed, error}}

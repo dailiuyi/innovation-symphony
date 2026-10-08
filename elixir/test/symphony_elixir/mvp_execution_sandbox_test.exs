@@ -3,7 +3,7 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
 
   alias SymphonyElixir.ModelServicesFixture, as: ModelFixture
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
-  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelServices}
+  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelCatalog, ModelServices}
 
   test "host hashing is chunked and rejects oversized source or aggregate export before import" do
     context = context!()
@@ -653,6 +653,276 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     end
   end
 
+  test "rootless profile is frozen, requires a pinned image and keeps old defaults" do
+    context = context!()
+    config = context.settings.sandbox |> Map.delete(:enabled) |> Map.put("enabled", true) |> Map.drop(~w(disk_mb pids))
+
+    rootless =
+      Map.merge(config, %{
+        "backend" => "rootless",
+        "profile" => "rootless-open-v1",
+        "network" => "public-egress-v1",
+        "image" => "example/image@sha256:" <> String.duplicate("a", 64),
+        "worker" => "symphony-worker"
+      })
+
+    assert {:ok, settings} = ExecutionSandbox.settings(rootless)
+    assert settings["disk_mb"] == 20_480 and settings["pids"] == 512
+    assert {:ok, legacy} = ExecutionSandbox.settings(config)
+    assert legacy["disk_mb"] == 8192 and legacy["pids"] == 256
+
+    for {key, value} <- [
+          {"backend", "host"},
+          {"image", "ubuntu:latest"},
+          {"worker", "root"},
+          {"environment_recipe", "../escape"},
+          {"environment_recipe", 123},
+          {"network", "host"},
+          {"acceptance_profiles", %{"x" => %{"command" => "arbitrary"}}}
+        ] do
+      assert {:error, :invalid_execution_sandbox} = ExecutionSandbox.settings(Map.put(rootless, key, value))
+    end
+  end
+
+  test "completed model with rejected export reports export failure independently of cleanup" do
+    context = context!()
+
+    agent = fn _, _, _, options ->
+      scratch = scratch(options)
+      result!(scratch)
+      path = Path.join(scratch, "result.json")
+      report = path |> File.read!() |> Jason.decode!() |> Map.put("export_complete", false)
+      File.write!(path, Jason.encode!(report))
+      {:ok, %{output_text: "completed"}}
+    end
+
+    assert {:error, :sandbox_export_incomplete} = ExecutionSandbox.agent(with_agent(context, agent), :coder, "task", [])
+    assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+  end
+
+  test "rootless preflight requires a trusted ready report from the actual launcher subprocess" do
+    context = rootless_context!()
+    marker = Path.join(context.root, "preflight-argv")
+
+    for {output, status, expected} <- [
+          {~s({"status":"ready","backend":"rootless"}), 0, :ok},
+          {~s({"status":"blocked","backend":"rootless"}), 0, {:error, :sandbox_preflight_invalid}},
+          {~s({"status":"ready","backend":"bubblewrap"}), 0, {:error, :sandbox_preflight_invalid}},
+          {"not JSON", 0, :decode_error},
+          {"rootless unavailable", 7, {:error, {:command_failed, 7, "rootless unavailable"}}}
+        ] do
+      launcher = Path.join(context.settings.sandbox["trusted_root"], "scripts/execution_sandbox.sh")
+      File.write!(launcher, "printf '%s\\n' \"$@\" > '#{marker}'\nprintf '%s' '#{output}'\nexit #{status}\n")
+      result = ExecutionSandbox.preflight(context)
+
+      if expected == :decode_error do
+        assert {:error, %Jason.DecodeError{}} = result
+      else
+        assert result == expected
+      end
+
+      args = marker |> File.read!() |> String.split("\n", trim: true)
+      assert argv_value(args, "--preflight") == "true"
+      assert argv_value(args, "--backend") == "rootless"
+      assert Enum.take(args, -5) == ["--", "/opt/codex", "exec-server", "--listen", "stdio"]
+      assert argv_value(args, "--workspace") == context.workspace
+      assert argv_value(args, "--timeout-seconds") == "120"
+    end
+
+    assert :ok = ExecutionSandbox.preflight(context!())
+  end
+
+  test "preflight refuses unfrozen native role commands before launching or changing model budget" do
+    for command <- ["/trusted/other-codex app-server", "bash /trusted/codex app-server", "/trusted/codex exec-server"] do
+      context = rootless_context!(command)
+      launcher = Path.join(context.settings.sandbox["trusted_root"], "scripts/execution_sandbox.sh")
+      marker = Path.join(context.root, "must-not-launch")
+      File.write!(launcher, "touch '#{marker}'\n")
+      receipt = Path.join(context.root, "receipt.json")
+      raw = Jason.encode!(%{"status" => "coding", "usage" => %{"agent_calls" => 2}})
+      File.write!(receipt, raw)
+      context = Map.put(context, :receipt, receipt)
+
+      assert {:error, :sandbox_native_client_not_frozen} = ExecutionSandbox.preflight(context)
+      refute File.exists?(marker)
+      refute File.exists?(context.settings.sandbox["root"])
+      assert File.read!(receipt) == raw
+    end
+
+    context = rootless_context!() |> Map.delete(:services) |> Map.delete(:models)
+    assert {:error, :sandbox_native_client_not_frozen} = ExecutionSandbox.preflight(context)
+    refute File.exists?(context.settings.sandbox["root"])
+  end
+
+  test "formal failure classification binds environment reports to the exact candidate and resource events" do
+    for {report, resource, expected} <- [
+          {:environment, %{}, {:error, {:sandbox_environment_failure, 10}}},
+          {:wrong_candidate, %{}, {:ok, 10}},
+          {:code, %{}, {:ok, 10}},
+          {:passed, %{}, {:ok, 10}},
+          {:malformed, %{}, {:ok, 10}},
+          {:array, %{}, {:ok, 10}},
+          {:number, %{}, {:ok, 10}},
+          {:null, %{}, {:ok, 10}},
+          {:invalid_identity, %{}, {:ok, 10}},
+          {:missing_outcome, %{}, {:ok, 10}},
+          {:invalid_outcome, %{}, {:ok, 10}},
+          {:absent, [], {:ok, 10}},
+          {:absent, %{"memory" => 42, "pids" => []}, {:ok, 10}},
+          {:absent, %{"memory" => 42, "pids" => %{"max" => 1}}, {:error, {:sandbox_environment_failure, 10}}},
+          {:absent, %{"memory" => %{"oom_kill" => "1"}}, {:ok, 10}},
+          {:absent, %{"memory" => %{"oom_kill" => 1}}, {:error, {:sandbox_environment_failure, 10}}},
+          {:absent, %{"pids" => %{"max" => 1}}, {:error, {:sandbox_environment_failure, 10}}},
+          {:absent, %{"memory" => %{"oom_kill" => 0}, "pids" => %{"max" => 0}}, {:ok, 10}}
+        ] do
+      context = git_context!()
+      log = Path.join(context.root, "classification.log")
+
+      command = fn argv, _, _, _ ->
+        sha = argv_value(argv, "--candidate-sha")
+        scratch = argv_value(argv, "--scratch-root")
+        body = %{"identity" => %{"candidate_sha" => sha}, "failure_category" => "environment", "outcome" => 10}
+
+        files =
+          case report do
+            :environment -> %{".check-evidence/gate/result.json" => Jason.encode!(body)}
+            :wrong_candidate -> %{".check-evidence/gate/result.json" => Jason.encode!(put_in(body, ["identity", "candidate_sha"], String.duplicate("f", 40)))}
+            :code -> %{".check-evidence/gate/result.json" => Jason.encode!(Map.put(body, "failure_category", "code"))}
+            :passed -> %{".check-evidence/gate/result.json" => Jason.encode!(Map.put(body, "outcome", 0))}
+            :malformed -> %{".check-evidence/gate/result.json" => "broken JSON"}
+            :array -> %{".check-evidence/gate/result.json" => "[]"}
+            :number -> %{".check-evidence/gate/result.json" => "42"}
+            :null -> %{".check-evidence/gate/result.json" => "null"}
+            :invalid_identity -> %{".check-evidence/gate/result.json" => Jason.encode!(Map.put(body, "identity", 42))}
+            :missing_outcome -> %{".check-evidence/gate/result.json" => Jason.encode!(Map.delete(body, "outcome"))}
+            :invalid_outcome -> %{".check-evidence/gate/result.json" => Jason.encode!(Map.put(body, "outcome", "10"))}
+            :absent -> %{".check-evidence/check.log" => "failed check"}
+          end
+
+        export!(scratch, files)
+        result!(scratch, 10)
+        path = Path.join(scratch, "result.json")
+        File.write!(path, Jason.encode!(Map.put(Jason.decode!(File.read!(path)), "resource_events", resource)))
+        {:ok, 10}
+      end
+
+      context = put_in(context.opts, sandbox_command_run: command, sandbox_cleanup_timeout_ms: 1)
+      assert ExecutionSandbox.check(context, ["python3", "/trusted/check_candidate.py"], 100, log) == expected
+      assert File.dir?(Path.rootname(log) <> "-details")
+
+      if report in [:array, :number, :null] do
+        assert File.read!(Path.rootname(log) <> "-details/gate/result.json") == %{array: "[]", number: "42", null: "null"}[report]
+      end
+
+      assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+    end
+  end
+
+  test "import recovery rejects malformed proof, missing originals, nonregular files and audit mismatch without changing the scene" do
+    for failure <- [:receipt_json, :journal_json, :proof_json, :missing_original, :directory, :wrong_digest, :audit] do
+      {context, transaction, digest, audit} = failed_import!()
+
+      case failure do
+        :receipt_json ->
+          File.write!(context.receipt, "broken JSON")
+
+        :journal_json ->
+          File.write!(Path.join(transaction, "journal.json"), "broken JSON")
+
+        :proof_json ->
+          journal = Jason.decode!(File.read!(Path.join(transaction, "journal.json")))
+          File.write!(Path.join(Path.dirname(journal["export"]), "result.json"), "broken JSON")
+
+        :missing_original ->
+          File.rm!(Path.join(context.workspace, "source.txt"))
+
+        :directory ->
+          File.rm!(Path.join(context.workspace, "source.txt"))
+          File.mkdir!(Path.join(context.workspace, "source.txt"))
+
+        _ ->
+          :ok
+      end
+
+      receipt_before = File.read!(context.receipt)
+      journal_before = File.read!(Path.join(transaction, "journal.json"))
+      source_before = File.lstat(Path.join(context.workspace, "source.txt"))
+
+      digest =
+        case failure do
+          :wrong_digest -> String.duplicate("0", 64)
+          :journal_json -> :crypto.hash(:sha256, journal_before) |> Base.encode16(case: :lower)
+          _ -> digest
+        end
+
+      audit = if failure == :audit, do: Map.put(audit, "predecessor", "missing-predecessor"), else: audit
+
+      assert {:error, :sandbox_import_recovery_required} = ExecutionSandbox.recover_import(context, digest, audit)
+      assert File.read!(context.receipt) == receipt_before
+      assert File.read!(Path.join(transaction, "journal.json")) == journal_before
+      assert File.lstat(Path.join(context.workspace, "source.txt")) == source_before
+      refute File.exists?(Path.join(context.evidence, "operator-rechecks/restore"))
+      refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+    end
+  end
+
+  test "a verified failed import may retain missing staged additions and archive a complete rollback" do
+    {context, transaction, digest, audit} = failed_import!()
+    refute File.exists?(Path.join(context.workspace, "added.txt"))
+    assert :ok = ExecutionSandbox.recover_import(context, digest, audit)
+    refute File.exists?(transaction)
+    assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+    refute File.exists?(Path.join(context.workspace, "added.txt"))
+    archived = Path.join(context.evidence, "operator-rechecks/restore/import-transaction/journal.json")
+    assert File.regular?(archived)
+    assert File.regular?(Path.join(context.evidence, "operator-rechecks/restore/completion.json"))
+  end
+
+  test "trusted import recovery refuses altered state and closes a verified rollback under audit" do
+    for tampered <- [false, :content, :mode] do
+      context = context!()
+
+      agent = fn _, _, _, options ->
+        export!(scratch(options), %{"source.txt" => "new"})
+        result!(scratch(options))
+        {:ok, %{}}
+      end
+
+      operation = fn _, _, _ -> {:error, :enospc} end
+      context = context |> with_agent(agent) |> update_in([:opts], &Keyword.put(&1, :sandbox_import_file, operation))
+      assert {:error, {:sandbox_import_failed, transaction, _, :ok}} = ExecutionSandbox.agent(context, :coder, "task", [])
+      receipt = Path.join(context.root, "receipt.json")
+      File.write!(receipt, Jason.encode!(%{"status" => "blocked", "rounds" => [%{"evidence" => Path.join(context.evidence, "round-1")}]}))
+      context = context |> Map.put(:receipt, receipt) |> put_in([:settings, :checks], [["true"]])
+      digest = :crypto.hash(:sha256, File.read!(Path.join(transaction, "journal.json"))) |> Base.encode16(case: :lower)
+
+      audit = %{
+        "id" => "restore",
+        "authorization" => "Authorized recovery",
+        "runtime_version" => String.duplicate("a", 40),
+        "command" => ["recover_import"],
+        "predecessor" => nil,
+        "legacy_closures" => []
+      }
+
+      if tampered do
+        case tampered do
+          :content -> File.write!(Path.join(context.workspace, "source.txt"), "another actor")
+          :mode -> File.chmod!(Path.join(context.workspace, "source.txt"), 0o600)
+        end
+
+        assert {:error, :sandbox_import_recovery_required} = ExecutionSandbox.recover_import(context, digest, audit)
+        assert File.dir?(transaction)
+        refute File.exists?(Path.join(context.evidence, "operator-rechecks/restore"))
+      else
+        assert :ok = ExecutionSandbox.recover_import(context, digest, audit)
+        refute File.exists?(transaction)
+        assert File.regular?(Path.join(context.evidence, "operator-rechecks/restore/completion.json"))
+        assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+      end
+    end
+  end
+
   defp context! do
     root = Path.join(System.tmp_dir!(), "symphony-execution-sandbox-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(root) end)
@@ -684,6 +954,78 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       settings: %{sandbox: sandbox, check_timeout_ms: 100},
       opts: [sandbox_cleanup_timeout_ms: 1]
     }
+  end
+
+  defp rootless_context!(command \\ nil) do
+    context = context!()
+
+    for name <- ["GH12_CODER_KEY", "GH12_REVIEWER_KEY"] do
+      previous = System.get_env(name)
+      System.put_env(name, "synthetic-preflight-account")
+      on_exit(fn -> restore_env(name, previous) end)
+    end
+
+    trusted = Path.join(context.root, "trusted")
+    File.mkdir_p!(Path.join(trusted, "scripts"))
+
+    config =
+      Map.merge(context.settings.sandbox, %{
+        "backend" => "rootless",
+        "profile" => "rootless-open-v1",
+        "network" => "public-egress-v1",
+        "image" => "fixture@sha256:" <> String.duplicate("a", 64),
+        "worker" => "fixture-worker",
+        "trusted_root" => trusted,
+        "codex" => Path.join(trusted, "codex")
+      })
+
+    settings = ModelFixture.settings(Path.join(context.root, "authority")) |> Map.put(:sandbox, config) |> Map.put(:model_command, command || config["codex"] <> " app-server")
+
+    registry =
+      Enum.reduce([{:coder, "coding"}, {:reviewer, "reviewing"}], settings.model_services, fn {role, id}, registry ->
+        {:ok, service} = ModelServices.snapshot(%{settings | model_services: registry}, id, role, "fixture")
+        {:ok, registry} = ModelCatalog.attest(registry, service, ModelFixture.proof(role))
+        registry
+      end)
+
+    settings = %{settings | model_services: registry}
+    ModelFixture.write_authority!(settings)
+
+    services =
+      Map.new([{:coder, "coding"}, {:reviewer, "reviewing"}], fn {role, id} ->
+        {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+        {Atom.to_string(role), service}
+      end)
+
+    %{context | settings: settings} |> Map.put(:services, services)
+  end
+
+  defp failed_import! do
+    context = context!()
+
+    agent = fn _, _, _, options ->
+      export!(scratch(options), %{"source.txt" => "new", "added.txt" => "new addition"})
+      result!(scratch(options))
+      {:ok, %{}}
+    end
+
+    context = context |> with_agent(agent) |> update_in([:opts], &Keyword.put(&1, :sandbox_import_file, fn _, _, _ -> {:error, :enospc} end))
+    assert {:error, {:sandbox_import_failed, transaction, _, :ok}} = ExecutionSandbox.agent(context, :coder, "task", [])
+    receipt = Path.join(context.root, "receipt.json")
+    File.write!(receipt, Jason.encode!(%{"status" => "blocked", "rounds" => [%{"evidence" => Path.join(context.evidence, "round-1")}]}))
+    context = context |> Map.put(:receipt, receipt) |> put_in([:settings, :checks], [["true"]])
+    digest = :crypto.hash(:sha256, File.read!(Path.join(transaction, "journal.json"))) |> Base.encode16(case: :lower)
+
+    audit = %{
+      "id" => "restore",
+      "authorization" => "Authorized recovery",
+      "runtime_version" => String.duplicate("a", 40),
+      "command" => ["recover_import"],
+      "predecessor" => nil,
+      "legacy_closures" => []
+    }
+
+    {context, transaction, digest, audit}
   end
 
   defp git_context! do

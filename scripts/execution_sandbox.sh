@@ -64,33 +64,7 @@ os.replace(temp, os.path.join(root, 'result.json'))
 PY
 }
 export_workspace() {
-  python3 - "$1" "$2" "$3" <<'PY'
-import os, shutil, stat, sys
-from pathlib import Path
-source, target, limit = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]) * 1024 * 1024
-skip = {'.git', '.codex', 'elixir/deps', 'elixir/_build', 'elixir/cover', 'elixir/bin'}
-if source.is_symlink() or not source.is_dir() or target.exists() or target.is_symlink(): raise SystemExit(1)
-pending = target.with_name('.export-pending')
-if pending.exists() or pending.is_symlink(): raise SystemExit(1)
-pending.mkdir(mode=0o700); used = 0
-def walk(src, dst, rel=''):
-    global used
-    for item in os.scandir(src):
-        name = item.name if not rel else rel + '/' + item.name
-        if name in skip or any(name.startswith(x + '/') for x in skip): continue
-        info = item.stat(follow_symlinks=False)
-        if stat.S_ISLNK(info.st_mode): raise ValueError('symlink: ' + name)
-        out = dst / item.name
-        if stat.S_ISDIR(info.st_mode): out.mkdir(mode=info.st_mode & 0o777); walk(Path(item.path), out, name)
-        elif stat.S_ISREG(info.st_mode):
-            used += info.st_size
-            if used > limit: raise ValueError('export exceeds disk budget')
-            shutil.copyfile(item.path, out); os.chmod(out, info.st_mode & 0o777)
-        else: raise ValueError('unsupported export file: ' + name)
-try: walk(source, pending); os.rename(pending, target)
-except Exception as exc:
-    shutil.rmtree(pending, ignore_errors=True); print('execution_sandbox: export rejected: ' + str(exc), file=sys.stderr); raise SystemExit(1)
-PY
+  python3 "$(dirname -- "$SCRIPT_PATH")/sandbox_artifacts.py" "$1" "$2" "$3"
 }
 wait_cgroup_empty() {
   local i
@@ -124,7 +98,7 @@ supervisor() {
       --cgroup) cg=$2; shift 2;; --toolchain) toolchain=$2; shift 2;; --codex) codex=$2; shift 2;;
       --scripts) scripts=$2; shift 2;; --dependencies) deps=$2; shift 2;; --baseline) baseline=$2; shift 2;;
       --evidence) evidence=$2; shift 2;; --disk-mb) disk=$2; shift 2;; --timeout-seconds) timeout_s=$2; shift 2;;
-      --host-netns) host_netns=$2; shift 2;;
+      --host-netns) host_netns=$2; shift 2;; --cpus) cpus=$2; shift 2;; --pids) pids=$2; shift 2;;
       --read-only-workspace) read_only=$2; shift 2;;
       --) shift; break;; *) log "invalid supervisor argument: $1"; return 2;;
     esac
@@ -252,7 +226,7 @@ PYRELAY
     --setenv PATH /opt/toolchain/data/installs/elixir/1.19.5-otp-28/bin:/opt/toolchain/data/installs/erlang/28.5/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
     --setenv MIX_HOME /home/coder/.mix --setenv MIX_ARCHIVES /opt/toolchain/data/installs/elixir/1.19.5-otp-28/.mix/archives
     --setenv MIX_REBAR3 /opt/toolchain/mix/elixir/1-19-otp-28/rebar3 --setenv HEX_HOME /opt/toolchain/hex --setenv TMPDIR /tmp
-    --setenv ERL_FLAGS '+S 4:4' --setenv LANG C.UTF-8 --setenv LC_ALL C.UTF-8 --setenv TERM dumb --setenv CI 1 --setenv HEX_OFFLINE 1
+    --setenv SYMPHONY_CHECK_CPUS "$cpus" --setenv SYMPHONY_CHECK_PIDS "$pids" --setenv ERL_FLAGS "+S $((cpus < pids / 32 ? cpus : (pids / 32 > 0 ? pids / 32 : 1))):$((cpus < pids / 32 ? cpus : (pids / 32 > 0 ? pids / 32 : 1))) +SDcpu 1:1 +SDio 1" --setenv LANG C.UTF-8 --setenv LC_ALL C.UTF-8 --setenv TERM dumb --setenv CI 1 --setenv HEX_OFFLINE 1
     --setenv GIT_CONFIG_NOSYSTEM 1 --setenv GIT_CONFIG_GLOBAL /dev/null --chdir /workspace)
   # OTP and trusted PLTs retain their installation prefix; expose the same
   # already-approved read-only toolchain there without mounting its parents.
@@ -283,6 +257,11 @@ PYRELAY
   write_result "$scratch" "$cg" "$code" "$clean" "$exported" "$outcome" "$started" "$ended"
   [[ $clean == true && $exported == true ]]
 }
+
+if [[ "${1-}" == --backend && "${2-}" == rootless ]]; then
+  shift 2
+  exec unshare --mount --propagation private -- python3 "$(dirname -- "$SCRIPT_PATH")/rootless_sandbox.py" "$@"
+fi
 
 if [[ "${1-}" == --__supervisor ]]; then shift; supervisor "$@"; exit $?; fi
 if [[ "${1-}" == --help || "${1-}" == -h ]]; then usage; exit 0; fi
@@ -356,7 +335,7 @@ host_netns=$(readlink /proc/self/ns/net)
 unshare --mount --net --propagation private --fork -- /bin/bash "$SCRIPT_PATH" --__supervisor \
   --workspace "$workspace" --scratch-root "$scratch" --private "$private" --cgroup "$cg" \
   --toolchain "$toolchain" --codex "$codex" --scripts "$trusted/scripts" --dependencies "$deps" \
-  --baseline "$baseline" --evidence "$evidence" --disk-mb "$disk" --timeout-seconds "$timeout_s" --host-netns "$host_netns" --read-only-workspace "$read_only" -- "$@" \
+  --baseline "$baseline" --evidence "$evidence" --disk-mb "$disk" --timeout-seconds "$timeout_s" --host-netns "$host_netns" --cpus "$cpus" --pids "$pids" --read-only-workspace "$read_only" -- "$@" \
   </proc/self/fd/"$input_fd" &
 supervisor_pid=$!
 wait "$supervisor_pid" || true

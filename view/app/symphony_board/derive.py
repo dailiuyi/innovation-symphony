@@ -572,6 +572,34 @@ def token_brief(usage):
     }
 
 
+def execution_summary(receipt):
+    """Read explicit controller fields; missing historical evidence stays unknown."""
+    recovery = receipt.get("recovery") if isinstance(receipt.get("recovery"), dict) else {}
+    failure = receipt.get("check_failure") if isinstance(receipt.get("check_failure"), dict) else {}
+    artifacts = [item for item in receipt.get("sandbox_artifacts", []) if isinstance(item, dict)]
+    latest = artifacts[-1] if artifacts else {}
+    def count(value):
+        return value if type(value) is int and value >= 0 else None
+    def flag(key):
+        value = latest.get(key)
+        return value if type(value) is bool else None
+    start, end = latest.get("started_at_epoch"), latest.get("ended_at_epoch")
+    elapsed = end - start if type(start) is int and type(end) is int and end >= start else None
+    return {
+        "failureCategory": failure.get("category"),
+        "reworkCount": count(receipt.get("rework_count")),
+        "agentAttempts": count(recovery.get("agent_attempts")),
+        "stageRetries": count(receipt.get("stage_retries")),
+        "externalProbeReservations": count(receipt.get("external_probe_calls")),
+        "sourceSaved": flag("source_saved"),
+        "exportComplete": flag("export_complete"),
+        "cleanupComplete": flag("cleanup_complete"),
+        "externalWaiting": receipt.get("status") == "awaiting_external",
+        "latestStage": latest.get("role"),
+        "latestStageSeconds": elapsed,
+    }
+
+
 def rounds_view(receipt):
     rows = []
     for rnd in receipt.get("rounds") or []:
@@ -824,6 +852,7 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "flow": flow,
                 "gap": gap,
                 "rounds": round_rows,
+                **({"execution": execution_summary(receipt)} if receipt.get("sandbox_artifacts") or "external_probe_calls" in receipt or "stage_retries" in receipt else {}),
                 "roundsAuthority": "controller" if round_rows else "legacy",
                 "evidence": evidence,
                 "logs": events,

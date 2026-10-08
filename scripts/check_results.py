@@ -13,6 +13,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
+from clean_check import check_home
 
 SUCCESS = 0
 STOP = 1
@@ -22,13 +23,17 @@ TEST_STAGES = {"test", "baseline_test"}
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _ENVIRONMENT_FAILURE = re.compile(
     r":(?:eperm|eacces|econnrefused|econnreset|enetunreach|ehostunreach|etimedout|enospc)\b"
+    r"|^\s*\*\* \(ErlangError\) Erlang error: :eagain\b"
+    r"|^(?:Isolated check setup failed: |ValueError: )Erlang resource configuration rejects "
+    r"(?:-extra and -args_file in ERL_(?:FLAGS|ZFLAGS)|invalid quoted flags in ERL_(?:FLAGS|ZFLAGS)"
+    r"|invalid trusted CPU and PID limits|trusted CPU or PID limit outside supported range)\r?$"
     r"|permission denied|operation not permitted|connection refused|network is unreachable"
-    r"|no space left on device|failed to create (?:scheduler|thread)|cannot allocate memory"
+    r"|no space left on device|failed to create (?:(?:dirty (?:cpu|io) )?scheduler|thread)|cannot allocate memory"
     r"|could not (?:start application|compile dependency|find (?:hex|rebar))"
     r"|unchecked dependencies|dependency .* is not available|dependencies have diverged"
     r"|failed to (?:fetch|connect)|TLS.*(?:alert|error)|certificate verify failed"
     r"|command not found|no such file or directory|ExUnit\.TimeoutError"
-    r"|\btimed out\b|\bSIG(?:TERM|KILL|QUIT)\b", re.IGNORECASE,
+    r"|\btimed out\b|\bSIG(?:TERM|KILL|QUIT)\b", re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -182,7 +187,7 @@ def classify(stage: str, returncode: int, output: str, report: dict | None = Non
 
 def _runner_digest() -> str:
     digest = hashlib.sha256()
-    for name in ("check_results.py", "check_environment.py", "check_candidate.py", "check_baseline.py", "check_isolated.py"):
+    for name in ("check_results.py", "check_environment.py", "check_candidate.py", "check_baseline.py", "check_isolated.py", "clean_check.py", "runtime_identity.py", "runtime-identity.json"):
         digest.update(name.encode())
         digest.update(Path(__file__).resolve().with_name(name).read_bytes())
     return digest.hexdigest()
@@ -198,7 +203,7 @@ def _save_json(path: Path, value: dict) -> None:
 
 def run_check(stage: str, arguments: list[str], cwd: Path, environment: dict[str, str], *,
               candidate_root: Path | None = None, evidence_root: Path | None = None,
-              candidate_sha: str | None = None) -> int:
+              candidate_sha: str | None = None, serialization_fd: int | None = None) -> int:
     """Keep complete child output and an exclusive, persistent evidence directory."""
     run_id = uuid.uuid4().hex
     if evidence_root is not None:
@@ -229,7 +234,11 @@ def run_check(stage: str, arguments: list[str], cwd: Path, environment: dict[str
         _save_json(evidence / "manifest.json", dict(identity=identity, command=command, cwd=str(cwd)))
         print(f"[check] stage={stage} command={' '.join(command)}", flush=True)
         with (evidence / "output.log").open("xb") as log:
-            with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+            # The running VM retains the queue lock if its Python checker is killed.
+            # A new check may start only after that child also releases the slot.
+            descriptors = () if serialization_fd is None else (serialization_fd,)
+            with check_home(env) as clean_env, subprocess.Popen(command, cwd=cwd, env=clean_env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, pass_fds=descriptors) as process:
                 while chunk := process.stdout.read1(65536):
                     log.write(chunk)
                     log.flush()
@@ -250,6 +259,7 @@ def run_check(stage: str, arguments: list[str], cwd: Path, environment: dict[str
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         reason = f"runner/report validation failed: {type(error).__name__}: {error}"
     _save_json(evidence / "result.json", dict(identity=identity, child_exit=child_exit, outcome=result, reason=reason,
+                                             failure_category=("passed" if result == 0 else "code_defect" if result == 10 else "environment" if _ENVIRONMENT_FAILURE.search(b"".join(chunks).decode("utf-8", "replace")) else "unknown"),
                                              counts=report.get("counts") if report else None,
                                              tests=report.get("tests", []) if report else []))
     print(f"\n[check] stage={stage} child_exit={child_exit} outcome={result} reason={reason}", flush=True)

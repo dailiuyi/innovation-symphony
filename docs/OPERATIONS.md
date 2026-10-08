@@ -281,3 +281,8 @@ CONFIG=/srv/symphony/runtime/watchdog.json
 - 本机准备、切换、派发及状态证据在忽略目录 `.local/review-budget/`。21:44:14 到期后，原回执以 `:mvp_recovery_resource_exhausted` 保存为 blocked；完成记录绑定回执 SHA `ef01ec6d772fd878c6441bcaf21b0d63c092e7d1d3dc1300830c82e7494c3f75`。累计 46 次调用、19 次返工不归零，原有效 Review 原文与快照逐字相同；操作进程已退出，锁已释放，该沙盒无残留进程。
 - 这一次 coder 实际执行约 13 分钟；追加额度按原窗口累计，控制器接续修复及安装准备占用了约 17 分钟。第 20 轮尚未形成新候选，旧候选仍为 `d6e051c88472035944fc82eb78d1a13cf3350fb0`，保留 CLI、watchdog、测试和操作文档四个文件的未提交修改。本轮未进入新 Review、未创建 PR，也未进入仅外部条件的交接状态。
 - 最后一组专项自检为 39 项、3 项失败：打包安装的非交互重启，以及普通 CLI 的端口省略／端口 0 两个启动场景，都未在 5 秒内收到测试 HTTPS 探针的 GET 消息。此证据表明相关集成断言仍未通过，尚不能断定是 TLS 测试环境、子进程启动失败还是产品路径错误；下一步须先取得子进程退出结果与探针握手诊断，不能仅增加超时或跳过断言。原始模型会话输出和汇总在 `.local/review-budget/closure.json`，原状态及候选保持不变。
+
+
+## 2026-10-08：IS-076 独立 rootless 桥安装
+
+按所有者对 `codex/rootless-open-reliability` 的明确授权，镜像 digest、Podman/crun/uidmap、专用 worker 和本机完整待激活配置已补齐。`innovation-symphony-rootless-bridge.service` 已安装、启动、开机 enabled，并通过服务重启、受保护 payload 摘要及启动守卫核验。真实 Linux 基础探针 16 项通过、清理与导出成功；完整 rootless 交付链和故障矩阵尚未验收。原活动控制器／View、旧桥与 `mvp.enabled=false` 保留，没有真实派发、远端 push、合并或云部署。详情、失败记录、剩余范围和回退见 [VALIDATION_ROOTLESS](VALIDATION_ROOTLESS.md) 的 IS-076 节；本轮代码本地提交以对应分支 Git log 为准。

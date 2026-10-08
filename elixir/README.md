@@ -442,3 +442,6 @@ explicit historical routing and current role evidence under the existing audit l
 this does not resume execution or add budget. Unsupported legacy Codex settings
 stop with a migration error instead of adopting a new address or effort.
 No network configuration write endpoint or View settings page is introduced.
+
+
+实验性的宽权限 rootless 容器、持久导出、失败分流和固定补证配置见 [实施合同](../docs/ROOTLESS_OPEN.md)。默认未启用；代码不代表已安装或实机验收，旧冻结任务保持原后端。

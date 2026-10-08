@@ -8,7 +8,7 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from symphony_board.derive import build_tasks, result_text
+from symphony_board.derive import build_tasks, execution_summary, result_text
 from symphony_board.wslpull import remote_script
 
 
@@ -22,6 +22,22 @@ def attempt_reader():
 
 
 class RoundMappingTests(unittest.TestCase):
+    def test_execution_status_uses_recorded_fields_and_preserves_unknowns(self):
+        self.assertIsNone(execution_summary({})["sourceSaved"])
+        result = execution_summary({"status": "awaiting_external", "rework_count": 2, "stage_retries": 3,
+            "recovery": {"agent_attempts": 4}, "check_failure": {"category": "environment"},
+            "sandbox_artifacts": [{"source_saved": True, "export_complete": False, "cleanup_complete": True,
+                "role": "candidate", "started_at_epoch": 100, "ended_at_epoch": 110}]})
+        self.assertEqual(result["failureCategory"], "environment")
+        self.assertEqual(result["agentAttempts"], 4)
+        self.assertTrue(result["sourceSaved"])
+        self.assertFalse(result["exportComplete"])
+        self.assertEqual(result["latestStageSeconds"], 10)
+        self.assertTrue(result["externalWaiting"])
+        self.assertIsNone(execution_summary({"rework_count": True})["reworkCount"])
+        self.assertEqual(execution_summary({"stage_retries": 3})["stageRetries"], 3)
+        self.assertIsNone(execution_summary({})["stageRetries"])
+
     def test_current_review_does_not_repeat_previous_check_failure(self):
         evidence = [{"name": "round-19/check-1.log", "exit": 124, "summary": "previous check timeout", "under": [], "tail": False}]
         text = result_text("reviewing", "", "abcd123", [], evidence)

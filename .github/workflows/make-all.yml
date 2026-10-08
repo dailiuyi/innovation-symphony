@@ -18,10 +18,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Codex for offline configuration tests
-        env:
-          CODEX_VERSION: '0.160.0'
-          CODEX_SHA256: '306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13'
         run: |
+          CODEX_VERSION=$(python3 -c 'import json; print(json.load(open("../scripts/runtime-identity.json"))["codex"]["version"])')
+          CODEX_SHA256=$(python3 -c 'import json; print(json.load(open("../scripts/runtime-identity.json"))["codex"]["linux_archive_sha256"])')
           codex_dir="$RUNNER_TEMP/symphony-test-codex"
           mkdir -p "$codex_dir"
           curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 240 \
@@ -58,7 +57,7 @@ jobs:
         run: mise exec -- python3 -m unittest discover -s ../scripts/tests -v
 
       - name: Verify make all
-        run: mise exec -- make all
+        run: mise exec -- make check-clean
 
   view:
     runs-on: ubuntu-latest

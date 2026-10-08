@@ -4,11 +4,260 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
   alias Mix.Tasks.Mvp.External
   alias Mix.Tasks.PrBody.Check, as: PrBodyCheck
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, ExternalDraft, ExternalHandoff, Receipt, Recovery, Review}
+  alias SymphonyElixir.ModelServicesFixture, as: ServiceFixture
+
+  alias SymphonyElixir.Mvp.{
+    AutomaticAcceptance,
+    Commands,
+    Delivery,
+    ExecutionSandbox,
+    Executor,
+    ExternalDraft,
+    ExternalHandoff,
+    ModelCatalog,
+    ModelServices,
+    Receipt,
+    Recovery,
+    Review
+  }
+
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
 
   @acceptance "The candidate must load the signed company feed"
   @url "https://github.com/owner/repo/pull/42"
+
+  test "the executor automatically continues enabled acceptance through checks and a fresh Review" do
+    context = automatic_waiting!("linux", %{}, false)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_human"
+    assert data["review"]["approved"]
+    assert data["operator_recheck"] =~ "acceptance-external-"
+    assert length(calls(context, :probe)) == 1
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :reviewer)) == 2
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert length(writes(context, "PATCH", "/pulls/42")) == 1
+  end
+
+  test "revoked model credentials stop acceptance before invoking the frozen account" do
+    context = automatic_waiting!("gpt_coder")
+    System.delete_env("GH12_CODER_KEY")
+    assert {:error, :automatic_acceptance_probe_failed} = AutomaticAcceptance.prepare(context)
+    assert calls(context, :probe) == []
+    assert Receipt.read(context.receipt)["external_probe_calls"] == nil
+    assert Receipt.read(context.receipt)["external_probe_inflight"] == false
+    assert automatic_completion(context)["status"] == "stopped"
+  end
+
+  test "automatic fixed evidence rechecks the unchanged candidate and reviews the same draft without another coder" do
+    context = automatic_waiting!("linux")
+    before = Receipt.read(context.receipt)
+    assert {:ok, receipt_digest, auth} = AutomaticAcceptance.prepare(context)
+    assert receipt_digest == digest(File.read!(context.receipt))
+    [entry] = auth["external_evidence"]
+    proof = Jason.decode!(File.read!(entry["path"]))
+    assert entry["sha256"] == digest(File.read!(entry["path"]))
+    assert proof["binding"]["candidate_sha"] == before["candidate_sha"]
+    assert proof["binding"]["execution_sandbox"] == before["execution_sandbox"]
+    assert proof["status"] == "passed"
+    assert automatic_completion(context)["status"] == "completed"
+    assert {:error, :automatic_acceptance_unavailable} = AutomaticAcceptance.prepare(context)
+    assert length(calls(context, :probe)) == 1
+
+    assert {:ok, @url} = Executor.resume_external(context, receipt_digest, auth)
+    after_data = Receipt.read(context.receipt)
+    assert after_data["status"] == "awaiting_human"
+    assert after_data["candidate_sha"] == before["candidate_sha"]
+    assert after_data["review"]["approved"]
+    assert after_data["rework_count"] == before["rework_count"]
+    assert after_data["recovery"]["agent_attempts"] == before["recovery"]["agent_attempts"] + 1
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :reviewer)) == 2
+    assert length(calls(context, :formal_check)) == 2
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert length(writes(context, "PATCH", "/pulls/42")) == 1
+    assert Process.get({context.key, :remote_pull})["draft"]
+    assert after_data["external_probe_charged_ms"] == after_data["external_probe_ms"]
+    assert hd(after_data["external_review_history"])["source_data"]["approved"] == false
+  end
+
+  test "both GPT roles use frozen services and nonce-bound readonly probes, then reserve an independent review" do
+    for kind <- ~w(gpt_coder gpt_reviewer) do
+      context = automatic_waiting!(kind)
+      before = Receipt.read(context.receipt)
+      assert {:ok, receipt_digest, auth} = AutomaticAcceptance.prepare(context)
+      [entry] = auth["external_evidence"]
+      proof = Jason.decode!(File.read!(entry["path"]))
+      role = String.replace_prefix(kind, "gpt_", "")
+      assert proof["role"] == role
+      assert proof["service"] == context.services[role]
+      assert proof["response"]["actual_model"] == nil
+      assert File.regular?(Path.join(Path.dirname(entry["path"]), "model-0.jsonl"))
+      assert Receipt.read(context.receipt)["external_probe_calls"] == 1
+      assert {:ok, @url} = Executor.resume_external(context, receipt_digest, auth)
+      after_data = Receipt.read(context.receipt)
+      assert after_data["recovery"]["agent_attempts"] + after_data["external_probe_calls"] == before["recovery"]["agent_attempts"] + 2
+      assert length(calls(context, :coder)) == 1
+      assert length(calls(context, :reviewer)) == 2
+      assert length(calls(context, :probe)) == 1
+    end
+  end
+
+  test "probe failures preserve the candidate and usage without coding, review or repeated execution" do
+    outcomes = [
+      {"linux", :failed},
+      {"linux", :missing_export},
+      {"gpt_coder", :failed},
+      {"gpt_reviewer", :bad_json},
+      {"gpt_coder", :wrong_nonce},
+      {"gpt_reviewer", :wrong_candidate}
+    ]
+
+    for {kind, outcome} <- outcomes do
+      context = automatic_waiting!(kind)
+      before = Receipt.read(context.receipt)
+      Process.put({context.key, :probe_outcome}, outcome)
+      assert {:error, :automatic_acceptance_probe_failed} = AutomaticAcceptance.prepare(context)
+      after_data = Receipt.read(context.receipt)
+      assert after_data["status"] == "awaiting_external"
+      assert after_data["candidate_sha"] == before["candidate_sha"]
+      assert after_data["recovery"] == before["recovery"]
+      assert after_data["external_probe_inflight"] == false
+      assert is_integer(after_data["external_probe_ms"])
+      assert automatic_completion(context)["status"] == "stopped"
+      assert Path.wildcard(Path.join(automatic_directory(context), "probe-*.json")) == []
+      assert {:error, :automatic_acceptance_unavailable} = AutomaticAcceptance.prepare(context)
+      assert length(calls(context, :probe)) == 1
+      assert length(calls(context, :coder)) == 1
+      assert length(calls(context, :reviewer)) == 1
+      assert writes(context, "PATCH", "/pulls/42") == []
+      if kind != "linux", do: assert(after_data["external_probe_calls"] == 1)
+    end
+  end
+
+  test "runner, candidate, environment and registration changes cannot reuse frozen acceptance" do
+    for change <- [:runner, :candidate, :environment, :unregistered, :lock, :disabled, :status, :profiles] do
+      context = automatic_waiting!("linux")
+
+      changed =
+        case change do
+          :runner ->
+            File.write!(Path.join(context.settings.sandbox["trusted_root"], "scripts/probe_rootless.py"), "changed trusted probe")
+            context
+
+          :candidate ->
+            Commands.git!(["commit", "--allow-empty", "-m", "different candidate"], context.workspace)
+            context
+
+          :environment ->
+            put_in(context.settings.sandbox["image"], "fixture@sha256:" <> String.duplicate("b", 64))
+
+          :unregistered ->
+            put_in(context.settings.sandbox["acceptance_profiles"], %{})
+
+          :lock ->
+            File.write!(Path.join(context.evidence, "operator-recheck.lock"), "occupied")
+            context
+
+          :disabled ->
+            put_in(context.settings.recovery.enabled, false)
+
+          :status ->
+            Receipt.update(context.receipt, "awaiting_human", %{})
+            context
+
+          :profiles ->
+            put_in(context.settings.sandbox["acceptance_profiles"], %{@acceptance => "arbitrary command"})
+        end
+
+      assert {:error, _} = AutomaticAcceptance.prepare(changed)
+      assert calls(context, :probe) == []
+      assert length(calls(context, :coder)) == 1
+      assert length(calls(context, :reviewer)) == 1
+    end
+  end
+
+  test "GPT probe budgets include previous probes and leave one call for the independent reviewer" do
+    for prior_calls <- [0, 1] do
+      context = automatic_waiting!("gpt_coder", %{"max_agent_attempts" => 4})
+      if prior_calls > 0, do: Receipt.update(context.receipt, "awaiting_external", %{"external_probe_calls" => prior_calls})
+
+      if prior_calls == 0 do
+        assert {:ok, receipt_digest, auth} = AutomaticAcceptance.prepare(context)
+        assert {:ok, @url} = Executor.resume_external(context, receipt_digest, auth)
+        assert Receipt.read(context.receipt)["recovery"]["agent_attempts"] + Receipt.read(context.receipt)["external_probe_calls"] == 4
+      else
+        assert {:error, :automatic_acceptance_probe_failed} = AutomaticAcceptance.prepare(context)
+        assert calls(context, :probe) == []
+        assert Receipt.read(context.receipt)["external_probe_calls"] == prior_calls
+        assert automatic_completion(context)["status"] == "stopped"
+      end
+    end
+  end
+
+  test "a repeated external review cannot spend beyond the aggregate model and probe budget" do
+    context = automatic_waiting!("gpt_coder", %{"max_agent_attempts" => 4})
+    Process.put({context.key, :reviews}, [verification_review()])
+    assert {:ok, receipt_digest, auth} = AutomaticAcceptance.prepare(context)
+    assert {:error, {:mvp_awaiting_external, _}} = Executor.resume_external(context, receipt_digest, auth)
+
+    waiting = Receipt.read(context.receipt)
+    assert waiting["recovery"]["agent_attempts"] == 3
+    assert waiting["external_probe_calls"] == 1
+    assert waiting["recovery"]["agent_attempts"] + waiting["external_probe_calls"] == context.settings.recovery.max_agent_attempts
+    assert waiting["status"] == "awaiting_external"
+    raw = File.read!(context.receipt)
+
+    assert {:error, :automatic_acceptance_unavailable} = AutomaticAcceptance.prepare(context)
+    refute File.exists?(automatic_directory(context))
+
+    changed_evidence = evidence_file!(context, "signed-feed-v2")
+    retry = authorization(context, waiting["external_handoff"], changed_evidence, "exhausted-after-probe")
+    assert {:error, :mvp_recovery_resource_exhausted} = Executor.resume_external(context, digest(raw), retry)
+    assert File.read!(context.receipt) == raw
+    refute File.exists?(Path.join([context.evidence, "operator-rechecks", "exhausted-after-probe"]))
+    assert length(calls(context, :probe)) == 1
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :reviewer)) == 2
+    assert length(calls(context, :formal_check)) == 2
+  end
+
+  test "remaining active time caps probe timeout and consumed time blocks new evidence" do
+    context = automatic_waiting!("linux")
+    data = Receipt.read(context.receipt)
+    {:ok, started, _} = DateTime.from_iso8601(data["recovery"]["started_at"])
+    {:ok, waiting, _} = DateTime.from_iso8601(data["external_handoff"]["started_at"])
+    active = DateTime.diff(waiting, started, :millisecond) - (data["recovery"]["external_wait_ms"] || 0)
+    remaining = 600
+    charged = 50
+    spent = context.settings.recovery.max_elapsed_ms - active - remaining + charged
+    Receipt.update(context.receipt, "awaiting_external", %{"external_probe_ms" => spent, "external_probe_charged_ms" => charged})
+    now = DateTime.to_unix(waiting, :millisecond) + spent + 1_000
+    context = %{context | opts: Keyword.put(context.opts, :now_ms, fn -> now end)}
+    assert {:ok, _, _} = AutomaticAcceptance.prepare(context)
+    [probe] = calls(context, :probe)
+    assert probe.timeout == 30_000 + remaining
+
+    for state <- [%{"external_probe_ms" => context.settings.recovery.max_elapsed_ms}, %{"external_probe_inflight" => true}, %{"external_probe_calls" => -1}, %{"external_probe_charged_ms" => 1}] do
+      waiting_context = automatic_waiting!("linux")
+      Receipt.update(waiting_context.receipt, "awaiting_external", state)
+      assert {:error, :automatic_acceptance_unavailable} = AutomaticAcceptance.prepare(waiting_context)
+      assert calls(waiting_context, :probe) == []
+      assert Receipt.read(waiting_context.receipt)["status"] == "awaiting_external"
+    end
+  end
+
+  test "an evidence write collision stops the job and retains the completed probe charge" do
+    context = automatic_waiting!("linux")
+    Process.put({context.key, :probe_outcome}, :evidence_collision)
+    assert {:error, :automatic_acceptance_stopped} = AutomaticAcceptance.prepare(context)
+    assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+    assert Receipt.read(context.receipt)["external_probe_inflight"] == false
+    assert File.read!(Path.join(automatic_directory(context), "probe-0.json")) == "existing evidence"
+    refute File.exists?(Path.join(automatic_directory(context), "completion.json"))
+    assert {:error, :automatic_acceptance_unavailable} = AutomaticAcceptance.prepare(context)
+    assert length(calls(context, :probe)) == 1
+  end
 
   test "a checked external verification draft stays unaccepted and evidence later updates the same PR" do
     context = context!()
@@ -32,6 +281,12 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     body_path = Path.join(context.root, "draft-body.md")
     File.write!(body_path, created["body"])
     PrBodyCheck.run(["--file", body_path])
+
+    frozen = resume_context(context, settings(), opts)
+    assert {:ok, record} = Executor.validate_external_probe(frozen, digest(File.read!(context.receipt)))
+    assert record["candidate_sha"] == before["candidate_sha"]
+    stale_digest = String.duplicate("0", 64)
+    assert {:error, :mvp_external_probe_binding_invalid} = Executor.validate_external_probe(frozen, stale_digest)
 
     evidence = evidence_file!(context, "real signed feed proof")
     auth = authorization(context, before["external_handoff"], evidence, "draft-acceptance")
@@ -1401,6 +1656,168 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     assert length(calls(context, :publish)) == 1
     assert File.regular?(Path.join([context.receipt <> ".evidence", "operator-rechecks", "cli-resume", "check-1.log"]))
   end
+
+  # The bridge and AppServer seams are synthetic; Git, frozen handoff, evidence,
+  # budget accounting, checks, Review and Draft PR reconciliation run normally.
+  defp automatic_waiting!(kind, policy \\ %{}, park \\ true) do
+    context = context!()
+
+    automatic_accounts!()
+
+    authority = ServiceFixture.settings(Path.join(context.root, "authority"))
+    trusted = Path.join(context.root, "trusted")
+    File.mkdir_p!(Path.join(trusted, "scripts"))
+    File.write!(Path.join(trusted, "scripts/probe_rootless.py"), "fixed test probe\n")
+    File.write!(Path.join(trusted, "scripts/execution_sandbox.sh"), "printf '%s' '{\"status\":\"ready\",\"backend\":\"rootless\"}'\n")
+
+    config = %{
+      "enabled" => true,
+      "backend" => "rootless",
+      "profile" => "rootless-open-v1",
+      "network" => "public-egress-v1",
+      "image" => "fixture@sha256:" <> String.duplicate("a", 64),
+      "worker" => "fixture-worker",
+      "root" => Path.join(context.root, "sandboxes"),
+      "toolchain" => Path.join(trusted, "toolchain"),
+      "codex" => Path.join(trusted, "codex"),
+      "dependencies" => Path.join(trusted, "dependencies"),
+      "trusted_root" => trusted,
+      "auth_home" => Path.join(context.root, "auth")
+    }
+
+    {:ok, sandbox} = ExecutionSandbox.settings(config)
+    {:ok, runner} = AutomaticAcceptance.runner_digest(%{settings: %{sandbox: sandbox}}, kind)
+    profiles = %{@acceptance => %{"kind" => kind, "runner_sha256" => runner, "timeout_ms" => 60_000}}
+    settings = Map.merge(authority, settings(policy)) |> Map.put(:sandbox, Map.put(sandbox, "acceptance_profiles", profiles)) |> Map.put(:checks, [["python3", "scripts/check_candidate.py"]])
+    settings = Map.put(settings, :model_command, config["codex"] <> " app-server")
+
+    registry =
+      Enum.reduce([{:coder, "coding"}, {:reviewer, "reviewing"}], settings.model_services, fn {role, id}, registry ->
+        {:ok, service} = ModelServices.snapshot(%{settings | model_services: registry}, id, role, "fixture")
+        {:ok, registry} = ModelCatalog.attest(registry, service, ServiceFixture.proof(role))
+        registry
+      end)
+
+    settings = %{settings | model_services: registry}
+    ServiceFixture.write_authority!(settings)
+
+    services =
+      Map.new([{:coder, "coding"}, {:reviewer, "reviewing"}], fn {role, id} ->
+        {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+        {Atom.to_string(role), service}
+      end)
+
+    selected = %{coder: "gpt-test", reviewer: "gpt-test", services: services}
+    Process.put({context.key, :reviews}, [verification_review(), approved_review()])
+    Process.put({context.key, :park_automatic}, park)
+
+    opts =
+      draft_options(context)
+      |> Keyword.put(:sandbox_cleanup_timeout_ms, 1)
+      |> Keyword.put(:sandbox_command_run, automatic_command(context))
+      |> Keyword.put(:sandbox_agent_run, automatic_agent(context))
+
+    result = Executor.run(context.workspace, context.issue, settings, selected, context.receipt, opts)
+    if park, do: assert(match?({:error, {:mvp_awaiting_external, _}}, result)), else: assert(result == {:ok, @url})
+    evidence = context.receipt <> ".evidence"
+    if park, do: File.rm!(Path.join(evidence, "operator-recheck.lock"))
+    resume_context(context, settings, opts) |> Map.put(:models, Map.take(selected, [:coder, :reviewer])) |> Map.put(:services, services)
+  end
+
+  defp automatic_command(context) do
+    fn argv, _workspace, timeout, log_path ->
+      scratch = automatic_argument(argv, "--scratch-root")
+      probe? = Enum.any?(argv, &String.ends_with?(&1, "/probe_rootless.py"))
+      record(context, if(probe?, do: :probe, else: :formal_check), %{argv: argv, timeout: timeout})
+      outcome = if probe?, do: Process.get({context.key, :probe_outcome}, :passed), else: :passed
+      status = if outcome == :failed, do: 124, else: 0
+      automatic_result!(scratch, status)
+      if outcome != :missing_export, do: File.mkdir_p!(Path.join(scratch, "export/.check-evidence"))
+      File.write!(log_path, "fixed bridge result #{status}\n")
+      if outcome == :evidence_collision, do: File.write!(Path.join(Path.dirname(log_path), "probe-0.json"), "existing evidence")
+      {:ok, status}
+    end
+  end
+
+  defp automatic_accounts! do
+    unless Process.get(:automatic_accounts_registered) do
+      previous = Map.new(~w(GH12_CODER_KEY GH12_REVIEWER_KEY), &{&1, System.get_env(&1)})
+      on_exit(fn -> restore_accounts(previous) end)
+      Process.put(:automatic_accounts_registered, true)
+    end
+
+    for name <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.put_env(name, "synthetic-acceptance-account")
+  end
+
+  defp restore_accounts(previous), do: Enum.each(previous, fn {name, value} -> restore_account(name, value) end)
+  defp restore_account(name, nil), do: System.delete_env(name)
+  defp restore_account(name, value), do: System.put_env(name, value)
+
+  defp automatic_agent(context) do
+    original = agent(context)
+
+    fn workspace, prompt, issue, opts ->
+      scratch = Path.join(Path.dirname(opts[:execution_environment].codex_home), "sandbox")
+      automatic_result!(scratch, 0)
+
+      cond do
+        String.starts_with?(prompt, "Fixed model connection probe.") ->
+          automatic_model_probe(context, prompt, opts)
+
+        opts[:read_only] ->
+          park_automatic_job(context)
+          original.(workspace, prompt, issue, opts)
+
+        true ->
+          automatic_coder(context, workspace, prompt, opts, scratch)
+      end
+    end
+  end
+
+  defp automatic_model_probe(context, prompt, opts) do
+    assert opts[:tools] == false
+    assert opts[:read_only] == true
+    assert opts[:execution_environment].read_only
+    assert opts[:turn_protocol] == "codex-0.160.0-turn-v1"
+    record(context, :probe, %{options: opts})
+    opts[:on_message].(%{usage: %{input_tokens: 1, output_tokens: 1, total_tokens: 2}})
+    [json] = Regex.run(~r/\{"candidate_sha":"[a-f0-9]+","probe":"[a-f0-9]+"\}/, prompt)
+    expected = Jason.decode!(json)
+
+    case Process.get({context.key, :probe_outcome}, :passed) do
+      :failed -> {:error, :model_service_unavailable}
+      :bad_json -> {:ok, %{output_text: "not json"}}
+      :wrong_nonce -> {:ok, %{output_text: Jason.encode!(Map.put(expected, "probe", "wrong"))}}
+      :wrong_candidate -> {:ok, %{output_text: Jason.encode!(Map.put(expected, "candidate_sha", String.duplicate("b", 40)))}}
+      :passed -> {:ok, %{output_text: json, actual_model: nil}}
+    end
+  end
+
+  defp park_automatic_job(context) do
+    if Process.get({context.key, :park_automatic}, false) do
+      File.write!(Path.join(context.receipt <> ".evidence", "operator-recheck.lock"), "test pause before automatic job")
+      Process.put({context.key, :park_automatic}, false)
+    end
+  end
+
+  defp automatic_coder(context, workspace, prompt, opts, scratch) do
+    export = Path.join(scratch, "export")
+    File.mkdir_p!(export)
+    for name <- File.ls!(workspace), name != ".git", do: File.cp_r!(Path.join(workspace, name), Path.join(export, name))
+    File.write!(Path.join(export, "candidate.txt"), "candidate\n")
+    record(context, :coder, %{prompt: prompt})
+    opts[:on_message].(%{usage: %{input_tokens: 2, output_tokens: 1, total_tokens: 3}})
+    {:ok, %{output_text: "Implemented the candidate"}}
+  end
+
+  defp automatic_result!(scratch, status) do
+    File.mkdir_p!(scratch)
+    File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => status}))
+  end
+
+  defp automatic_argument(argv, flag), do: argv |> Enum.drop_while(&(&1 != flag)) |> Enum.at(1)
+  defp automatic_directory(context), do: Path.join([context.evidence, "acceptance-jobs", Receipt.read(context.receipt)["external_handoff"]["id"]])
+  defp automatic_completion(context), do: automatic_directory(context) |> Path.join("completion.json") |> File.read!() |> Jason.decode!()
 
   defp context! do
     root = Path.join(System.tmp_dir!(), "mvp-external-handoff-#{System.unique_integer([:positive])}")

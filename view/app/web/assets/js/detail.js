@@ -87,11 +87,17 @@ export function renderDetail() {
 
   const ending = `<div class="ending ${esc(story.outcomeKind || '')}">${esc(story.outcome)} · ${esc(story.outcomeDetail || '')}</div>`;
 
+  const execution = cur?.execution;
+  const recorded = value => value == null ? '未记录' : String(value);
+  const flag = value => value == null ? '未记录' : (value ? '是' : '否');
+  const executionRow = execution ? `<p class="muted">失败类别：${esc(recorded(execution.failureCategory))} · 原阶段重试：${esc(recorded(execution.stageRetries))} · Coder 返工：${esc(recorded(execution.reworkCount))} · Agent 次数：${esc(recorded(execution.agentAttempts))} · 补证 Agent 额度占用：${esc(recorded(execution.externalProbeReservations))}<br>源码保存：${esc(flag(execution.sourceSaved))} · 导出完成：${esc(flag(execution.exportComplete))} · 清理完成：${esc(flag(execution.cleanupComplete))}<br>外部等待：${esc(flag(execution.externalWaiting))} · 最近阶段：${esc(recorded(execution.latestStage))} · 耗时：${esc(recorded(execution.latestStageSeconds))} 秒</p>` : '';
+
   const curSection = cur ? `
     <div>
       <div class="section-label">当前拍 · ${esc(cur.statusLabel || '回执')}</div>
       ${cur.reason ? `<div class="callout">${esc(cur.reason)}</div>` : ''}
       <p class="result" style="margin-top:8px">${esc(cur.result || '')}</p>
+      ${executionRow}
     </div>` : '';
 
   const preflight = (story.preflight || []).length

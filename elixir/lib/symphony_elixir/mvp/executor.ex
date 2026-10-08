@@ -3,10 +3,12 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   alias SymphonyElixir.Mvp.{
     Attempts,
+    AutomaticAcceptance,
     Commands,
     Delivery,
     ExecutionSandbox,
     ExternalHandoff,
+    Failure,
     Feedback,
     InterruptedCoder,
     ModelServiceMigration,
@@ -295,6 +297,24 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
+  @doc "Verify the original handoff before a fixed probe can spend its frozen budget."
+  @spec validate_external_probe(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  def validate_external_probe(context, expected_receipt_digest) do
+    with true <- Recovery.enabled?(context.settings),
+         {:ok, _raw, data} <- resume_binding(context, expected_receipt_digest, :external),
+         {:ok, record} <- ExternalHandoff.read(context, data["external_handoff"]),
+         :ok <- external_handoff_binding(context, data, record),
+         :ok <- external_source_binding(data, record, context),
+         {:ok, wait_ms} <- external_wait_ms(record, context),
+         :ok <- external_resume_budget(context, data, record, wait_ms),
+         {:ok, workspace_sha} <- workspace_digest(context.workspace),
+         true <- workspace_sha == record["workspace_sha256"] do
+      {:ok, record}
+    else
+      _ -> {:error, :mvp_external_probe_binding_invalid}
+    end
+  end
+
   @doc "Resume only a pending external-condition handoff after hash-verified operator evidence is supplied."
   @spec resume_external(map(), String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   def resume_external(context, expected_receipt_digest, authorization) do
@@ -350,7 +370,9 @@ defmodule SymphonyElixir.Mvp.Executor do
              resume.authorization["external_evidence"],
              resume.data["external_evidence_history"] || []
            ) do
-      active_wait_ms = (resume.data["recovery"]["external_wait_ms"] || 0) + resume.wait_ms
+      probe_ms = Map.get(resume.data, "external_probe_ms", 0)
+      uncharged = probe_ms - Map.get(resume.data, "external_probe_charged_ms", 0)
+      active_wait_ms = (resume.data["recovery"]["external_wait_ms"] || 0) + resume.wait_ms - uncharged
 
       copied =
         Enum.map(copied, fn entry ->
@@ -379,6 +401,7 @@ defmodule SymphonyElixir.Mvp.Executor do
           "comment" => nil,
           "check_failure" => nil,
           "operator_recheck" => resume.operation.id,
+          "external_probe_charged_ms" => probe_ms,
           "external_handoff" => Map.merge(resume.handoff, %{"status" => "resuming", "provided_evidence" => copied}),
           "external_evidence_history" => history,
           "recovery" => Map.put(resume.data["recovery"], "external_wait_ms", active_wait_ms),
@@ -739,30 +762,52 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp external_resume_budget(context, data, record, wait_ms) do
-    recovery = data["recovery"]
-    credited = (recovery["external_wait_ms"] || 0) + wait_ms
-    now = Keyword.get(context.opts, :now_ms, fn -> System.system_time(:millisecond) end).()
-    policy = context.settings.recovery
+    with {:ok, credited} <- external_budget_credit(data, wait_ms) do
+      recovery = data["recovery"]
+      now = Keyword.get(context.opts, :now_ms, fn -> System.system_time(:millisecond) end).()
+      policy = context.settings.recovery
+      attempts = recovery["agent_attempts"] + Map.get(data, "external_probe_calls", 0)
 
-    cond do
-      not external_attempts_available?(recovery, policy) ->
-        {:error, :mvp_recovery_resource_exhausted}
+      cond do
+        data["external_probe_inflight"] == true ->
+          {:error, :mvp_acceptance_probe_uncertain}
 
-      not active_budget_at_handoff?(policy, recovery, record) ->
-        {:error, :mvp_recovery_resource_exhausted}
+        attempts >= policy.max_agent_attempts ->
+          {:error, :mvp_recovery_resource_exhausted}
 
-      not Recovery.within_budget?(policy, recovery["started_at"], now, credited) ->
-        {:error, :mvp_recovery_resource_exhausted}
+        not active_budget_at_handoff?(policy, recovery, record) ->
+          {:error, :mvp_recovery_resource_exhausted}
 
-      true ->
-        :ok
+        not Recovery.within_budget?(policy, recovery["started_at"], now, credited) ->
+          {:error, :mvp_recovery_resource_exhausted}
+
+        true ->
+          :ok
+      end
     end
   end
 
-  defp external_attempts_available?(recovery, policy) do
-    is_integer(recovery["agent_attempts"]) and
-      recovery["agent_attempts"] >= 0 and
-      recovery["agent_attempts"] < policy.max_agent_attempts
+  defp external_budget_credit(data, wait_ms) do
+    recovery = data["recovery"]
+
+    counters = [
+      recovery["agent_attempts"],
+      recovery["external_wait_ms"] || 0,
+      Map.get(data, "external_probe_calls", 0),
+      Map.get(data, "external_probe_ms", 0),
+      Map.get(data, "external_probe_charged_ms", 0)
+    ]
+
+    with true <- Enum.all?(counters, &(is_integer(&1) and &1 >= 0)),
+         true <- Map.get(data, "external_probe_charged_ms", 0) <= Map.get(data, "external_probe_ms", 0),
+         credit =
+           (recovery["external_wait_ms"] || 0) + wait_ms -
+             (Map.get(data, "external_probe_ms", 0) - Map.get(data, "external_probe_charged_ms", 0)),
+         true <- credit >= 0 do
+      {:ok, credit}
+    else
+      _ -> {:error, :mvp_recovery_resource_exhausted}
+    end
   end
 
   defp active_budget_at_handoff?(policy, recovery, record) do
@@ -1804,6 +1849,20 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
+  defp finish(context, {:error, {:mvp_awaiting_external, _}} = result) do
+    profiles = get_in(context.settings, [:sandbox, "acceptance_profiles"]) || %{}
+
+    if map_size(profiles) > 0 and is_nil(Map.get(context, :external_review_id)) and
+         not File.exists?(Path.join(context.evidence, "operator-recheck.lock")) do
+      case AutomaticAcceptance.prepare(context) do
+        {:ok, digest, authorization} -> resume_external(context, digest, authorization)
+        _ -> result
+      end
+    else
+      result
+    end
+  end
+
   defp finish(%{limit: limit, receipt: receipt}, {:error, reason} = result) when limit > 0 do
     unless Receipt.read(receipt)["status"] in ["publish_pending", "comment_pending", "awaiting_external"] do
       Receipt.update(receipt, "blocked", %{"reason" => inspect(reason)})
@@ -1906,6 +1965,12 @@ defmodule SymphonyElixir.Mvp.Executor do
   defp run_agent(context, role, prompt) do
     context = sandbox_agent(context, role)
 
+    with :ok <- ExecutionSandbox.preflight(context) do
+      run_prepared_agent(context, role, prompt)
+    end
+  end
+
+  defp run_prepared_agent(context, role, prompt) do
     if Recovery.enabled?(context.settings) do
       head = Commands.git!(["rev-parse", "HEAD"], context.workspace)
 
@@ -2039,19 +2104,30 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp recover_failure(context, number, sha, feedback) do
-    with :ok <- recovery_budget(context, number + 1) do
+    with :ok <- recovery_budget(context, number) do
       policy = context.settings.recovery
       state = Receipt.read(context.receipt)["recovery"]
       history = Enum.map(state["events"], & &1["fingerprint"])
       event = %{"round" => number, "fingerprint" => Recovery.fingerprint(feedback), "feedback" => feedback}
       Receipt.update(context.receipt, "recovering", %{"recovery" => Map.put(state, "events", state["events"] ++ [event])})
 
-      if Map.get(context, :force_diagnosis, false) or Recovery.diagnose?(policy, number, feedback, history) do
-        diagnose(context, number, sha, feedback)
-      else
-        round(context, number + 1, sha, feedback)
+      case Failure.action(feedback) do
+        :stop ->
+          {:error, {:mvp_trusted_failure_requires_attention, feedback}}
+
+        :retry_stage ->
+          diagnostic_action(context, number, sha, feedback, %{"action" => "retry_stage"})
+
+        _ ->
+          recover_code_or_unknown(context, number, sha, feedback, policy, history)
       end
     end
+  end
+
+  defp recover_code_or_unknown(context, number, sha, feedback, policy, history) do
+    if feedback["category"] == "unknown" or Map.get(context, :force_diagnosis, false) or Recovery.diagnose?(policy, number, feedback, history),
+      do: diagnose(context, number, sha, feedback),
+      else: round(context, number + 1, sha, feedback)
   end
 
   defp diagnose(context, number, sha, feedback) do
@@ -2085,7 +2161,9 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp diagnostic_action(context, number, sha, feedback, %{"action" => "repair_code"} = diagnosis) do
-    round(context, number + 1, sha, Map.put(feedback, "diagnosis", diagnosis))
+    if Failure.permits_code_repair?(feedback),
+      do: round(context, number + 1, sha, Map.put(feedback, "diagnosis", diagnosis)),
+      else: {:error, :mvp_trusted_failure_requires_attention}
   end
 
   defp diagnostic_action(context, number, sha, %{"kind" => "check"}, %{"action" => "retry_stage"}) do
@@ -2095,6 +2173,8 @@ defmodule SymphonyElixir.Mvp.Executor do
       evidence = Path.join(List.last(Receipt.read(context.receipt)["rounds"])["evidence"], "check-attempt-#{attempt}")
 
       with :ok <- File.mkdir(evidence) do
+        data = Receipt.read(context.receipt)
+        :ok = Receipt.update(context.receipt, "checking", %{"stage_retries" => Map.get(data, "stage_retries", 0) + 1})
         check_and_review(Map.put(context, :check_attempt, attempt), number, sha, evidence)
       end
     else
@@ -2294,6 +2374,15 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   defp issue_scope(issue), do: Map.new(Map.take(issue, [:id, :identifier, :title, :description]), fn {key, value} -> {Atom.to_string(key), value} end)
 
+  defp check_failure_binding(context, result, log_path) do
+    failure = Failure.check(result, %{"candidate_sha" => Receipt.read(context.receipt)["candidate_sha"], "evidence_ref" => log_path})
+    # Historical non-rootless contracts allowed a diagnostic to select code repair
+    # for unclassified custom commands. Do not silently change that frozen policy.
+    if get_in(context.settings, [:sandbox, "backend"]) != "rootless" and failure["category"] == "unknown",
+      do: Map.drop(failure, ~w(category reason retryable)),
+      else: failure
+  end
+
   defp feedback_prompt(nil), do: ""
 
   defp feedback_prompt(%{"kind" => "coding"} = failure) do
@@ -2447,6 +2536,7 @@ defmodule SymphonyElixir.Mvp.Executor do
       end
 
     check = %{"index" => index, "argv" => command, "log_path" => log_path, "exit_status" => status, "repairable" => status == 10}
+    check = Map.merge(check, check_failure_binding(context, result, log_path))
     check = if is_nil(status), do: Map.put(check, "error", inspect(result)), else: check
     File.write!(Path.join(evidence, "check-#{index}.json"), Jason.encode!(check, pretty: true))
 

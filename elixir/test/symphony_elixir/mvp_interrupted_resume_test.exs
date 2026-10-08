@@ -459,7 +459,17 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
       if with_services do
         System.put_env("GH12_TIMEOUT_KEY", "synthetic-timeout-key")
         on_exit(fn -> System.delete_env("GH12_TIMEOUT_KEY") end)
-        {:ok, services} = ModelServices.freeze(models, settings)
+        # Freeze a complete synthetic service; never depend on the developer's CODEX_HOME.
+        home = Path.join(root, "timeout-model-home")
+        File.mkdir_p!(home)
+
+        File.write!(
+          Path.join(home, "config.toml"),
+          "model_provider = \"timeout_fixture\"\n[model_providers.timeout_fixture]\nname = \"Timeout fixture\"\nbase_url = \"https://timeout.example/v1\"\nwire_api = \"responses\"\nenv_key = \"GH12_TIMEOUT_KEY\"\n"
+        )
+
+        freeze_settings = Map.put(settings, :sandbox, %{"auth_home" => home, enabled: false})
+        {:ok, services} = ModelServices.freeze(models, freeze_settings)
         {:ok, identity} = ModelServices.credential_identity("env:GH12_TIMEOUT_KEY")
         services = Map.new(services, fn {role, service} -> {role, service |> Map.put("credential_ref", "env:GH12_TIMEOUT_KEY") |> Map.put("credential_identity", identity)} end)
         Map.put(models, :services, services)
