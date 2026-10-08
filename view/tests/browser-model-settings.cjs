@@ -5,11 +5,13 @@ const choices = ['p', 'q'].flatMap(preset => ['alpha', 'beta'].flatMap(model => 
   selection:selection(preset, model, effort), provider:'openai', credential_ref:'env:FIXTURE',
   version:1, reasoning_mode:'effort', state:'available',
 }))));
+choices.push({selection:selection('legacy', 'gpt-legacy', null), default_value:'legacy',
+  provider:'openai', credential_ref:'env:FIXTURE', version:1, reasoning_mode:'fixed', state:'available'});
 const token = 'synthetic_browser_admin';
 function settingsFixture(json) {
   const state = Object.fromEntries(['a', 'b'].map(id => [id, {revision:0, workflow_version:'fixture-' + id,
-    defaults:{coder:selection('p', 'alpha', 'high'), reviewer:selection('p', 'alpha', 'high')},
-    effective_defaults:{coder:selection('p', 'alpha', 'high'), reviewer:selection('p', 'alpha', 'high')},
+    defaults:{coder:id === 'a' ? 'legacy' : selection('p', 'alpha', 'high'), reviewer:id === 'a' ? 'legacy' : selection('p', 'alpha', 'high')},
+    effective_defaults:{coder:id === 'a' ? selection('legacy', 'gpt-legacy', null) : selection('p', 'alpha', 'high'), reviewer:id === 'a' ? selection('legacy', 'gpt-legacy', null) : selection('p', 'alpha', 'high')},
     roles:{coder:choices, reviewer:choices}}]));
   return async (req, res, pathname) => {
     if (req.headers.authorization !== 'Bearer ' + token) return json(res, {error:'unauthorized'}, 401);
@@ -24,8 +26,14 @@ function settingsFixture(json) {
       if (body.revision !== state[id].revision || body.workflow_version !== state[id].workflow_version)
         return json(res, {error:'conflict'}, 409);
       assert.deepEqual(Object.keys(body).sort(), ['defaults', 'revision', 'workflow_version']);
-      for (const role of ['coder', 'reviewer']) assert(choices.some(x => JSON.stringify(x.selection) === JSON.stringify(body.defaults[role])));
-      state[id] = {...state[id], defaults:body.defaults, effective_defaults:body.defaults, revision:body.revision + 1};
+      const effective = {};
+      for (const role of ['coder', 'reviewer']) {
+        const value = body.defaults[role];
+        const option = choices.find(x => JSON.stringify(x.default_value ?? x.selection) === JSON.stringify(value));
+        assert(option, 'only exact validated combinations or legacy strings may be saved');
+        effective[role] = option.selection;
+      }
+      state[id] = {...state[id], defaults:body.defaults, effective_defaults:effective, revision:body.revision + 1};
     } else assert.equal(req.method, 'GET');
     return json(res, state[id]);
   };
@@ -70,6 +78,10 @@ async function settingsReading(page) {
   await field('token').focus(); await page.keyboard.type(token); await page.keyboard.press('Tab');
   await focus('login'); await page.keyboard.press('Enter'); await status('请选择仓库'); await focus('repository');
   await read('a');
+  for (const role of ['coder', 'reviewer']) await checkRole(role, 'legacy', 'gpt-legacy', null);
+  assert.match(await page.locator('#model-settings').innerText(), /未指定思考参数/);
+  assert.doesNotMatch(await page.locator('#model-settings').innerText(), /当前选择不可用|深度 null/);
+  assert.equal(await field('coder-effort').locator('option').count(), 2, 'no invented explicit depth or empty parameter choice');
   await choose('coder-preset', 'q');
   assert.equal(await field('save').isDisabled(), true);
   await page.keyboard.press('Tab'); await focus('coder-model');
@@ -96,7 +108,7 @@ async function settingsReading(page) {
   });
   await enter('save'); await status('fixture_unavailable'); await checkRole('coder', 'q', 'beta', 'low');
   await page.unroute('**/api/model-settings/repositories/a');
-  await enter('cancel'); await status('已取消'); await checkRole('coder', 'p', 'alpha', 'high'); await clean();
+  await enter('cancel'); await status('已取消'); await checkRole('coder', 'legacy', 'gpt-legacy', null); await clean();
   await enter('reload'); await status('已读取');
   assert.match(await page.locator('#model-settings').innerText(), /配置版本 1/);
   for (const [id, targets] of [['a', [['coder', 'q', 'beta', 'low'], ['reviewer', 'q', 'alpha', 'low']]],
@@ -125,11 +137,33 @@ async function settingsReading(page) {
   page.once('dialog', async dialog => { assert.match(dialog.message(), /未保存/); await dialog.accept(); });
   await read('b'); await checkRole('coder', 'p', 'beta', 'high'); await checkRole('reviewer', 'q', 'beta', 'low');
   assert.match(await page.locator('#model-settings').innerText(), /配置版本 2/);
+  const otherRepo = await (await page.request.get(endpoint.replace(/a$/, 'b'), {headers})).json();
+  await read('a');
+  for (const role of ['coder', 'reviewer']) {
+    const before = await (await page.request.get(endpoint, {headers})).json();
+    await choose(role + '-preset', 'legacy'); await choose(role + '-model', 'gpt-legacy');
+    await choose(role + '-effort', parameter(null));
+    await page.route('**/api/model-settings/repositories/a', async route => {
+      if (route.request().method() === 'POST') return route.fulfill({status:503, json:{error:'legacy_retry_unavailable'}});
+      await route.continue();
+    });
+    await enter('save'); await status('legacy_retry_unavailable'); await checkRole(role, 'legacy', 'gpt-legacy', null);
+    assert.deepEqual((await (await page.request.get(endpoint, {headers})).json()), before, 'failed legacy save preserves values');
+    await page.unroute('**/api/model-settings/repositories/a');
+    await enter('save'); await status('保存成功'); await clean();
+    const after = await (await page.request.get(endpoint, {headers})).json();
+    assert.equal(after.defaults[role], 'legacy', 'legacy null must save using original preset semantics');
+    assert.deepEqual(after.effective_defaults[role], selection('legacy', 'gpt-legacy', null));
+    const other = role === 'coder' ? 'reviewer' : 'coder';
+    assert.deepEqual(after.defaults[other], before.defaults[other]);
+    assert.deepEqual((await (await page.request.get(endpoint.replace(/a$/, 'b'), {headers})).json()), otherRepo);
+  }
   // Refresh clears the in-memory token and rereads persisted configuration.
   await page.reload(); await field('token').waitFor({state:'visible'});
   await field('token').focus(); await page.keyboard.type(token); await page.keyboard.press('Tab');
   await page.keyboard.press('Enter'); await status('请选择仓库');
-  await read('a'); await checkRole('coder', 'q', 'beta', 'low'); await checkRole('reviewer', 'q', 'alpha', 'low');
+  await read('a'); await checkRole('coder', 'legacy', 'gpt-legacy', null); await checkRole('reviewer', 'legacy', 'gpt-legacy', null);
+  assert.doesNotMatch(await page.locator('#model-settings').innerText(), /当前选择不可用|深度 null/);
   await read('b'); await checkRole('coder', 'p', 'beta', 'high'); await checkRole('reviewer', 'q', 'beta', 'low');
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'narrow settings overflow');
   for (const id of ['repository', 'coder-preset', 'coder-model', 'coder-effort', 'reviewer-preset', 'reviewer-model', 'reviewer-effort', 'cancel', 'reload']) {

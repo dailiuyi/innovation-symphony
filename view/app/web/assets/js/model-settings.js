@@ -66,7 +66,8 @@ function paint() {
     await perform(async () => {
       const original = normalizedDefaults(saved);
       const defaults = Object.fromEntries(roles.map(role => [role,
-        equal(draft[role], original[role]) ? saved.defaults[role] : draft[role],
+        equal(draft[role], original[role]) ? saved.defaults[role] :
+          (saved.roles[role].find(x => x.state === 'available' && equal(x.selection, draft[role]))?.default_value ?? draft[role]),
       ]));
       accept(await request('repositories/' + current, {revision: saved.revision, workflow_version: saved.workflow_version, defaults}));
       message = '保存成功，只影响新领取任务';
@@ -108,6 +109,7 @@ function renderRole(role) {
 export function depthLabel(option) {
   const effort = option.selection.parameters.reasoning_effort;
   if (option.reasoning_mode === 'unknown') return '思考能力未知';
+  if (effort === null) return '未指定思考参数（沿用预设）';
   if (effort === undefined) return '此渠道不支持调节';
   if (effort === 'none') return '关闭思考 (none)';
   if (option.reasoning_mode === 'switch') return `开启思考 (${effort})`;

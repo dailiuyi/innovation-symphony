@@ -107,15 +107,18 @@ defmodule SymphonyElixir.Mvp.ModelSettings do
   defp model_choices(registry, template, preset, {model, metadata}) do
     discovery = metadata["discovery"][ModelServices.channel_binding(template)] || %{"reasoning_mode" => "unknown"}
     efforts = discovery["reasoning_efforts"] || []
-    values = if efforts == [], do: [nil], else: efforts
+    parameters = if efforts == [], do: [%{}], else: Enum.map(efforts, &%{"reasoning_effort" => &1})
+    legacy_null = template["provider"] == "openai" and model == template["model"] and template["parameters"] == %{"reasoning_effort" => nil}
+    parameters = if legacy_null, do: parameters ++ [template["parameters"]], else: parameters
 
-    Enum.map(values, fn effort ->
-      parameters = if effort, do: %{"reasoning_effort" => effort}, else: %{}
+    Enum.map(parameters, fn parameters ->
       service = template |> Map.put("model", model) |> Map.put("parameters", parameters)
       status = ModelCatalog.status(registry, service)
+      selection = %{"preset" => template["id"], "model" => model, "parameters" => parameters}
 
       %{
-        "selection" => %{"preset" => template["id"], "model" => model, "parameters" => parameters},
+        "selection" => selection,
+        "default_value" => if(legacy_null and parameters == template["parameters"], do: template["id"], else: selection),
         "provider" => preset["provider"],
         "credential_ref" => safe_reference(preset["credential_ref"]),
         "version" => preset["version"],

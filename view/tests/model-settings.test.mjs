@@ -106,6 +106,7 @@ for (const id of ['a', 'b']) {
 assert(depthLabel(options[3]) === '关闭思考 (none)', 'Off control mislabeled');
 assert(depthLabel(options[4]) === '开启思考 (high)', 'Switch control mislabeled');
 assert(depthLabel(options[6]) === '思考能力未知', 'Unknown capability mislabeled');
+assert(depthLabel(choice('legacy', 'gpt-legacy', null, 'fixed')) === '未指定思考参数（沿用预设）', 'Legacy null must not be labeled as depth or disabled thinking');
 assert(!root.html.includes('synthetic_admin'), 'Token leaked into rendered content');
 console.log('Model settings interaction regression passed (synthetic DOM/API).');
 

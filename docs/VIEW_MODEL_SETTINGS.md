@@ -48,6 +48,19 @@
 不修改 Linux 运行预设；本任务 gpt-6.1-sol/high 的运行证据由控制器独立核验。
 真实 DeepSeek/GPT 双角色、批准内网代理配置及准确候选独立 Review 待控制器／所有者验收。
 
+### 旧 OpenAI null 预设设置兼容修复计划
+
+本轮核实设置枚举将旧预设的 null 替换成空对象或目录中的显式档位，导致精确绑定
+旧参数的有效证据无法展示。新增接口回归在修复前失败：当前合法默认没有 available 选项。
+修复仅补入原 OpenAI 预设原型号的精确 null 组合，状态仍由渠道、当前凭据和本角色
+有效证据校验。选项提供 `default_value`，页面保存旧 null 组合时提交原字符串预设；
+不开放新默认对象中的 null，也不补造空对象／显式档位证据。页面显示“未指定思考参数”，
+与关闭思考和不支持调节区分。无需数据迁移；回滚源码不改变原预设及证据，但会重新
+出现设置枚举缺口。核验双仓库双角色保存、失败／冲突保值、重新读取及浏览器刷新；
+原 packaged 管理入口、冻结和撤权回归保留。最终运行结果在本页末尾单列。
+
+这是 IS-079 范围内的兼容修复，无新增用户决定或权限；外部停点保持。
+
 ## 迁移与回滚
 
 旧字符串 defaults 无须迁移。先由后台登记渠道能力并验证所需角色组合，再在页面选择。
@@ -107,8 +120,8 @@ Body 严格为 `revision`、`workflow_version`、`defaults`；后者只包含 co
 
 | GH-16 合同条目 | 仓库内验证 | 外部停点 |
 | --- | --- | --- |
-| GH16-A01 两仓库、双角色、持久读取及重启 | MvpModelSettingsTest：分别保存四份组合，逐次核验角色／仓库隔离、版本及目录不变；两个 packaged 管理进程重启后读取全部组合 | 真实受管仓库配置与部署 |
-| GH16-A02 未保存、取消、切换、保存／失败／冲突 | model-settings.test.mjs 草稿和失败保留；browser-model-settings.cjs 原生键盘选择／保存／取消、切换确认、409／503、刷新及 390×844 控件可见与操作 | 已完成合成数据真浏览器检查；真实部署另验 |
+| GH16-A01 两仓库、双角色、持久读取及重启 | MvpModelSettingsTest：分别保存四份组合，逐次核验角色／仓库隔离、版本及目录不变；旧字符串／null 默认在空档位及显式档位目录下精确展示、选择和保存；packaged 管理进程重启后读取普通及旧 null 组合 | 真实受管仓库配置与部署 |
+| GH16-A02 未保存、取消、切换、保存／失败／冲突 | model-settings.test.mjs 草稿和失败保留；browser-model-settings.cjs 原生键盘选择／保存／取消、切换确认、409／503、刷新及 390×844 控件可见与操作；旧 null 默认明确显示未指定参数，选择时保存字符串、失败重试和刷新后保留精确参数及其他角色／仓库 | 已完成合成数据真浏览器检查；真实部署另验 |
 | GH16-A03 OpenAI 兼容与 DeepSeek 工具／输出 | ModelServices／Routing 测试旧 null 配置加载、领取和执行；原生 Codex + 本地 TLS Responses + 外部执行器工具往返 | 真实账号双角色权限与推理 |
 | GH16-A04 分档、开关、不可关闭、固定、未知、过期／绕过 | MvpModelSettingsTest 为双角色 none／high 建立精确证据并分别保存，非法 low／未知／过期／固定参数请求拒绝且原值不变；Routing 断言 fixed 不携带任何思考参数，分档仅发送所选 effort；JS 模型切换清除深度 | 当前真实账号目录 |
 | GH16-A05 参数、连接、凭据引用与角色隔离 | 路由测试检查独立 home、模型、provider、effort、HTTP 请求与冻结 options | 真实账号准确有效参数和返回 |
@@ -582,3 +595,45 @@ InterruptedResumeTest／ExternalHandoffTest：72 项通过；无跳过。
 没有凭据、付费调用或真实材料外发授权。不添加 ready，不修改运行预设。
 仅保存本仓库源码、测试、规格及本地检查产物；未提交、push、创建 PR、合并、
 安装、部署或升级服务，未修改 .git、运行凭据、兄弟目录或控制器证据。
+
+## 旧 null 预设设置兼容修复的本轮检查
+
+新增 `settings preserve and save verified legacy null presets without inventing depth evidence`
+回归在修复前失败：当前合法默认的选项缺失，`current["state"]` 为 nil。修复后定向
+模型设置检查 10 项通过。最终该回归还包含双仓库／双角色、空档位和显式档位目录、
+原参数及全部证据不变、字符串选择保存、精确 null 对象请求拒绝、CAS 冲突保值和
+packaged 管理进程两次重启读取。普通配置的既有 packaged 回归同样保留。
+
+完整 View 入口使用预装 Python／Node／Playwright，退出 0；输出目录
+`.check-evidence/gh16-legacy-null-view/`，完整日志
+`.check-evidence/gh16-legacy-null-view.log`。38 项 Python、11 项 JS、11 项 Linux
+回归均无失败／跳过；固定迁移比较、self_check、八种入口及九组 Chromium 操作通过。
+设置浏览器新增旧字符串默认的准确显示、null 控制标签、重新选择／保存、503 保留
+草稿及成功重试、刷新后精确参数和其他角色／仓库不变断言。浏览器 Node v24.19.0、
+Playwright 1.62.1、Chromium 151.0.7922.34；数据和管理员身份均为合成夹具。
+
+该输出目录的 `source-identity.json` 保存本轮 View 和验证入口共 72 个文件的
+SHA-256 清单；它只标识未提交工作区内容，原 HEAD 不代表包含修改的最终候选。
+`code-check-result.json` 的 formal_acceptance／real_windows_wsl 均为 false。
+最终候选 SHA、完整正式证据和独立 Review 仍由控制器绑定；真实双角色账号调用及
+获准内网代理／TLS／来源限制没有外部条件，未执行，不采用旧候选或模拟证据替代。
+没有提交、发布、安装、部署、升级、添加 ready 或修改运行凭据／配置。
+
+固定 `python3 /opt/symphony/scripts/check_isolated.py candidate` 本轮退出 0：格式、
+公开函数规格、严格 Credo、完整覆盖测试、Dialyzer 和 escript 构建全部通过。
+815 项中 809 通过、0 失败、6 项既有外部 E2E 跳过、0 排除、0 无效，覆盖率 100%。
+报告目录 `.check-evidence/candidate-kso3baji/`，完整日志
+`.check-evidence/gh16-legacy-null-candidate.log`；`policy_changes: []`，候选没有注入
+基线夹具维护。跳过项为 Asana、Jira、GitHub、GitLab、Linear 本地／SSH。
+检查记录中的原 HEAD `fdb391d98ebbc2ed4bb366065d24a1da2b0224da` 不包含本次修改，
+不能作为新候选 SHA 或代替控制器正式验证／独立 Review。
+
+固定 `python3 /opt/symphony/scripts/check_isolated.py baseline` 本轮退出 0：789 项中
+783 通过、0 失败、6 项既有外部 E2E 跳过、0 排除、0 无效；报告目录
+`.check-evidence/baseline-g0ctsp3j/`，完整日志 `.check-evidence/gh16-legacy-null-baseline.log`。
+`policy_changes: []`；可信入口已有的权限夹具维护仅在临时 baseline harness 初始化
+0644，记录 `assertions_removed: false`，未修改冻结基线、可信入口或断言。
+`git diff --check` 通过。工作区源码摘要与三组自检位置记录在
+`.check-evidence/gh16-legacy-null-worktree.json`，不替代最终 SHA 的正式证据。
+本轮所有适用离线检查通过；A03 真实账号、A07 获准内网入口和 A11 准确候选
+正式验证／独立 Review 仍未完成，没有降低验收标准或扩大授权。

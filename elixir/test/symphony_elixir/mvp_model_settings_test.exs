@@ -125,6 +125,69 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     end
   end
 
+  @tag timeout: 120_000
+  test "settings preserve and save verified legacy null presets without inventing depth evidence", c do
+    for {id, efforts} <- [{"a", []}, {"b", ~w(medium high)}] do
+      repo = c.config["repositories"][id]
+      s = F.settings(repo["state_dir"], %{"reasoning_effort" => nil})
+
+      registry =
+        Enum.reduce(~w(coding reviewing), s.model_services, fn preset, registry ->
+          {:ok, registry} = ModelCatalog.register(registry, preset, "gpt-test", efforts)
+          registry
+        end)
+
+      registry =
+        Enum.reduce([{:coder, "reviewing"}, {:reviewer, "coding"}], registry, fn {role, preset}, registry ->
+          {:ok, service} = ModelServices.snapshot(%{s | model_services: registry}, preset, role, "fixture")
+          {:ok, registry} = ModelCatalog.attest(registry, service, F.proof(role))
+          registry
+        end)
+
+      {:ok, wf} = Workflow.load(s.workflow_path)
+      config = wf.config |> put_in(["tracker", "provider"], %{"repo" => repo["repository"]}) |> put_in(["mvp", "model_services"], registry)
+      File.write!(s.workflow_path, "---\n" <> Jason.encode!(config) <> "\n---\nfixture")
+    end
+
+    for id <- ~w(a b), {role, preset} <- [{"coder", "reviewing"}, {"reviewer", "coding"}] do
+      {:ok, shown} = ModelSettings.show(c.config, id)
+      other_id = if id == "a", do: "b", else: "a"
+      {:ok, other_repo} = ModelSettings.show(c.config, other_id)
+      other_role = if role == "coder", do: "reviewer", else: "coder"
+      {:ok, s} = ModelSettings.settings(c.config, id)
+      invariant = Map.drop(s.model_services, ~w(defaults revision))
+      current = Enum.find(shown["roles"][role], &(&1["selection"] == shown["effective_defaults"][role]))
+      assert current["state"] == "available"
+      selection = %{"preset" => preset, "model" => "gpt-test", "parameters" => %{"reasoning_effort" => nil}}
+      selected = Enum.find(shown["roles"][role], &(&1["selection"] == selection))
+      assert selected["state"] == "available"
+      assert selected["default_value"] == preset
+      assert Enum.all?(shown["roles"][role], &(&1["state"] != "available" or &1["selection"]["parameters"] == %{"reasoning_effort" => nil}))
+      request = %{"defaults" => Map.put(shown["defaults"], role, selected["default_value"]), "revision" => shown["revision"], "workflow_version" => shown["workflow_version"]}
+      assert {:ok, saved} = ModelSettings.save(c.config, id, request)
+      assert saved["defaults"][role] == preset
+      assert saved["effective_defaults"][role] == selection
+      assert saved["defaults"][other_role] == shown["defaults"][other_role]
+      assert {:ok, ^other_repo} = ModelSettings.show(c.config, other_id)
+      {:ok, persisted} = ModelServices.load(ModelServices.path(s), nil)
+      assert Map.drop(persisted, ~w(defaults revision)) == invariant
+      assert {:ok, reloaded_config} = ModelSettings.load(c.path)
+      assert {:ok, ^saved} = ModelSettings.show(reloaded_config, id)
+      assert {:error, :model_services_conflict} = ModelSettings.save(c.config, id, request)
+      invalid = %{request | "revision" => saved["revision"], "defaults" => Map.put(saved["defaults"], role, selection)}
+      assert {:error, :invalid_model_services} = ModelSettings.save(c.config, id, invalid)
+      assert {:ok, ^saved} = ModelSettings.show(c.config, id)
+    end
+
+    saved =
+      Map.new(~w(a b), fn id ->
+        {:ok, shown} = ModelSettings.show(c.config, id)
+        {id, shown}
+      end)
+
+    assert_packaged_restarts!(c, saved)
+  end
+
   test "administrator entrypoint binds loopback; HTTP auth, origin, input and scope protection", c do
     assert ModelSettingsServer.init(c.path) == c.path
     assert {:ok, pid} = CLI.model_settings_start(c.path)
@@ -316,6 +379,10 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
 
   @tag timeout: 120_000
   test "packaged management process starts independently and rereads defaults after restart", c do
+    assert_packaged_restarts!(c, save_four_defaults!(c.config))
+  end
+
+  defp assert_packaged_restarts!(c, saved) do
     {build, 0} = System.cmd("timeout", ["--signal=KILL", "90s", "mix", "escript.build"], env: [{"MIX_ENV", "test"}], stderr_to_stdout: true)
     assert build =~ "symphony" or build == ""
     executable = Path.expand("bin/symphony")
@@ -324,7 +391,6 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     :gen_tcp.close(socket)
     File.write!(c.path, Jason.encode!(Map.put(c.config, "port", port)))
     headers = [{"authorization", "Bearer " <> String.duplicate("a", 40)}]
-    saved = save_four_defaults!(c.config)
     before_files = Map.new(~w(a b), &{&1, Enum.sort(File.ls!(c.config["repositories"][&1]["state_dir"]))})
 
     for _ <- 1..2 do
