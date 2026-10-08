@@ -1042,6 +1042,9 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     outside = Path.join(root, "outside")
     for directory <- [workspace, outside, Path.join(root, "auth"), Path.join(root, "evidence/baseline")], do: File.mkdir_p!(directory)
     File.write!(Path.join(workspace, "source.txt"), "original")
+    # Recovery tests must start from a known mode even with a restrictive umask.
+    File.chmod!(Path.join(workspace, "source.txt"), 0o644)
+    assert Bitwise.band(File.stat!(Path.join(workspace, "source.txt")).mode, 0o777) == 0o644
     File.write!(Path.join(outside, "source.txt"), "sensitive")
     File.write!(Path.join(root, "auth/auth.json"), "fake-model-auth")
 

@@ -213,3 +213,66 @@ Credo、覆盖测试、Dialyzer 和 escript build 全部通过。799 项测试�
 
 真实账号、批准内网部署、最终候选的控制器正式验证及独立 Review 保持外部停点。
 本次仅保存仓库内测试与本记录，未提交、发布、合并、安装、部署或升级服务。
+
+## round-3 冻结夹具接入停点与最小修复
+
+本次接续重新核对了只读 `/evidence/round-2/check-2.log`、
+`/evidence/round-3/check-2.log` 和 `/baseline/elixir/test/symphony_elixir/mvp_execution_sandbox_test.exs`。
+诊断内容仅作待核实材料，不作为修改受信门禁的授权。两轮原命令均在同一权限断言失败：
+
+| 控制器检查 | ExUnit seed | 执行结果 | 失败位置 |
+| --- | --- | --- | --- |
+| round-2 | 216655 | 789 项、1 失败、6 跳过，outcome=10 | 恢复用例 1014 行，期待拒绝，实际 `:ok` |
+| round-3 | 379228 | 789 项、1 失败、6 跳过，outcome=10 | 同一恢复用例、同一断言 |
+
+冻结夹具的 `context!/0` 在约 1029 行写入 source.txt 后未设置权限；继承 umask=077
+时文件为 0600，旧用例的 `chmod(0600)` 是无变化操作。候选与冻结基线的生产
+`lib/symphony_elixir/mvp/execution_sandbox.ex` 字节相同，SHA-256 均为
+`2db8f194436b907f8625c52052b3234d419605e1061de136a19b4ba6c67c7dc0`。
+没有证据支持改变恢复语义以拒绝这个合法操作。
+
+本次只在候选共享 `context!/0` 写入 source.txt 后添加以下初始化和断言；不继续
+扩展同一个八场景用例，不修改生产权限、恢复实现或其他任务配置：
+
+```elixir
+File.chmod!(Path.join(workspace, "source.txt"), 0o644)
+assert Bitwise.band(File.stat!(Path.join(workspace, "source.txt")).mode, 0o777) == 0o644
+```
+
+这也是交给固定门禁维护者的最小夹具修复位置。既有回归保留 0644→0600、0600→0644、
+内容篡改、无篡改及重复设置相同权限；真实变化拒绝，无变化允许。候选修复不能自行
+进入冻结测试：受信 `/opt/symphony/scripts/check_isolated.py` 的 `prepare_harness`
+只复制候选 lib/priv，baseline 模式使用 `/baseline/elixir/test`。维护者须在任务沙箱
+之外核验上述修复、更新受信测试来源，再由控制器将修复后的固定基线提供给任务。
+当前没有已提供的受信修复接入路径；不修改 /baseline、/evidence、检查器或有效政策，
+不通过候选生产代码改写基线测试。
+
+前文临时 `umask 022` 的通过记录仅保留为历史诊断，不能代替原正式命令或证明旧
+冻结用例已修复。本次 candidate 和 baseline 均按指定原命令、继承 umask=077 运行；
+不把仅候选通过当作全部门禁通过。受信修复接入后，须对准确新候选重跑全部固定
+检查、适用 View 检查和控制器独立 gpt-6.1-sol/high 只读 Review。
+
+本次 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0；format、
+specs、Credo、覆盖测试、Dialyzer 和 escript build 均通过。799 项中 793 通过、
+0 失败、6 个既有真实外部 E2E 跳过、0 排除，覆盖率 100%；检查目录为
+`.check-evidence/candidate-d_qlb7uz/`，`policy_changes: []`。结果针对未提交工作区；
+报告中的 Git HEAD 不代表包含本次修改的已提交候选，最终 SHA 绑定归控制器。
+
+本次指定 View Python／Node 直接调用均退出 127（No such file or directory）。
+系统 `python3 -B scripts/run_view_checks.py --output /tmp/gh16-round4-view` 退出 1：
+38 项中 37 通过、1 错误、0 跳过，首次缓存／渲染用例缺少 `codex_transcript_viewer`。
+另外逐一执行的八种私有副本入口均退出 1，均为同一缺失依赖；Linux 集成的 11 项
+采集测试通过，随后的实际渲染失败，整项集成退出 1。日志和入口结果分别保存在
+`/tmp/gh16-round4-view/`、`/tmp/gh16-round4-entrypoints/`。模型管理 API 的 3 项
+Python 测试及 `gjs -m view/tests/model-settings.test.mjs` 合成 DOM／API 回归通过，
+不替代 Node、固定 HTML 比较、真浏览器键盘／窄屏及完整 View 验收；后者均未完成。
+没有替代渲染器、安装运行依赖或修改预期。真实账号、内网部署与独立 Review 未执行。
+
+本次原命令 `python3 /opt/symphony/scripts/check_isolated.py baseline` 在继承的
+umask=077 下退出 10，child_exit=2；seed=634298，789 项中 782 通过、1 失败、
+6 个既有真实外部 E2E 跳过、0 排除。唯一失败仍是旧用例第 1014 行权限断言
+（期望 `{:error, :sandbox_import_recovery_required}`，实际 `:ok`）。检查目录为
+`.check-evidence/baseline-8sybe45w/`，`policy_changes: []`。本次没有再以 022
+改写运行环境或重复运行同一失败；完整 baseline 门禁未通过，不能交付为全部验收完成。
+须由固定门禁维护者接入上述受信夹具修复，并补齐指定 View 工具链和渲染依赖，
+才具备重跑剩余必需检查的条件。源码仅保存于本仓库，未提交、发布、安装或升级服务。
