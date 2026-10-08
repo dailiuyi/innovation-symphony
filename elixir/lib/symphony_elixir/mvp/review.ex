@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.Mvp.Review do
   @moduledoc "Structured review contract, including acceptance-to-test evidence in rework mode."
 
+  alias SymphonyElixir.Mvp.StructuredOutput
+
   @legacy %{
     "type" => "object",
     "additionalProperties" => false,
@@ -57,7 +59,7 @@ defmodule SymphonyElixir.Mvp.Review do
 
   @spec parse(String.t(), non_neg_integer()) :: {:ok, map()} | {:error, atom()}
   def parse(text, limit) do
-    with {:ok, value} <- Jason.decode(text),
+    with {:ok, value} <- StructuredOutput.decode(text),
          true <- valid?(value, limit) do
       {:ok, value}
     else
@@ -79,9 +81,18 @@ defmodule SymphonyElixir.Mvp.Review do
   @doc "Explain an invalid full review without repairing, extracting, or accepting any part of it."
   @spec validation_errors(String.t(), non_neg_integer()) :: [map()]
   def validation_errors(text, limit) do
-    case Jason.decode(text) do
-      {:ok, value} -> review_errors(value, limit)
-      {:error, _} -> [%{"path" => "$", "code" => "invalid_json", "message" => "Return exactly one JSON object, without prose, fences or trailing content."}]
+    case StructuredOutput.decode(text) do
+      {:ok, value} ->
+        review_errors(value, limit)
+
+      {:error, _} ->
+        [
+          %{
+            "path" => "$",
+            "code" => "invalid_json",
+            "message" => "Return exactly one JSON object, optionally inside a single json code fence covering the entire response, without prose or trailing content."
+          }
+        ]
     end
   end
 

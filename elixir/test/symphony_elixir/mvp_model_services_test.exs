@@ -307,6 +307,72 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:error, :model_not_discovered} = ModelCatalog.verify(s, "coding", "gpt-unknown", :coder, root)
   end
 
+  test "both role probes accept one full json fence but require the exact token and successful tool evidence", %{root: root, settings: s} do
+    {s, workspace} = F.probe_settings(s, root)
+    s = put_in(s.model_services["validations"], %{})
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}],
+        {shape, expected} <- [
+          {:bare, :ok},
+          {:fenced, :ok},
+          {:prose_before, :model_inference_validation_failed},
+          {:prose_after, :model_inference_validation_failed},
+          {:multiple, :model_inference_validation_failed},
+          {:text_fence, :model_inference_validation_failed},
+          {:concatenated, :model_inference_validation_failed},
+          {:incomplete, :model_inference_validation_failed},
+          {:wrong_token, :model_inference_validation_failed},
+          {:extra_field, :model_tool_probe_failed},
+          {:missing_tool, :model_tool_probe_failed},
+          {:failed_tool, :model_tool_probe_failed}
+        ] do
+      probe = fn w, _prompt, _issue, opts ->
+        assert opts[:read_only]
+        assert opts[:model_service]["role"] == Atom.to_string(role)
+        [file] = Path.wildcard(Path.join(w, "model-capability-probe-*"))
+        json = Jason.encode!(%{"token" => File.read!(file)})
+        fenced = "```json\n#{json}\n```"
+
+        unless shape == :missing_tool do
+          exit_code = if shape == :failed_tool, do: 1, else: 0
+          opts[:on_message].(%{payload: %{"method" => "item/completed", "params" => %{"item" => %{"type" => "commandExecution", "exitCode" => exit_code}}}})
+        end
+
+        text =
+          case shape do
+            :bare -> json
+            :prose_before -> "Result:\n" <> fenced
+            :prose_after -> fenced <> "\nDone."
+            :multiple -> fenced <> "\n" <> fenced
+            :text_fence -> "```text\n#{json}\n```"
+            :concatenated -> "```json\n#{json <> json}\n```"
+            :incomplete -> "```json\n#{json}"
+            :wrong_token -> "```json\n{\"token\":\"wrong\"}\n```"
+            :extra_field -> "```json\n#{Jason.encode!(%{"token" => File.read!(file), "approved" => true})}\n```"
+            _ -> " \n" <> fenced <> "\t "
+          end
+
+        {:ok, %{output_text: text}}
+      end
+
+      result = ModelCatalog.verify(s, id, "gpt-test", role, workspace, probe: F.sandbox_probe(probe))
+
+      if expected == :ok do
+        assert {:ok, updated} = result
+        {:ok, service} = ModelServices.snapshot(s, id, role, "fixture")
+        assert updated["validations"][ModelServices.binding(service)]["role"] == Atom.to_string(role)
+        assert updated["validations"][ModelServices.binding(service)]["capabilities"] == ~w(tools structured_output)
+        assert map_size(updated["validations"]) == 1
+        assert updated["defaults"] == s.model_services["defaults"]
+      else
+        assert {:error, ^expected} = result
+        assert s.model_services["validations"] == %{}
+      end
+
+      assert Path.wildcard(Path.join(workspace, "model-capability-probe-*")) == []
+    end
+  end
+
   test "frozen services survive default and version changes, but honor revocation", %{settings: s} do
     {:ok, choices} = Intake.resolve_comments([], s)
     context = %{settings: s, services: choices.services, models: Map.take(choices, [:coder, :reviewer])}

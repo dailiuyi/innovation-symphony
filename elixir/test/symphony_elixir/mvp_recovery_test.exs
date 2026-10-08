@@ -99,6 +99,7 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     for action <- schema["properties"]["action"]["enum"] do
       value = diagnosis(action)
       assert {:ok, ^value} = Recovery.parse(" \n" <> Jason.encode!(value) <> "\n ")
+      assert {:ok, ^value} = Recovery.parse(" \n```json\n#{Jason.encode!(value)}\n```\n ")
     end
   end
 
@@ -126,11 +127,30 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
 
     for value <- invalid_values do
       assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(Jason.encode!(value))
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse("```json\n#{Jason.encode!(value)}\n```")
     end
 
     json = Jason.encode!(valid)
 
-    for text <- [nil, 1, [], "", "broken", "```json\n#{json}\n```", "Diagnosis: #{json}", json <> json, json <> " done"] do
+    fenced = "```json\n#{json}\n```"
+    assert {:ok, ^valid} = Recovery.parse(fenced)
+
+    for text <- [
+          nil,
+          1,
+          [],
+          "",
+          "broken",
+          "Diagnosis: #{json}",
+          json <> json,
+          json <> " done",
+          "Diagnosis:\n" <> fenced,
+          fenced <> " done",
+          fenced <> "\n" <> fenced,
+          "```text\n#{json}\n```",
+          "```json\n#{json <> json}\n```",
+          "```json\n#{json}"
+        ] do
       assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(text)
     end
   end
@@ -158,6 +178,7 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
           Map.put(diagnosis("stop"), "external_conditions", [external])
         ] do
       assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(Jason.encode!(invalid))
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse("```json\n#{Jason.encode!(invalid)}\n```")
     end
 
     for action <- ["repair_code", "retry_stage", "stop"] do

@@ -31,8 +31,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, 'The tool did not read the fixture token')
             return
         if completed_tool:
+            text = '{"token":"offline-tool-token"}'
+            # Reproduce a channel dropping strict schema enforcement when tools
+            # are present. Keep the OpenAI bare-JSON compatibility route intact.
+            if body['model'].startswith('deepseek') and body.get('tools'):
+                text = '```json\n' + text + '\n```'
             output = [{'id':'msg_fixture', 'type':'message', 'role':'assistant', 'status':'completed',
-                       'content':[{'type':'output_text', 'text':'{"token":"offline-tool-token"}', 'annotations':[]}]}]
+                       'content':[{'type':'output_text', 'text':text, 'annotations':[]}]}]
         else:
             tools = body.get('tools', [])
             names = [t.get('name') for t in tools if t.get('type') == 'function']

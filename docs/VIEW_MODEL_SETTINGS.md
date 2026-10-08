@@ -23,6 +23,23 @@
 5. View 设置页增加双角色选择、取消、保存、冲突和切换未保存提示；任务采集仍只读。
    测试覆盖恶意输入、并发、失败保值、冻结/撤销、渠道能力与打包入口。
 
+### 本轮结构化结果修复计划
+
+依据本次 GH-16 返工材料，先核对实际源码而不直接采用反馈补丁：Review、Recovery
+与角色探测仍只解码裸 JSON。新增共用 StructuredOutput.decode/1，使用全字符串匹配，
+仅接受裸 JSON 或覆盖完整响应的单个小写 json 围栏（允许外层空白）。不提取散文中的
+JSON，不放行多个围栏、非 json 围栏、拼接或残缺结果；解码后保留各入口原有语义、
+精确 token、成功工具事件和角色证据校验，Review 错误反馈使用同一入口。
+扩展本地 Responses 工具往返夹具和双角色探测回归，保留 OpenAI 原用例。
+此为 IS-079 范围内的工程修复，不新增用户决定、权限或真实调用授权。
+
+冻结 `/baseline` 的 Recovery 用例明确拒绝单个 json 围栏，而固定 baseline 检查使用
+候选实现运行旧测试，两项合同冲突。候选回归应按本轮要求验收单围栏，基线不修改；
+原样运行两条固定检查，冲突失败须据实报告并交控制器处理，不能登记为通过。
+
+本轮不改变注册表或回执结构，无数据迁移。若回滚解析器，围栏结果会重新成为协议
+失败；原证据和预算保留，不把旧探测结果当作回滚后仍兼容的证明。
+
 ## 外部停点
 
 离线环境无真实账号凭据，不发起付费调用或外发真实仓库材料。不添加 ready，
@@ -105,6 +122,18 @@ TLS 夹具使用实际 Codex AppServer 和 exec-server 完成命令工具读取�
 本任务外层离线沙箱内运行，内层执行器是测试替身，不作为生产 reviewer 内核只读
 或真实 DeepSeek 能力证明。原正式隔离回归保留。夹具仅在工具返回正确随机／指定内容
 后给出有效结果，父 Port 关闭即退出，不留下维持检查输出管道的后台进程。
+
+本轮结构化解析补充 GH16-A03／A09 的以下回归，其他验收映射沿用上表并通过完整
+门禁重新核验，不能用局部通过代替最终检查：
+
+| 合同 | 本轮回归 | 仍需外部证据 |
+| --- | --- | --- |
+| A03 完整结果格式 | StructuredOutputTest：裸 JSON、单 json 围栏及 CRLF／外层空白；拒绝散文、多／非 json 围栏、拼接、残缺和非字符串 | 新候选真实渠道结果 |
+| A03 语义校验 | ReviewExternalTest／RecoveryTest：围栏内错误字段、矛盾批准、无效外部条件仍拒绝；Review.validation_errors 与 parse 同规则 | 新候选独立 Review |
+| A03 双角色能力 | ModelServicesTest：双角色正确 token 和成功工具事件；错误 token、额外字段、非法包装、缺失／失败工具均拒绝 | 准确候选、角色、模型、渠道、有效参数及脱敏原始探测 |
+| A03 OpenAI／DeepSeek | ModelRoutingTest：原生 Codex、TLS Responses、真实工具往返；请求同时声明 tools 和 json_schema(strict)，DeepSeek 返回单围栏，OpenAI 保留裸 JSON；max／fixed 参数和双账号仍核验 | 真实账号双角色权限、reviewer 内核只读 |
+| A09 失败 Turn | 双角色 AppServer 探测在裸／围栏正确结果后收到 failed／interrupted 仍拒绝且不增加证据 | 生产执行隔离实测 |
+| A08／A09 返工和绑定 | RecoveryExecutorTest：围栏拒绝后重编码、只读诊断与独立 reviewer、单次评论和最终新候选 SHA 绑定 | 控制器正式证据及最终独立 Review |
 
 ## 上一候选自检结果（历史）
 
@@ -424,3 +453,65 @@ baseline harness，保留原冻结文件和所有篡改断言；本会话未改�
 候选 SHA。控制器仍须绑定准确最终候选、完成其正式检查和独立 Review。
 真实 GPT／DeepSeek 双角色账号探测、获准内网代理／来源限制／TLS、生产执行
 隔离实测及运行安装仍为外部停点，不以合成 HTTP、模型返回或浏览器结果替代。
+
+## 本轮结构化结果解析修复的实际检查
+
+本轮只修复角色输出解析与回归，不改变模型配置、授权或冻结合同。反馈补丁中
+会放行前后散文的扫描方式未采用；实现使用全字符串锚定。六个新增测试身份与
+既有循环回归覆盖上方补充表；原生 TLS 夹具保持 OpenAI 裸 JSON 路径，并复现
+DeepSeek 声明工具后返回单个 json 围栏。真实账号无凭据，未发起付费调用或外发
+真实材料；旧候选的外部诊断不作为本工作区或最终候选的实测证据。
+
+完整 View 检查使用预装 Python、Node 和 Playwright：
+
+```bash
+NODE_PATH=/opt/toolchain/view-validation/playwright/node_modules \
+PLAYWRIGHT_BROWSERS_PATH=/opt/toolchain/view-validation/playwright/browsers \
+/opt/toolchain/view-validation/python/bin/python -B scripts/run_view_checks.py \
+  --node /opt/toolchain/view-validation/node/bin/node \
+  --output /workspace/.check-evidence/gh16-structured-view-2
+```
+
+退出 0：38 项 Python、11 项 JS、11 项 Linux 来源回归全部通过，无失败或跳过；
+固定 HTML 迁移比较、self_check、八种入口及九组浏览器操作通过，含双角色／双仓库
+设置、键盘、取消、切换提示、409／503 后恢复、刷新及窄屏。Node v24.19.0、
+Playwright 1.62.1、Chromium 151.0.7922.34。报告为
+`.check-evidence/gh16-structured-view-2/code-check-result.json`；标记 synthetic，
+formal_acceptance 和 real_windows_wsl 为 false。首次没有 NODE_PATH 的检查退出 1，
+浏览器未执行；补齐预装依赖的环境路径后完整重跑，不安装依赖或修改门槛。
+
+固定 `python3 /opt/symphony/scripts/check_isolated.py baseline` 退出 10，目录
+`.check-evidence/baseline-szdj7zs6/`，完整日志 `.check-evidence/gh16-structured-baseline.log`：
+789 项中 782 通过、1 失败、6 项既有外部 E2E 跳过、0 排除、0 无效。
+唯一失败是 RecoveryTest 的 `diagnosis requires one complete JSON object with
+nonempty summary and steps`，冻结文件 133–134 行要求单个 json 围栏返回
+`:mvp_invalid_diagnosis`，本轮要求则接受其中完整有效的诊断。这是冻结合同冲突，
+不是通过；须由控制器记录和处理后重新完整验证。没有修改 `/baseline`、可信脚本、
+测试环境分支或检查政策。`policy_changes: []`；可信入口已有的权限夹具维护仍仅
+作用于临时 harness，并未处理或绕过本次 Recovery 冲突。
+
+首轮 candidate 退出 10，原因仅为六处模块 alias 的 Credo 提示；其 810 项测试
+0 失败、6 项跳过，覆盖率 100%，Dialyzer 和 escript build 通过。已修复全部提示，
+另行 Credo 退出 0，原生工具／strict schema 回归 1 项通过（26 项选测排除）；
+其余修复的定向重跑 2 项通过（51 项选测排除）。最终完整 candidate 结果另记下文，
+不将选测或首轮结果登记为完整门禁通过。
+
+最终 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0，目录
+`.check-evidence/candidate-prmejkpt/`，完整日志
+`.check-evidence/gh16-structured-candidate-final.log`。format、specs、Credo、完整覆盖
+测试、Dialyzer 和 escript build 全部通过；810 项中 804 通过、0 失败、6 项既有
+外部 E2E 跳过、0 排除、0 无效，覆盖率 100%，`policy_changes: []`。
+跳过项为 Asana、Jira、GitHub、GitLab 和 Linear 本地／SSH，均未启用真实环境开关；
+没有新增 skip 或 exclude。`git diff --check` 通过。
+
+GH16-A01／A02／A04–A10 的仓库内回归及本轮 A03 补充均通过相应 candidate／View
+检查，但 A11 的冻结 baseline 仍失败，整体验收不能登记为通过。须由控制器处理
+明确的冻结合同冲突、绑定准确新候选，重新正式验证并执行独立 gpt-6.1-sol/high
+Review；获授权操作者另补新候选真实账号双角色的渠道、模型、有效参数、工具执行、
+reviewer 只读、结构化结果及 SHA 绑定脱敏证据。真实内网部署和生产隔离证据仍按
+原合同验收，不用离线夹具或旧候选证据替代。
+
+本轮结果针对未提交工作区，检查报告的原 HEAD `3da7fce788c7d62139cd88aa876c9b94b91711d4`
+不包含这些改动，不能充当新候选 SHA。仅保存所属仓库源码、测试、规格和本地检查
+产物；未提交、push、创建 PR、合并、安装、部署、升级服务或添加 ready。没有修改
+运行凭据、控制器证据、可信入口、冻结基线或检查政策；独立 Review 未在本会话执行。

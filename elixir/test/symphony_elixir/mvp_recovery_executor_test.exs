@@ -60,6 +60,35 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
     assert second_round["review"]["approved"]
   end
 
+  test "fenced review rejection and diagnosis retain rework, read-only roles and final candidate binding" do
+    context = context!()
+    opts = options(context, review: fn count -> count > 1 end, diagnosis: "retry_stage")
+    agent = opts[:agent]
+
+    opts =
+      Keyword.put(opts, :agent, fn workspace, prompt, issue, options ->
+        {:ok, result} = agent.(workspace, prompt, issue, options)
+        if agent_role(options) == :coder, do: {:ok, result}, else: {:ok, %{result | output_text: "```json\n#{result.output_text}\n```"}}
+      end)
+
+    assert {:ok, @url} = run(context, settings([["true"]], %{"diagnose_every" => 1}), opts)
+    assert length(calls(context, :coder)) == 2
+    assert length(calls(context, :diagnosis)) == 1
+    assert length(calls(context, :comment)) == 1
+    [first, final] = calls(context, :reviewer)
+    refute first.sha == final.sha
+    assert first.read_only and final.read_only
+    assert hd(calls(context, :diagnosis)).read_only
+    assert final.prompt =~ final.sha
+    assert [%{sha: sha}] = calls(context, :publish)
+    assert sha == final.sha
+    [rejected, approved] = Receipt.read(context.receipt)["rounds"]
+    refute rejected["review"]["approved"]
+    assert rejected["comment"]["candidate_sha"] == first.sha
+    assert approved["review"]["approved"]
+    assert approved["candidate_sha"] == sha
+  end
+
   test "an unknown check failure can retry trusted checks on the same SHA without recoding" do
     context = context!()
     counter = Path.join(context.root, "transient-count.txt")

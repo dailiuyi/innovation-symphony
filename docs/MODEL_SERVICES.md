@@ -271,6 +271,14 @@ operator_recheck 及更新时间；候选/base、旧 rounds、不可变外部 ha
 
 ## 失败、用量和验证边界
 
+Review、Recovery 诊断和目录角色探测共用 `StructuredOutput.decode/1`：接受裸 JSON，
+或覆盖完整响应的单个小写 `json` 代码围栏，允许外层空白。仍请求严格 JSON Schema；
+本地兼容部分渠道在声明 tools 后返回围栏的格式差异，不提取散文中的结果。
+前后散文、多个／非 json 围栏、拼接 JSON 和残缺输入拒绝。解码不授予批准或能力：
+原语义校验、精确探测 token、成功命令工具事件、角色证据、Turn 成功及候选 SHA
+绑定要求保留。Review.validation_errors 使用同一解码规则和原语义诊断。
+该工程修复不代表真实账号已验证；本轮证据和冻结基线冲突见 VIEW_MODEL_SETTINGS。
+
 模型未知、未验证、参数不支持、协议不兼容、管理员禁用、凭据缺失/失效/变更及证据
 过期在调用前给出具体原因；真实服务端 401/403、429、余额不足、型号不存在和服务
 故障分别分类，包括 TurnError.codexErrorInfo 中的 httpStatusCode 及正式字符串

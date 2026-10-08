@@ -3,7 +3,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   import ExUnit.CaptureLog
   alias Mix.Tasks.Mvp.Models
   alias SymphonyElixir.ModelServicesFixture, as: F
-  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices, Receipt}
+  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices, Receipt, StructuredOutput}
 
   setup do
     root = Path.join(System.tmp_dir!(), "gh12-routing-#{System.unique_integer([:positive])}")
@@ -241,7 +241,13 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
         assert match?({:ok, _}, result), inspect({result, events, trace}, limit: :infinity)
         {:ok, result} = result
-        assert Jason.decode!(result.output_text) == %{"token" => "offline-tool-token"}
+        assert {:ok, %{"token" => "offline-tool-token"}} = StructuredOutput.decode(result.output_text)
+
+        if provider == "deepseek" do
+          assert result.output_text == "```json\n{\"token\":\"offline-tool-token\"}\n```"
+        else
+          assert Jason.decode!(result.output_text) == %{"token" => "offline-tool-token"}
+        end
 
         assert Enum.any?(events, fn event -> match?(%{payload: %{"method" => "item/completed", "params" => %{"item" => %{"type" => "commandExecution", "exitCode" => 0}}}}, event) end),
                inspect({events, trace}, limit: :infinity)
@@ -253,6 +259,10 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       expected = MapSet.new(["Bearer synthetic-route-coder", "Bearer synthetic-route-reviewer"])
       assert accounts == expected
       assert Enum.all?(calls, &(&1["path"] == "/v1/responses"))
+      assert Enum.all?(calls, &(&1["body"]["tools"] != []))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "type"]) == "json_schema"))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "strict"]) == true))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "schema"]) == schema))
 
       for model <- ~w(deepseek-test deepseek-fixed gpt-fixed) do
         model_calls = Enum.filter(calls, &(&1["body"]["model"] == model))
@@ -796,9 +806,10 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     workflow_opts = [workspace_root: c.root, codex_command: "must-not-be-used", codex_read_timeout_ms: 1000]
     write_workflow_file!(Workflow.workflow_file_path(), workflow_opts)
 
-    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}], format <- ["bare", "fenced"] do
       trace = Path.join(c.root, "account-#{role}.json")
-      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} probe-success"}
+      mode = if format == "bare", do: "probe-success", else: "probe-fenced-success"
+      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} #{mode}"}
       {settings, workspace} = F.probe_settings(settings, c.root)
       System.put_env("GH12_PROBE_WORKSPACE", workspace)
       on_exit(fn -> System.delete_env("GH12_PROBE_WORKSPACE") end)
@@ -823,7 +834,9 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
       verification = ModelCatalog.verify(settings, id, "gpt-test", role, workspace, probe: probe)
       assert_received {:probe_result, {:ok, result}}
-      assert Jason.decode!(result.output_text)["token"] =~ ~r/\A[a-f0-9]{48}\z/
+      assert {:ok, %{"token" => token}} = StructuredOutput.decode(result.output_text)
+      assert token =~ ~r/\A[a-f0-9]{48}\z/
+      if format == "fenced", do: assert(result.output_text =~ "```json")
       assert {:ok, verified} = verification
       assert Jason.decode!(File.read!(trace))["credential_hash"] == expected
       assert verified["validations"][ModelServices.binding(service)]["source"] == "inference"
@@ -879,16 +892,17 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   test "capability probe with correct tool and JSON still rejects failed or interrupted Turn", c do
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: c.root)
 
-    for mode <- ["probe-401", "probe-interrupted"] do
+    for mode <- ["probe-401", "probe-interrupted", "probe-fenced-401", "probe-fenced-interrupted"],
+        {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
       trace = Path.join(c.root, "#{mode}.json")
       settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} #{mode}"}
       {settings, workspace} = F.probe_settings(settings, c.root)
       System.put_env("GH12_PROBE_WORKSPACE", workspace)
       on_exit(fn -> System.delete_env("GH12_PROBE_WORKSPACE") end)
       before = settings.model_services["validations"]
-      assert {:error, _} = ModelCatalog.verify(settings, "coding", "gpt-test", :coder, workspace, probe: F.sandbox_probe(&AppServer.run/4))
+      assert {:error, _} = ModelCatalog.verify(settings, id, "gpt-test", role, workspace, probe: F.sandbox_probe(&AppServer.run/4))
       assert settings.model_services["validations"] == before
-      {:ok, service} = ModelServices.snapshot(settings, "coding", :coder, "catalog")
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "catalog")
       refute ModelCatalog.status(settings.model_services, service)["state"] == "available"
       assert File.read!(trace) =~ "turn/start"
     end
@@ -1165,10 +1179,11 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                     token = pathlib.Path(os.environ['GH12_PROBE_WORKSPACE'], filename).read_text()
                     send({'method': 'item/completed', 'params': {'item': {'type': 'commandExecution', 'exitCode': 0}}})
                     text = json.dumps({'token': token})
+                    if mode.startswith('probe-fenced-'): text = '```json\n' + text + '\n```'
                 send({'method': 'item/completed', 'params': {'item': {'type': 'agentMessage', 'text': text}}})
                 if mode == 'warning-output': warning()
                 status, error = 'completed', None
-                terminal_mode = mode.removeprefix('probe-')
+                terminal_mode = mode.removeprefix('probe-').removeprefix('fenced-')
                 if terminal_mode in ('401', '403', '429', '503', 'quota'):
                     status = 'failed'
                     info = 'usageLimitExceeded' if terminal_mode == 'quota' else {'httpConnectionFailed': {'httpStatusCode': int(terminal_mode)}}

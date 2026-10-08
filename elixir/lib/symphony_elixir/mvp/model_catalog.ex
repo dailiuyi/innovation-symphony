@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
   @moduledoc "Account-specific discovery is distinct from expiring, role-specific inference evidence."
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.{DeepSeek, ExecutionSandbox, ModelServices}
+  alias SymphonyElixir.Mvp.{DeepSeek, ExecutionSandbox, ModelServices, StructuredOutput}
 
   @spec valid?(term(), term()) :: boolean()
   def valid?(catalog, validations) do
@@ -311,7 +311,7 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
                wall_timeout_ms: 60_000,
                on_message: fn event -> Agent.update(events, &[event | &1]) end
              ),
-           {:ok, %{"token" => ^token} = output} <- Jason.decode(result[:output_text] || ""),
+           {:ok, %{"token" => ^token} = output} <- StructuredOutput.decode(result[:output_text] || ""),
            :ok <- probe_success(output, events) do
         now = DateTime.utc_now()
 

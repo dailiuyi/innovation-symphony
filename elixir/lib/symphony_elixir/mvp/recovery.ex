@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.Recovery do
   @moduledoc "Opt-in recovery budgets and diagnostic advice; diagnosis never grants acceptance or permissions."
 
-  alias SymphonyElixir.Mvp.Review
+  alias SymphonyElixir.Mvp.{Review, StructuredOutput}
 
   defguardp valid_credit?(credit) when is_integer(credit) and credit >= 0
 
@@ -90,7 +90,7 @@ defmodule SymphonyElixir.Mvp.Recovery do
 
   @spec parse(term()) :: {:ok, map()} | {:error, :mvp_invalid_diagnosis}
   def parse(text) when is_binary(text) do
-    with {:ok, value} <- Jason.decode(text),
+    with {:ok, value} <- StructuredOutput.decode(text),
          true <- valid_diagnosis?(value) do
       {:ok, value}
     else
