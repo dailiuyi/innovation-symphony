@@ -276,3 +276,95 @@ umask=077 下退出 10，child_exit=2；seed=634298，789 项中 782 通过、1 
 改写运行环境或重复运行同一失败；完整 baseline 门禁未通过，不能交付为全部验收完成。
 须由固定门禁维护者接入上述受信夹具修复，并补齐指定 View 工具链和渲染依赖，
 才具备重跑剩余必需检查的条件。源码仅保存于本仓库，未提交、发布、安装或升级服务。
+
+## round-4 诊断后的回归补强
+
+本次先核对任务基线文档、既有实现及只读 `/evidence/round-4/check-2.log`。
+历史限制和上表验收合同不变：不修改受信测试来源、检查器、控制器证据、生产恢复
+语义或运行配置，不以调整正式检查 umask 取得通过。该失败仍是冻结测试夹具的
+确定缺陷及受信接入问题，不归类为缺少外部条件；候选代码无法替代 baseline 的 test。
+
+最小工程计划与实际修改仅为补强原八场景回归：明确断言双向权限篡改前后不同；
+每次真实篡改连续两次请求恢复，验证文件内容／权限、回执及 journal 原字节不变，
+且未创建审计目录或执行锁。恢复原始内容和权限后，同一授权请求成功闭合，并核验
+归档 journal 和 receipt-before 与原字节一致。合法无变化与重复设置权限仍成功。
+这是失败重试与现场／审计完整性的新增行为证据，不修改产品需求或新增用户决定。
+
+接入责任仍归受信门禁维护者：审查已有 `context!/0` 的显式 0644 初始化及权限差异
+断言，通过沙箱外可追溯路径更新实际冻结夹具。未接入前保持 baseline 失败状态；
+本候选回归通过不能解除该停点，也不能替代准确候选的独立 Review。
+
+新增权限回归在独立临时检查副本中分别以 umask=077／022 运行：每次 1 项通过、
+0 失败、39 项因位置选择未执行。该选测只验证环境独立性，完整门禁不作排除或
+环境覆盖。原始输出为 `/tmp/gh16-session-permissions.log`。
+
+本次 View 指定 Python／Node 路径均不存在，直接调用退出 127；指定净化源码包
+目录 `/opt/symphony/scripts/view_validation/source` 也不存在。系统 Python 完整
+检查退出 1：38 项中 37 通过、1 错误、0 跳过，错误为缺少
+`codex_transcript_viewer`。另行运行八种私有副本入口均退出 1，全部被同一渲染
+依赖阻断。Linux 集成的 11 项采集测试通过，后续渲染失败使整项退出 1。
+3 项模型管理 Python API 测试及 gjs 合成 DOM／API 回归通过；Node、固定 HTML
+比较、真浏览器键盘／窄屏检查未执行，不以 gjs 替代。输出分别位于
+`/tmp/gh16-session-view/`、`/tmp/gh16-session-entrypoints/`。
+真实账号、获准内网部署及控制器独立 Review 仍未执行；没有新增服务安装或调用。
+
+随后再次只读查找时，指定 View 工具链已在环境中可用，本会话没有安装或改写该
+工具链。使用 `/opt/toolchain/view-validation/python/bin/python -B
+scripts/run_view_checks.py --node /opt/toolchain/view-validation/node/bin/node
+--output /tmp/gh16-session-view-provisioned` 复检退出 0：38 项 Python 全通过、
+0 错误／跳过；10 项 Node 全通过、0 跳过；固定 snapshot/context/HTML 比较、
+self_check 渲染、八种入口和 Linux 合成集成全部通过，后者含 11 项采集回归及实际
+loopback HTTP／渲染／失败恢复验证。Python 为 3.14.4，Node 为 v24.19.0。
+另用该 Node 执行 `view/tests/model-settings.test.mjs` 通过。上述结果解除本轮
+工具链／渲染检查停点，早先失败记录保留；真浏览器键盘／窄屏及真实账号、内网
+部署和独立 Review 仍未执行。净化源码包目录仍缺失，未运行要求该包的来源验证器；
+本次没有迁移新的 View 来源，已通过的 HTML 比较使用仓库内固定迁移预期。
+
+本次 `python3 /opt/symphony/scripts/check_isolated.py candidate` 继承 umask=077，
+退出 0：format、specs、Credo、覆盖测试、Dialyzer 和 escript build 全部通过；
+799 项中 793 通过、0 失败、6 个既有真实外部 E2E 跳过、0 排除。六项跳过分别
+为 Jira、Asana、Linear SSH／本地、GitLab、GitHub，未新增跳过。
+覆盖率 100%；检查目录为 `.check-evidence/candidate-jrgm2ts2/`，`policy_changes: []`。
+本次结果针对未提交工作区，检查记录中的原 HEAD 不代表包含这些改动的最终候选；
+准确 SHA 绑定及独立 Review 由控制器完成。
+
+另行调用指定 Node 的 `view/tests/browser-fixture.cjs
+/tmp/gh16-session-view-provisioned/fixture` 退出 1：
+`Cannot find module 'playwright/package.json'`（MODULE_NOT_FOUND）。浏览器未启动，
+不将该诊断记为 UI 验收通过；日志为 `/tmp/gh16-session-browser.log`。
+
+## 所有者授权的受信环境维护后复检
+
+来源：本轮操作者维护通知明确告知所有者已授权 GH-16 门禁环境修复。
+受信 `check_isolated.py` 现以历史夹具 SHA-256 精确匹配，仅在临时 baseline harness
+中插入 0644 初始化及断言，保留 `/baseline` 原文件和全部篡改断言，并生成
+`baseline-maintenance.json`；维护 ID 为 `gh16-fixture-mode-20261008`。
+本会话只读核验该接入，未修改受信入口、`/baseline`、`/evidence`、运行凭据或
+冻结合同。指定 View 工具链已由维护者提供，本轮完整复检结果见上节。
+按通知重新执行原 candidate／baseline 固定命令，保留继承 umask=077、全部检查、
+覆盖率与既有外部 E2E 开关；不运行排在本会话之后的维护探针。
+准确最终候选的控制器正式检查及独立 Review 仍由控制器执行。
+
+维护前已启动的原 baseline 随后退出 10：seed=419277，789 项中 782 通过、
+1 失败、6 个既有外部 E2E 跳过、0 排除，仍为旧夹具第 1014 行的权限断言。
+其目录为 `.check-evidence/baseline-trcu4iw3/`，`policy_changes: []`。
+该进程在维护安装前已加载旧入口，此结果保留为历史；维护后的重新检查另行记录。
+
+维护后原命令 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0：
+format、specs、Credo、覆盖测试、Dialyzer、escript build 全通过；799 项中
+793 通过、0 失败、6 项既有跳过、0 排除，覆盖率 100%。目录为
+`.check-evidence/candidate-gfgmpgo_/`，`policy_changes: []`；其
+`baseline-maintenance.json` 为 `repairs: []`，未给候选注入基线夹具维护。
+
+维护后原命令 `python3 /opt/symphony/scripts/check_isolated.py baseline` 同样继承
+umask=077，退出 0：seed=628418，789 项中 783 通过、0 失败、6 项既有外部 E2E
+跳过、0 排除。原失败的篡改拒绝用例通过；检查目录为
+`.check-evidence/baseline-7__50584/`，`policy_changes: []`。
+该目录的 `baseline-maintenance.json` 记录维护 ID、精确原始／生效摘要和
+`assertions_removed: false`。受信夹具接入停点已解除，早先失败不再作为当前门禁
+结论；未通过调整 umask、改生产语义或减少测试取得通过。
+
+本次验收对应表仍见前文，各条的仓库内测试均已执行通过；真浏览器因缺少 Playwright
+尚未启动，真实账号双角色、获准内网部署及最终候选控制器正式验证／独立 Review
+继续单列。`git diff --check` 通过。本轮源码仅修改恢复回归与本页记录，没有提交、
+push、PR、合并、部署或升级运行服务；维护验证的独立探针留在本会话之后执行。
