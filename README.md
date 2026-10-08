@@ -64,3 +64,7 @@ GH-12 在原 Elixir 执行器中增加 coder/reviewer 服务预设、账号绑�
 
 
 实验性的宽权限 rootless 容器、持久导出、失败分流和固定补证配置见 [实施合同](docs/ROOTLESS_OPEN.md)。默认未启用；代码不代表已安装或实机验收，旧冻结任务保持原后端。
+
+GH-16 在独立 View 设置页增加受控内网的仓库双角色默认选择，并接入 DeepSeek
+Responses；任务展示仍只读，配置授权、持久化和执行继续归 Elixir。GLM 后置，
+真实账号与内网安装须分别验收，见 [方案及检查记录](docs/VIEW_MODEL_SETTINGS.md)。

@@ -5,64 +5,67 @@ defmodule SymphonyElixir.Mvp.RecoveryResumeTest do
 
   @url "https://github.com/owner/repo/pull/42"
 
-  test "audited recovery keeps full role services after defaults change and rejects service drift at every entry" do
-    alias SymphonyElixir.ModelServicesFixture, as: Fixture
-    alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices}
-    System.put_env("GH12_CODER_KEY", "recovery-synthetic-coder")
-    System.put_env("GH12_REVIEWER_KEY", "recovery-synthetic-reviewer")
+  for parameters <- [nil, %{"reasoning_effort" => nil}] do
+    @parameters parameters
+    test "audited recovery keeps full role services after defaults change and rejects service drift at every entry with #{inspect(parameters)}" do
+      alias SymphonyElixir.ModelServicesFixture, as: Fixture
+      alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices}
+      System.put_env("GH12_CODER_KEY", "recovery-synthetic-coder")
+      System.put_env("GH12_REVIEWER_KEY", "recovery-synthetic-reviewer")
 
-    on_exit(fn ->
-      System.delete_env("GH12_CODER_KEY")
-      System.delete_env("GH12_REVIEWER_KEY")
-    end)
+      on_exit(fn ->
+        System.delete_env("GH12_CODER_KEY")
+        System.delete_env("GH12_REVIEWER_KEY")
+      end)
 
-    context = context!()
-    service_settings = Fixture.settings(Path.join(context.root, "state"))
-    settings = Map.merge(settings(), service_settings)
-    {:ok, selected} = Intake.resolve_comments([], service_settings)
-    initial = options(context, :dirty_repair)
+      context = context!()
+      service_settings = Fixture.settings(Path.join(context.root, "state"), @parameters)
+      settings = Map.merge(settings(), service_settings)
+      {:ok, selected} = Intake.resolve_comments([], service_settings)
+      initial = options(context, :dirty_repair)
 
-    assert {:error, :mvp_recovery_resource_exhausted} =
-             Executor.run(context.workspace, context.issue, settings, selected, context.receipt, initial)
+      assert {:error, :mvp_recovery_resource_exhausted} =
+               Executor.run(context.workspace, context.issue, settings, selected, context.receipt, initial)
 
-    prepare_gh5_history!(context, settings)
-    proposed = put_in(settings.model_services, ["defaults", "coder"], "reviewing")
-    {:ok, new_default} = ModelServices.snapshot(%{settings | model_services: proposed}, "reviewing", :coder, "fixture")
-    {:ok, proposed} = ModelCatalog.attest(proposed, new_default, Fixture.proof(:coder))
-    assert {:ok, _} = ModelServices.save(ModelServices.path(settings), settings.model_services, 0, proposed)
-    {resume, auth} = resume_inputs!(context, settings, "role-frozen")
-    original = resume.opts[:agent]
+      prepare_gh5_history!(context, settings)
+      proposed = put_in(settings.model_services, ["defaults", "coder"], "reviewing")
+      {:ok, new_default} = ModelServices.snapshot(%{settings | model_services: proposed}, "reviewing", :coder, "fixture")
+      {:ok, proposed} = ModelCatalog.attest(proposed, new_default, Fixture.proof(:coder))
+      assert {:ok, _} = ModelServices.save(ModelServices.path(settings), settings.model_services, 0, proposed)
+      {resume, auth} = resume_inputs!(context, settings, "role-frozen")
+      original = resume.opts[:agent]
 
-    agent = fn workspace, prompt, issue, opts ->
-      role = if agent_role(opts) == :reviewer, do: "reviewer", else: "coder"
-      assert opts[:model_service] == selected.services[role]
-      original.(workspace, prompt, issue, opts)
+      agent = fn workspace, prompt, issue, opts ->
+        role = if agent_role(opts) == :reviewer, do: "reviewer", else: "coder"
+        assert opts[:model_service] == selected.services[role]
+        original.(workspace, prompt, issue, opts)
+      end
+
+      resume = %{resume | models: Map.take(selected, [:coder, :reviewer]), services: selected.services, opts: Keyword.put(resume.opts, :agent, agent)}
+      drifted = put_in(resume, [:services, "coder", "connection", "base_url"], "https://other.example/v1")
+      raw = File.read!(context.receipt)
+      digest = digest(raw)
+
+      entrypoints = [
+        fn -> Executor.resume_recovery(drifted, digest, auth) end,
+        fn -> Executor.recover(drifted, digest, auth) end,
+        fn -> Executor.resume_review(drifted, digest, auth) end,
+        fn -> Executor.resume_interrupted(drifted, digest, auth) end,
+        fn -> Executor.resume_external(drifted, digest, auth) end,
+        fn -> Executor.recheck(drifted, digest, auth) end,
+        fn -> Executor.resume_checks(drifted, digest) end,
+        fn -> Executor.extend_rework(drifted, digest, 5) end
+      ]
+
+      for entry <- entrypoints do
+        assert {:error, :mvp_resume_binding_mismatch} = entry.()
+        assert File.read!(context.receipt) == raw
+      end
+
+      assert {:ok, @url} = Executor.resume_recovery(resume, digest, auth)
+      assert Receipt.read(context.receipt)["services"] == selected.services
+      assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
     end
-
-    resume = %{resume | models: Map.take(selected, [:coder, :reviewer]), services: selected.services, opts: Keyword.put(resume.opts, :agent, agent)}
-    drifted = put_in(resume, [:services, "coder", "connection", "base_url"], "https://other.example/v1")
-    raw = File.read!(context.receipt)
-    digest = digest(raw)
-
-    entrypoints = [
-      fn -> Executor.resume_recovery(drifted, digest, auth) end,
-      fn -> Executor.recover(drifted, digest, auth) end,
-      fn -> Executor.resume_review(drifted, digest, auth) end,
-      fn -> Executor.resume_interrupted(drifted, digest, auth) end,
-      fn -> Executor.resume_external(drifted, digest, auth) end,
-      fn -> Executor.recheck(drifted, digest, auth) end,
-      fn -> Executor.resume_checks(drifted, digest) end,
-      fn -> Executor.extend_rework(drifted, digest, 5) end
-    ]
-
-    for entry <- entrypoints do
-      assert {:error, :mvp_resume_binding_mismatch} = entry.()
-      assert File.read!(context.receipt) == raw
-    end
-
-    assert {:ok, @url} = Executor.resume_recovery(resume, digest, auth)
-    assert Receipt.read(context.receipt)["services"] == selected.services
-    assert File.read!(Path.join(context.workspace, "candidate.txt")) == "completed from partial"
   end
 
   test "audited recovery refuses embedded revocation reloaded after its context was prepared" do

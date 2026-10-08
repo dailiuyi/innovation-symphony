@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Mvp.{Attempts, Commands, Executor, InterruptedCoder, ModelServices, Receipt, Recovery}
+  alias SymphonyElixir.ModelServicesFixture, as: ServiceFixture
+  alias SymphonyElixir.Mvp.{Attempts, Commands, Executor, Intake, InterruptedCoder, ModelServices, Receipt, Recovery}
 
   @old_boot "00000000-0000-0000-0000-000000000001"
   @new_boot "00000000-0000-0000-0000-000000000002"
@@ -336,6 +337,27 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     assert {:error, :mvp_interruption_evidence_mismatch} = Executor.resume_interrupted(context, digest(File.read!(context.receipt)), auth)
   end
 
+  test "interrupted DeepSeek diagnosis is recovered from raw evidence using the receipt service" do
+    {context, auth, before} = interrupted!(:deepseek)
+    start = Enum.find(before["recovery"]["events"], &(&1["role"] == "diagnosis"))
+    raw = File.read!(Path.join(start["evidence"], "output.txt"))
+    assert raw =~ "```json"
+    assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(raw)
+    assert {:ok, evidence, feedback} = InterruptedCoder.evidence(context, before)
+    assert feedback["diagnosis"]["action"] == "repair_code"
+    assert Enum.at(evidence["attempts"], 1)["output_sha256"] == digest(raw)
+    # Authorization/recovery elsewhere binds the full snapshot. Parsing itself
+    # must use the receipt, even if a caller's current context/default differs.
+    changed = put_in(context, [:services, "coder", "provider"], "openai")
+    assert {:ok, ^evidence, ^feedback} = InterruptedCoder.evidence(changed, before)
+    changed_receipt = put_in(before, ["services", "coder", "provider"], "openai")
+    assert {:error, :mvp_interruption_evidence_mismatch} = InterruptedCoder.evidence(context, changed_receipt)
+    files = prior_files(context)
+    assert {:ok, @url} = Executor.resume_interrupted(context, digest(File.read!(context.receipt)), auth)
+    assert Map.new(files, fn {path, _} -> {path, File.read!(path)} end) == files
+    assert Process.get(:reviewed_sha) == Receipt.read(context.receipt)["candidate_sha"]
+  end
+
   test "owner evidence rejects arbitrary old boot, missing snapshot, wrong binding, same boot and live owner" do
     {context, auth, before} = interrupted!()
     assert {:ok, _} = InterruptedCoder.owner(context, before, auth)
@@ -406,6 +428,12 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     assert {:error, :mvp_interruption_owner_mismatch} = InterruptedCoder.owner(blocked, before, auth)
   end
 
+  defp fence_diagnosis({:ok, response} = result, opts, true) do
+    if opts[:output_schema] == Recovery.schema(), do: {:ok, %{response | output_text: "```json\n#{response.output_text}\n```"}}, else: result
+  end
+
+  defp fence_diagnosis(result, _opts, _enabled), do: result
+
   defp interrupted!(with_services \\ false) do
     root = Path.join(System.tmp_dir!(), "mvp-interrupted-#{System.unique_integer([:positive])}")
     workspace = Path.join(root, "workspace")
@@ -456,7 +484,7 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
     SymphonyElixir.ModelServicesFixture.write_authority!(settings)
 
     models =
-      if with_services do
+      if with_services == true do
         System.put_env("GH12_TIMEOUT_KEY", "synthetic-timeout-key")
         on_exit(fn -> System.delete_env("GH12_TIMEOUT_KEY") end)
         # Freeze a complete synthetic service; never depend on the developer's CODEX_HOME.
@@ -477,10 +505,23 @@ defmodule SymphonyElixir.Mvp.InterruptedResumeTest do
         models
       end
 
+    {settings, models} =
+      if with_services == :deepseek do
+        for key <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.put_env(key, "synthetic-interrupted-deepseek")
+        on_exit(fn -> Enum.each(~w(GH12_CODER_KEY GH12_REVIEWER_KEY), &System.delete_env/1) end)
+        authority = ServiceFixture.settings(Path.join(root, "state"), %{"reasoning_effort" => "high"}, "deepseek")
+        {:ok, selected} = Intake.resolve_comments([], authority)
+        {Map.merge(settings, authority), selected}
+      else
+        {settings, models}
+      end
+
     Process.put(:coder_calls, 0)
     Process.put(:checked, [])
 
-    agent = fn target, prompt, _, opts -> mock_agent(target, prompt, opts, receipt) end
+    agent = fn target, prompt, _, opts ->
+      mock_agent(target, prompt, opts, receipt) |> fence_diagnosis(opts, with_services == :deepseek)
+    end
 
     opts = [
       repository: fn _, _ -> {:ok, repository} end,

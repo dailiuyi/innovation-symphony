@@ -3,7 +3,7 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   import ExUnit.CaptureLog
   alias Mix.Tasks.Mvp.Models
   alias SymphonyElixir.ModelServicesFixture, as: F
-  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices, Receipt}
+  alias SymphonyElixir.Mvp.{Intake, ModelCatalog, ModelServices, Receipt, StructuredOutput}
 
   setup do
     root = Path.join(System.tmp_dir!(), "gh12-routing-#{System.unique_integer([:positive])}")
@@ -63,6 +63,224 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
       if service["role"] == "reviewer", do: assert(turn["sandboxPolicy"] == %{"type" => "readOnly"})
       refute System.get_env("SYMPHONY_MODEL_KEY")
       assert SymphonyElixir.Config.settings!().codex.command == "must-not-be-used"
+    end
+  end
+
+  test "fixed and legacy null services omit unsupported reasoning in AppServer configuration and turns", c do
+    for parameters <- [%{}, %{"reasoning_effort" => nil}], {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      settings = F.settings(Path.join(c.root, "unspecified-#{role}-#{map_size(parameters)}"), parameters)
+      assert {:ok, selected} = Intake.resolve_comments([], settings)
+      trace = Path.join(c.root, "unspecified-#{role}-#{map_size(parameters)}.json")
+      service = Map.put(selected.services[Atom.to_string(role)], "command", "python3 #{c.binary} #{trace} success")
+      assert service["id"] == id
+      assert service["parameters"] == parameters
+      assert {:ok, result} = ModelServices.run(c.workspace, "test", c.issue, model: "gpt-test", model_service: service, read_only: role == :reviewer, tools: false)
+      assert result.output_text == "{\"ok\":true}"
+      data = trace |> File.read!() |> Jason.decode!()
+      refute data["config"] =~ "model_reasoning_effort"
+
+      if parameters == %{},
+        do: assert(data["config"] =~ ~s(model_reasoning_summary = "none")),
+        else: refute(data["config"] =~ "model_reasoning_summary")
+
+      turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
+      refute Map.has_key?(turn, "effort")
+      assert turn["model"] == service["model"]
+      assert data["config"] =~ service["connection"]["base_url"]
+      if role == :reviewer, do: assert(turn["sandboxPolicy"] == %{"type" => "readOnly"})
+    end
+  end
+
+  test "DeepSeek Responses roles preserve selected max effort, tool probe and read-only schema contract", c do
+    presets =
+      Map.new(c.settings.model_services["presets"], fn {id, preset} ->
+        {id, preset |> Map.put("provider", "deepseek") |> Map.put("adapter", "deepseek_responses") |> Map.put("model", "deepseek-test") |> Map.put("parameters", %{"reasoning_effort" => "max"})}
+      end)
+
+    settings = %{c.settings | model_services: %{c.settings.model_services | "presets" => presets, "catalog" => %{}, "validations" => %{}}}
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+      {:ok, registry} = ModelCatalog.register(settings.model_services, id, "deepseek-test", ~w(none low high max))
+      settings = %{settings | model_services: registry}
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "fixture")
+      {:ok, registry} = ModelCatalog.attest(registry, service, F.proof(role))
+      assert :ok = ModelCatalog.available(registry, service)
+      trace = Path.join(c.root, "deepseek-#{role}.json")
+      service = Map.put(service, "command", "python3 #{c.binary} #{trace} success")
+      schema = %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}}
+      assert {:ok, result} = ModelServices.run(c.workspace, "test", c.issue, model: "deepseek-test", model_service: service, read_only: role == :reviewer, tools: false, output_schema: schema)
+      assert result.output_text == "{\"ok\":true}"
+      data = trace |> File.read!() |> Jason.decode!()
+      assert data["config"] =~ ~s(name = "deepseek")
+      assert data["config"] =~ ~s(wire_api = "responses")
+      assert data["config"] =~ ~s(model_reasoning_effort = "max")
+      assert data["config"] =~ ~s(model_reasoning_summary = "none")
+      turn = Enum.find(data["requests"], &(&1["method"] == "turn/start"))["params"]
+      assert turn["model"] == "deepseek-test"
+      assert turn["effort"] == "max"
+      assert turn["outputSchema"] == schema
+      if role == :reviewer, do: assert(turn["sandboxPolicy"] == %{"type" => "readOnly"})
+      codex = System.get_env("SYMPHONY_TEST_CODEX") || "/opt/codex"
+      client_workflow(c.workspace)
+      real = Map.put(service, "command", "env TOKIO_WORKER_THREADS=2 #{codex} app-server")
+      config = client_config(c.workspace, real)
+      assert config["model_reasoning_effort"] == "max"
+    end
+  end
+
+  test "actual Codex sends DeepSeek Responses reasoning and executes tools before structured results", c do
+    tls = Path.join(c.root, "tls")
+    File.mkdir!(tls)
+
+    {_output, 0} =
+      System.cmd(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          tls <> "/key.pem",
+          "-out",
+          tls <> "/cert.pem",
+          "-days",
+          "1",
+          "-subj",
+          "/CN=localhost",
+          "-addext",
+          "subjectAltName=IP:127.0.0.1",
+          "-addext",
+          "basicConstraints=critical,CA:FALSE"
+        ],
+        stderr_to_stdout: true
+      )
+
+    python = System.find_executable("python3")
+    fixture = Path.expand("../support/deepseek_responses.py", __DIR__)
+    port = Port.open({:spawn_executable, python}, [:binary, :exit_status, args: [fixture, tls]])
+
+    try do
+      Enum.reduce_while(1..100, nil, fn _, _ ->
+        if File.exists?(tls <> "/port"),
+          do: {:halt, :ok},
+          else:
+            (
+              Process.sleep(20)
+              {:cont, nil}
+            )
+      end)
+
+      endpoint = "https://127.0.0.1:" <> File.read!(tls <> "/port") <> "/v1"
+      File.write!(Path.join(c.workspace, "model-probe.txt"), "offline-tool-token")
+      root = Path.dirname(c.workspace)
+      opts = [workspace_root: root, codex_read_timeout_ms: 20_000, codex_approval_policy: "never"]
+      write_workflow_file!(Workflow.workflow_file_path(), opts)
+      codex = System.get_env("SYMPHONY_TEST_CODEX") || "/opt/codex"
+      schema = %{"type" => "object", "additionalProperties" => false, "required" => ["token"], "properties" => %{"token" => %{"type" => "string"}}}
+
+      channels = [{"deepseek", %{"reasoning_effort" => "max"}}, {"deepseek", %{}}, {"openai", %{}}]
+
+      for {provider, parameters} <- channels, {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+        {:ok, template} = ModelServices.snapshot(c.settings, id, role, "fixture")
+        fixed_model = %{"openai" => "gpt-fixed", "deepseek" => "deepseek-fixed"}[provider]
+
+        service = %{
+          template
+          | "provider" => provider,
+            "adapter" => if(provider == "deepseek", do: "deepseek_responses", else: "codex_app_server"),
+            "model" => if(parameters == %{}, do: fixed_model, else: "deepseek-test"),
+            "role" => Atom.to_string(role),
+            "connection" => %{"base_url" => endpoint, "protocol" => "responses"},
+            "parameters" => parameters,
+            "command" => "env TOKIO_WORKER_THREADS=2 CODEX_CA_CERTIFICATE=#{tls}/cert.pem SSL_CERT_FILE=#{tls}/cert.pem #{codex} app-server"
+        }
+
+        # This is a native protocol/tool fixture in the outer offline task sandbox,
+        # not proof of the production kernel mounts. Existing isolation gates remain.
+        home = Path.join(c.root, "wire-home-#{provider}-#{role}-#{map_size(parameters)}")
+        File.mkdir!(home)
+        {:ok, credential} = ModelServices.credential(service["credential_ref"])
+        :ok = ModelServices.write_home(home, service, credential)
+        environment_args = ["-c", "cd #{c.workspace} && exec env -u SYMPHONY_MODEL_KEY TOKIO_WORKER_THREADS=2 #{codex} exec-server --listen stdio"]
+
+        File.write!(
+          Path.join(home, "environments.toml"),
+          ~s(default = "task"\ninclude_local = false\n[[environments]]\nid = "task"\nprogram = "/bin/bash"\nargs = #{Jason.encode!(environment_args)}\n)
+        )
+
+        environment = %{id: "task", cwd: c.workspace, codex_home: home, read_only: role == :reviewer}
+        parent = self()
+
+        result =
+          ModelServices.run(c.workspace, "Read model-probe.txt using a command tool, then return the required token JSON.", c.issue,
+            model: service["model"],
+            model_service: service,
+            read_only: role == :reviewer,
+            tools: false,
+            output_schema: schema,
+            wall_timeout_ms: 20_000,
+            execution_environment: environment,
+            on_message: fn event -> send(parent, {:event, event}) end
+          )
+
+        events = drain_events([])
+
+        trace =
+          if File.exists?(tls <> "/requests.jsonl") do
+            (tls <> "/requests.jsonl")
+            |> File.stream!()
+            |> Enum.map(fn line ->
+              body = Jason.decode!(line)["body"]
+              %{tools: body["tools"], outputs: Enum.filter(body["input"], &(&1["type"] == "function_call_output"))}
+            end)
+          else
+            "no HTTP calls"
+          end
+
+        assert match?({:ok, _}, result), inspect({result, events, trace}, limit: :infinity)
+        {:ok, result} = result
+        assert {:ok, %{"token" => "offline-tool-token"}} = StructuredOutput.decode(result.output_text)
+
+        if provider == "deepseek" do
+          assert result.output_text == "```json\n{\"token\":\"offline-tool-token\"}\n```"
+        else
+          assert Jason.decode!(result.output_text) == %{"token" => "offline-tool-token"}
+        end
+
+        assert Enum.any?(events, fn event -> match?(%{payload: %{"method" => "item/completed", "params" => %{"item" => %{"type" => "commandExecution", "exitCode" => 0}}}}, event) end),
+               inspect({events, trace}, limit: :infinity)
+      end
+
+      calls = (tls <> "/requests.jsonl") |> File.stream!() |> Enum.map(&Jason.decode!/1)
+      assert length(calls) >= 12
+      accounts = MapSet.new(Enum.map(calls, & &1["auth"]))
+      expected = MapSet.new(["Bearer synthetic-route-coder", "Bearer synthetic-route-reviewer"])
+      assert accounts == expected
+      assert Enum.all?(calls, &(&1["path"] == "/v1/responses"))
+      assert Enum.all?(calls, &(&1["body"]["tools"] != []))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "type"]) == "json_schema"))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "strict"]) == true))
+      assert Enum.all?(calls, &(get_in(&1, ["body", "text", "format", "schema"]) == schema))
+
+      for model <- ~w(deepseek-test deepseek-fixed gpt-fixed) do
+        model_calls = Enum.filter(calls, &(&1["body"]["model"] == model))
+        assert length(model_calls) >= 4
+        assert MapSet.new(Enum.map(model_calls, & &1["auth"])) == expected
+
+        if String.ends_with?(model, "-fixed") do
+          # Codex serializes an empty envelope; it must contain no effective
+          # parameters, including summary (which otherwise defaults to auto).
+          assert Enum.all?(model_calls, &(&1["body"]["reasoning"] in [nil, %{}]))
+        else
+          assert Enum.all?(model_calls, &(&1["body"]["reasoning"] == %{"effort" => "max"}))
+        end
+      end
+
+      assert Enum.any?(calls, fn call -> Enum.any?(call["body"]["input"], &(&1["type"] == "function_call_output")) end)
+    after
+      if Port.info(port), do: Port.close(port)
     end
   end
 
@@ -588,9 +806,10 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
     workflow_opts = [workspace_root: c.root, codex_command: "must-not-be-used", codex_read_timeout_ms: 1000]
     write_workflow_file!(Workflow.workflow_file_path(), workflow_opts)
 
-    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}], format <- ["bare", "fenced"] do
       trace = Path.join(c.root, "account-#{role}.json")
-      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} probe-success"}
+      mode = if format == "bare", do: "probe-success", else: "probe-fenced-success"
+      settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} #{mode}"}
       {settings, workspace} = F.probe_settings(settings, c.root)
       System.put_env("GH12_PROBE_WORKSPACE", workspace)
       on_exit(fn -> System.delete_env("GH12_PROBE_WORKSPACE") end)
@@ -615,7 +834,9 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
 
       verification = ModelCatalog.verify(settings, id, "gpt-test", role, workspace, probe: probe)
       assert_received {:probe_result, {:ok, result}}
-      assert Jason.decode!(result.output_text)["token"] =~ ~r/\A[a-f0-9]{48}\z/
+      assert {:ok, %{"token" => token}} = StructuredOutput.decode(result.output_text)
+      assert token =~ ~r/\A[a-f0-9]{48}\z/
+      if format == "fenced", do: assert(result.output_text =~ "```json")
       assert {:ok, verified} = verification
       assert Jason.decode!(File.read!(trace))["credential_hash"] == expected
       assert verified["validations"][ModelServices.binding(service)]["source"] == "inference"
@@ -671,16 +892,17 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
   test "capability probe with correct tool and JSON still rejects failed or interrupted Turn", c do
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: c.root)
 
-    for mode <- ["probe-401", "probe-interrupted"] do
+    for mode <- ["probe-401", "probe-interrupted", "probe-fenced-401", "probe-fenced-interrupted"],
+        {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}] do
       trace = Path.join(c.root, "#{mode}.json")
       settings = %{c.settings | model_command: "python3 #{c.binary} #{trace} #{mode}"}
       {settings, workspace} = F.probe_settings(settings, c.root)
       System.put_env("GH12_PROBE_WORKSPACE", workspace)
       on_exit(fn -> System.delete_env("GH12_PROBE_WORKSPACE") end)
       before = settings.model_services["validations"]
-      assert {:error, _} = ModelCatalog.verify(settings, "coding", "gpt-test", :coder, workspace, probe: F.sandbox_probe(&AppServer.run/4))
+      assert {:error, _} = ModelCatalog.verify(settings, id, "gpt-test", role, workspace, probe: F.sandbox_probe(&AppServer.run/4))
       assert settings.model_services["validations"] == before
-      {:ok, service} = ModelServices.snapshot(settings, "coding", :coder, "catalog")
+      {:ok, service} = ModelServices.snapshot(settings, id, role, "catalog")
       refute ModelCatalog.status(settings.model_services, service)["state"] == "available"
       assert File.read!(trace) =~ "turn/start"
     end
@@ -957,10 +1179,11 @@ defmodule SymphonyElixir.MvpModelRoutingTest do
                     token = pathlib.Path(os.environ['GH12_PROBE_WORKSPACE'], filename).read_text()
                     send({'method': 'item/completed', 'params': {'item': {'type': 'commandExecution', 'exitCode': 0}}})
                     text = json.dumps({'token': token})
+                    if mode.startswith('probe-fenced-'): text = '```json\n' + text + '\n```'
                 send({'method': 'item/completed', 'params': {'item': {'type': 'agentMessage', 'text': text}}})
                 if mode == 'warning-output': warning()
                 status, error = 'completed', None
-                terminal_mode = mode.removeprefix('probe-')
+                terminal_mode = mode.removeprefix('probe-').removeprefix('fenced-')
                 if terminal_mode in ('401', '403', '429', '503', 'quota'):
                     status = 'failed'
                     info = 'usageLimitExceeded' if terminal_mode == 'quota' else {'httpConnectionFailed': {'httpStatusCode': int(terminal_mode)}}

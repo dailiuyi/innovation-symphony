@@ -307,6 +307,72 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:error, :model_not_discovered} = ModelCatalog.verify(s, "coding", "gpt-unknown", :coder, root)
   end
 
+  test "both role probes accept one full json fence but require the exact token and successful tool evidence", %{root: root, settings: s} do
+    {s, workspace} = F.probe_settings(s, root)
+    s = put_in(s.model_services["validations"], %{})
+
+    for {role, id} <- [{:coder, "coding"}, {:reviewer, "reviewing"}],
+        {shape, expected} <- [
+          {:bare, :ok},
+          {:fenced, :ok},
+          {:prose_before, :model_inference_validation_failed},
+          {:prose_after, :model_inference_validation_failed},
+          {:multiple, :model_inference_validation_failed},
+          {:text_fence, :model_inference_validation_failed},
+          {:concatenated, :model_inference_validation_failed},
+          {:incomplete, :model_inference_validation_failed},
+          {:wrong_token, :model_inference_validation_failed},
+          {:extra_field, :model_tool_probe_failed},
+          {:missing_tool, :model_tool_probe_failed},
+          {:failed_tool, :model_tool_probe_failed}
+        ] do
+      probe = fn w, _prompt, _issue, opts ->
+        assert opts[:read_only]
+        assert opts[:model_service]["role"] == Atom.to_string(role)
+        [file] = Path.wildcard(Path.join(w, "model-capability-probe-*"))
+        json = Jason.encode!(%{"token" => File.read!(file)})
+        fenced = "```json\n#{json}\n```"
+
+        unless shape == :missing_tool do
+          exit_code = if shape == :failed_tool, do: 1, else: 0
+          opts[:on_message].(%{payload: %{"method" => "item/completed", "params" => %{"item" => %{"type" => "commandExecution", "exitCode" => exit_code}}}})
+        end
+
+        text =
+          case shape do
+            :bare -> json
+            :prose_before -> "Result:\n" <> fenced
+            :prose_after -> fenced <> "\nDone."
+            :multiple -> fenced <> "\n" <> fenced
+            :text_fence -> "```text\n#{json}\n```"
+            :concatenated -> "```json\n#{json <> json}\n```"
+            :incomplete -> "```json\n#{json}"
+            :wrong_token -> "```json\n{\"token\":\"wrong\"}\n```"
+            :extra_field -> "```json\n#{Jason.encode!(%{"token" => File.read!(file), "approved" => true})}\n```"
+            _ -> " \n" <> fenced <> "\t "
+          end
+
+        {:ok, %{output_text: text}}
+      end
+
+      result = ModelCatalog.verify(s, id, "gpt-test", role, workspace, probe: F.sandbox_probe(probe))
+
+      if expected == :ok do
+        assert {:ok, updated} = result
+        {:ok, service} = ModelServices.snapshot(s, id, role, "fixture")
+        assert updated["validations"][ModelServices.binding(service)]["role"] == Atom.to_string(role)
+        assert updated["validations"][ModelServices.binding(service)]["capabilities"] == ~w(tools structured_output)
+        assert map_size(updated["validations"]) == 1
+        assert updated["defaults"] == s.model_services["defaults"]
+      else
+        assert {:error, ^expected} = result
+        assert s.model_services["validations"] == %{}
+      end
+
+      assert Path.wildcard(Path.join(workspace, "model-capability-probe-*")) == []
+    end
+  end
+
   test "frozen services survive default and version changes, but honor revocation", %{settings: s} do
     {:ok, choices} = Intake.resolve_comments([], s)
     context = %{settings: s, services: choices.services, models: Map.take(choices, [:coder, :reviewer])}
@@ -488,65 +554,111 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     assert {:ok, _} = ModelServices.save(Path.join(root, "first.json"), nil, 0, registry)
   end
 
-  test "bounded retries, malformed Review and diagnosis use the frozen service after a default change", %{root: root, settings: s} do
-    alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
-    {:ok, choices} = Intake.resolve_comments([], s)
-    {:ok, policy} = Recovery.settings(%{"enabled" => true})
-    receipt = Path.join(root, "attempts.json")
+  for parameters <- [nil, %{"reasoning_effort" => nil}] do
+    @parameters parameters
+    test "bounded retries, malformed Review and diagnosis use the frozen service after a default change with #{inspect(parameters)}", %{root: root, settings: s} do
+      alias SymphonyElixir.Mvp.{Attempts, Receipt, Recovery}
+      s = if @parameters, do: F.settings(root, @parameters), else: s
+      {:ok, choices} = Intake.resolve_comments([], s)
+      {:ok, policy} = Recovery.settings(%{"enabled" => true})
+      receipt = Path.join(root, "attempts.json")
 
-    File.write!(
-      receipt,
-      Jason.encode!(%{
-        "status" => "coding",
-        "rounds" => [%{"evidence" => root, "usage" => %{}}],
-        "recovery" => %{"policy" => policy, "started_at" => DateTime.to_iso8601(DateTime.utc_now()), "agent_attempts" => 0, "events" => []}
-      })
-    )
+      File.write!(
+        receipt,
+        Jason.encode!(%{
+          "status" => "coding",
+          "rounds" => [%{"evidence" => root, "usage" => %{}}],
+          "recovery" => %{"policy" => policy, "started_at" => DateTime.to_iso8601(DateTime.utc_now()), "agent_attempts" => 0, "events" => []}
+        })
+      )
 
-    context = %{workspace: root, receipt: receipt, services: choices.services, models: Map.take(choices, [:coder, :reviewer]), issue: %{}, settings: Map.put(s, :recovery, policy), limit: 0, opts: []}
+      context = %{
+        workspace: root,
+        receipt: receipt,
+        services: choices.services,
+        models: Map.take(choices, [:coder, :reviewer]),
+        issue: %{},
+        settings: Map.put(s, :recovery, policy),
+        limit: 0,
+        opts: []
+      }
 
-    agent = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["coder"]
-      count = Receipt.read(receipt)["recovery"]["agent_attempts"]
+      agent = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["coder"]
+        count = Receipt.read(receipt)["recovery"]["agent_attempts"]
 
-      if count == 1 do
-        proposed = put_in(s.model_services, ["defaults", "coder"], "reviewing")
-        {:ok, switched} = ModelServices.snapshot(%{s | model_services: proposed}, "reviewing", :coder, "fixture")
-        {:ok, proposed} = ModelCatalog.attest(proposed, switched, F.proof(:coder))
-        {:ok, _} = ModelServices.save(ModelServices.path(s), s.model_services, 0, proposed)
-        {:error, {:model_call_failed, :model_rate_limited}}
-      else
-        {:ok, %{output_text: "fixed", actual_model: "gpt-confirmed"}}
+        if count == 1 do
+          proposed = put_in(s.model_services, ["defaults", "coder"], "reviewing")
+          {:ok, switched} = ModelServices.snapshot(%{s | model_services: proposed}, "reviewing", :coder, "fixture")
+          {:ok, proposed} = ModelCatalog.attest(proposed, switched, F.proof(:coder))
+          {:ok, _} = ModelServices.save(ModelServices.path(s), s.model_services, 0, proposed)
+          {:error, {:model_call_failed, :model_rate_limited}}
+        else
+          {:ok, %{output_text: "fixed", actual_model: "gpt-confirmed"}}
+        end
       end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: agent]}, :coder, "code", fn -> :ok end)
+      after_retry = Receipt.read(receipt)
+      requests = List.last(after_retry["rounds"])["model_requests"]
+      assert requests["coder_attempt_1"]["actual_model"] == nil
+      assert requests["coder_attempt_2"]["actual_model"] == "gpt-confirmed"
+      assert requests["coder_attempt_2"]["provider"] == "openai"
+      assert after_retry["usage"]["total_tokens"]["complete"] == false
+      assert after_retry["usage"]["total_tokens"]["observed"] == nil
+
+      diagnosis = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["coder"]
+        assert opts[:read_only] and opts[:output_schema] == Recovery.schema()
+        {:ok, %{output_text: Jason.encode!(%{action: "repair_code", summary: "diagnosed", steps: ["fix"], external_conditions: []})}}
+      end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: diagnosis]}, :diagnosis, "diagnose", fn -> :ok end)
+
+      review = fn _, _, _, opts ->
+        assert opts[:model_service] == choices.services["reviewer"]
+        assert opts[:read_only]
+        count = Receipt.read(receipt)["recovery"]["agent_attempts"]
+        {:ok, %{output_text: if(count == 4, do: "prose", else: Jason.encode!(%{approved: true, summary: "valid"}))}}
+      end
+
+      assert {:ok, _} = Attempts.run(%{context | opts: [agent: review]}, :reviewer, "review", fn -> :ok end)
+      System.delete_env("GH12_CODER_KEY")
+      assert {:error, :model_credential_missing} = Attempts.run(%{context | opts: [agent: fn _, _, _, _ -> flunk("credential revoked") end]}, :coder, "code", fn -> :ok end)
+    end
+  end
+
+  test "legacy null OpenAI presets load embedded and persisted with unchanged evidence bindings", %{root: root} do
+    s = F.settings(root, %{"reasoning_effort" => nil})
+    assert :ok = ModelServices.validate(s.model_services)
+    assert {:ok, embedded} = ModelServices.load(ModelServices.path(s), s.model_services)
+    assert embedded == s.model_services
+    assert {:ok, selected} = Intake.resolve_comments([], s)
+    File.write!(ModelServices.path(s), Jason.encode!(embedded))
+    assert {:ok, ^embedded} = ModelServices.load(ModelServices.path(s), nil)
+
+    for role <- [:coder, :reviewer, :diagnosis] do
+      key = if role == :reviewer, do: "reviewer", else: "coder"
+      service = selected.services[key]
+      assert service["parameters"] == %{"reasoning_effort" => nil}
+      assert :ok = ModelServices.validate_snapshot(service)
+      assert embedded["validations"][ModelServices.binding(service)] == service["capability_evidence"]
+      assert {:ok, opts} = ModelServices.options(%{settings: s, services: selected.services}, role)
+      assert opts[:model_service] == service
     end
 
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: agent]}, :coder, "code", fn -> :ok end)
-    after_retry = Receipt.read(receipt)
-    requests = List.last(after_retry["rounds"])["model_requests"]
-    assert requests["coder_attempt_1"]["actual_model"] == nil
-    assert requests["coder_attempt_2"]["actual_model"] == "gpt-confirmed"
-    assert requests["coder_attempt_2"]["provider"] == "openai"
-    assert after_retry["usage"]["total_tokens"]["complete"] == false
-    assert after_retry["usage"]["total_tokens"]["observed"] == nil
+    revoked = Map.put(embedded, "disabled_models", ["gpt-test"])
+    File.write!(ModelServices.path(s), Jason.encode!(revoked))
 
-    diagnosis = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["coder"]
-      assert opts[:read_only] and opts[:output_schema] == Recovery.schema()
-      {:ok, %{output_text: Jason.encode!(%{action: "repair_code", summary: "diagnosed", steps: ["fix"], external_conditions: []})}}
+    for role <- [:coder, :reviewer, :diagnosis] do
+      assert {:error, :model_disabled} = ModelServices.options(%{settings: s, services: selected.services}, role)
     end
 
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: diagnosis]}, :diagnosis, "diagnose", fn -> :ok end)
+    File.write!(ModelServices.path(s), Jason.encode!(embedded))
+    System.delete_env("GH12_REVIEWER_KEY")
 
-    review = fn _, _, _, opts ->
-      assert opts[:model_service] == choices.services["reviewer"]
-      assert opts[:read_only]
-      count = Receipt.read(receipt)["recovery"]["agent_attempts"]
-      {:ok, %{output_text: if(count == 4, do: "prose", else: Jason.encode!(%{approved: true, summary: "valid"}))}}
-    end
-
-    assert {:ok, _} = Attempts.run(%{context | opts: [agent: review]}, :reviewer, "review", fn -> :ok end)
-    System.delete_env("GH12_CODER_KEY")
-    assert {:error, :model_credential_missing} = Attempts.run(%{context | opts: [agent: fn _, _, _, _ -> flunk("credential revoked") end]}, :coder, "code", fn -> :ok end)
+    assert {:error, :model_credential_missing} =
+             ModelServices.options(%{settings: s, services: selected.services}, :reviewer)
   end
 
   test "safe references and private home files contain no API key values", %{root: root, settings: s} do

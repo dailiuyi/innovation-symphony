@@ -97,7 +97,61 @@ def make_handler(board_state, config, raw_ref, history_store):
             ext = os.path.splitext(path)[1]
             self._send(200, body, MIME.get(ext, "application/octet-stream"), {"Cache-Control": cache})
 
+        def _model_settings(self):
+            from .model_settings import forward
+            prefix = "/api/model-settings/"
+            path = urlsplit(self.path).path
+            if not path.startswith(prefix):
+                return False
+            url = config.model_settings_url
+            origin = config.model_settings_origin
+            expected_host = urlsplit(origin).netloc
+            if (not url or self.headers.get_all("Host") != [expected_host] or
+                    self.headers.get("Sec-Fetch-Site") == "cross-site"):
+                self._json({"error": "model_settings_request_refused"}, status=403)
+                return True
+            route = path[len(prefix):]
+            if not re.fullmatch(r"repositories(?:/[A-Za-z0-9][A-Za-z0-9._+-]{0,127})?", route) or urlsplit(self.path).query:
+                self._json({"error": "model_settings_not_found"}, status=404)
+                return True
+            body = None
+            if self.command == "POST":
+                if (self.headers.get_all("Origin") != [origin] or
+                        self.headers.get_all("Content-Type") != ["application/json"] or
+                        self.headers.get("Transfer-Encoding")):
+                    self._json({"error": "model_settings_request_refused"}, status=403)
+                    return True
+                try:
+                    lengths = self.headers.get_all("Content-Length") or []
+                    if len(lengths) != 1 or not lengths[0].isdigit():
+                        raise ValueError()
+                    size = int(lengths[0])
+                    if not 0 < size <= 16384:
+                        raise ValueError()
+                    self.connection.settimeout(5)
+                    body = self.rfile.read(size)
+                    if len(body) != size:
+                        raise ValueError()
+                except (ValueError, OSError):
+                    self._json({"error": "invalid_model_settings_request"}, status=400)
+                    return True
+            authorization = self.headers.get_all("Authorization") or []
+            if len(authorization) != 1 or not authorization[0].startswith("Bearer "):
+                self._json({"error": "model_settings_unauthorized"}, status=401)
+                return True
+            code, value = forward(url, self.command, "/" + route,
+                                  {"Authorization": authorization[0], "Origin": origin,
+                                   "Content-Type": "application/json"}, body)
+            self._json(value, status=code)
+            return True
+
+        def do_POST(self):
+            if not self._model_settings():
+                self._json({"error": "not_found"}, status=404)
+
         def do_GET(self):
+            if self._model_settings():
+                return
             split = urlsplit(self.path)
             path, query = split.path, parse_qs(split.query, keep_blank_values=True)
             if path in ("/", "/index.html", "/board"):
@@ -221,4 +275,5 @@ def make_handler(board_state, config, raw_ref, history_store):
 
 def serve(board_state, config, raw_ref, history_store=None, port=None):
     handler = make_handler(board_state, config, raw_ref, history_store)
-    return BoardHTTPServer(("0.0.0.0", port or config.port), handler)
+    host = "127.0.0.1" if config.model_settings_url else "0.0.0.0"
+    return BoardHTTPServer((host, config.port if port is None else port), handler)

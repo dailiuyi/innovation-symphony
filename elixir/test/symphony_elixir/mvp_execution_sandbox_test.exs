@@ -979,8 +979,11 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
   end
 
   test "trusted import recovery refuses altered state and closes a verified rollback under audit" do
-    for tampered <- [false, :content, :mode] do
+    for original_mode <- [0o644, 0o600], tampered <- [false, :content, :mode, :unchanged_mode] do
       context = context!()
+      source = Path.join(context.workspace, "source.txt")
+      # Make the journal's original mode independent of the process umask.
+      File.chmod!(source, original_mode)
 
       agent = fn _, _, _, options ->
         export!(scratch(options), %{"source.txt" => "new"})
@@ -991,6 +994,7 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
       operation = fn _, _, _ -> {:error, :enospc} end
       context = context |> with_agent(agent) |> update_in([:opts], &Keyword.put(&1, :sandbox_import_file, operation))
       assert {:error, {:sandbox_import_failed, transaction, _, :ok}} = ExecutionSandbox.agent(context, :coder, "task", [])
+      assert Bitwise.band(File.stat!(source).mode, 0o777) == original_mode
       receipt = Path.join(context.root, "receipt.json")
       File.write!(receipt, Jason.encode!(%{"status" => "blocked", "rounds" => [%{"evidence" => Path.join(context.evidence, "round-1")}]}))
       context = context |> Map.put(:receipt, receipt) |> put_in([:settings, :checks], [["true"]])
@@ -1005,21 +1009,51 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
         "legacy_closures" => []
       }
 
-      if tampered do
+      receipt_before = File.read!(receipt)
+      journal_before = File.read!(Path.join(transaction, "journal.json"))
+      audit_directory = Path.join(context.evidence, "operator-rechecks/restore")
+
+      if tampered in [:content, :mode] do
         case tampered do
-          :content -> File.write!(Path.join(context.workspace, "source.txt"), "another actor")
-          :mode -> File.chmod!(Path.join(context.workspace, "source.txt"), 0o600)
+          :content ->
+            File.write!(source, "another actor")
+
+          :mode ->
+            changed_mode = if original_mode == 0o644, do: 0o600, else: 0o644
+            assert changed_mode != original_mode
+            File.chmod!(source, changed_mode)
+            assert Bitwise.band(File.stat!(source).mode, 0o777) == changed_mode
         end
 
-        assert {:error, :sandbox_import_recovery_required} = ExecutionSandbox.recover_import(context, digest, audit)
-        assert File.dir?(transaction)
-        refute File.exists?(Path.join(context.evidence, "operator-rechecks/restore"))
+        content_before = File.read!(source)
+        mode_before = Bitwise.band(File.stat!(source).mode, 0o777)
+
+        for _attempt <- 1..2 do
+          assert {:error, :sandbox_import_recovery_required} = ExecutionSandbox.recover_import(context, digest, audit)
+          assert File.dir?(transaction)
+          assert File.read!(receipt) == receipt_before
+          assert File.read!(Path.join(transaction, "journal.json")) == journal_before
+          assert File.read!(source) == content_before
+          assert Bitwise.band(File.stat!(source).mode, 0o777) == mode_before
+          refute File.exists?(audit_directory)
+          refute File.exists?(Path.join(context.evidence, "operator-recheck.lock"))
+        end
+
+        # Restoring the verified identity permits the same audited recovery request.
+        File.write!(source, "original")
+        File.chmod!(source, original_mode)
       else
-        assert :ok = ExecutionSandbox.recover_import(context, digest, audit)
-        refute File.exists?(transaction)
-        assert File.regular?(Path.join(context.evidence, "operator-rechecks/restore/completion.json"))
-        assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
+        # Reapplying the journal's mode is not a change to the frozen identity.
+        if tampered == :unchanged_mode, do: File.chmod!(source, original_mode)
       end
+
+      assert :ok = ExecutionSandbox.recover_import(context, digest, audit)
+      refute File.exists?(transaction)
+      assert File.regular?(Path.join(audit_directory, "completion.json"))
+      assert File.read!(Path.join(audit_directory, "receipt-before.json")) == receipt_before
+      assert File.read!(Path.join(audit_directory, "import-transaction/journal.json")) == journal_before
+      assert File.read!(source) == "original"
+      assert Bitwise.band(File.stat!(source).mode, 0o777) == original_mode
     end
   end
 
@@ -1030,6 +1064,9 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
     outside = Path.join(root, "outside")
     for directory <- [workspace, outside, Path.join(root, "auth"), Path.join(root, "evidence/baseline")], do: File.mkdir_p!(directory)
     File.write!(Path.join(workspace, "source.txt"), "original")
+    # Recovery tests must start from a known mode even with a restrictive umask.
+    File.chmod!(Path.join(workspace, "source.txt"), 0o644)
+    assert Bitwise.band(File.stat!(Path.join(workspace, "source.txt")).mode, 0o777) == 0o644
     File.write!(Path.join(outside, "source.txt"), "sensitive")
     File.write!(Path.join(root, "auth/auth.json"), "fake-model-auth")
 

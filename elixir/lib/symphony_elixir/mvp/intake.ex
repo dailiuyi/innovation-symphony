@@ -100,8 +100,8 @@ defmodule SymphonyElixir.Mvp.Intake do
   defp valid_name_list?(_values), do: false
 
   defp defaults(%{model_services: registry} = settings) when is_map(registry) do
-    with {:ok, coder} <- ModelServices.snapshot(settings, registry["defaults"]["coder"], :coder, "project_default"),
-         {:ok, reviewer} <- ModelServices.snapshot(settings, registry["defaults"]["reviewer"], :reviewer, "project_default"),
+    with {:ok, coder} <- ModelServices.default_snapshot(settings, :coder, "project_default"),
+         {:ok, reviewer} <- ModelServices.default_snapshot(settings, :reviewer, "project_default"),
          do: {:ok, %{coder: coder["model"], reviewer: reviewer["model"], services: %{"coder" => coder, "reviewer" => reviewer}}}
   end
 

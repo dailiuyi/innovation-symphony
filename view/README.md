@@ -1,6 +1,6 @@
 # innovation-view · Symphony 独立只读看板
 
-`innovation-view` 把 Symphony 运行时中的任务回执、检查证据和 Codex 会话整理成一个 Linear 风格的只读工作台。它用于查看进度和上下文，不启动或控制 Symphony 任务，也不编辑运行时配置。
+`innovation-view` 把 Symphony 运行时中的任务回执、检查证据和 Codex 会话整理成一个 Linear 风格的只读工作台。它用于查看进度和上下文，不启动或控制 Symphony 任务，任务数据仍只读。GH-16 在设置页提供受控仓库双角色默认模型管理，配置写入由 Elixir 负责。
 
 现以固定源码快照放在 innovation-symphony 的 `view/` 下，仍独立运行。`elixir/`
 负责调度、编码、检查、Review、恢复、交付和 AppServer；View 负责采集与只读展示，
@@ -8,7 +8,7 @@
 数据保留和回退见 [迁移说明](docs/MIGRATION.md)，本轮结果见
 [验证记录](../docs/VALIDATION_VIEW.md)。完整数据合同和状态语义演进不在 GH-7 范围。
 
-> **Demo 与安全边界：**服务没有身份认证，并监听本机所有网络接口。只在受信任的本机或局域网环境运行。会话上下文可能含内部材料；产品化前需要补上身份与权限控制、敏感信息脱敏和数据保留策略。
+> **访问边界：**旧只读模式保留其监听行为；启用模型管理时 View 强制监听 loopback，管理读写均需管理员令牌。获准内网访问通过受控代理并限制来源及仓库范围，配置见 [GH-16 方案](../docs/VIEW_MODEL_SETTINGS.md)。只在获准的本机或内网环境运行。会话上下文可能含内部材料；产品化前需要补上身份与权限控制、敏感信息脱敏和数据保留策略。
 
 ## 当前功能
 
@@ -17,7 +17,7 @@
 - **Agent 上下文：**原生侧栏概览提供关联任务、会话记录的下发指令、最近可见输出、源模型和上下文来源。会话记录支持类型筛选、关键词搜索和有界分页；结果节选会明确提示。可复制指令、复制深链接或下载 Markdown 摘要。完整记录仍可通过“完整记录”链接打开旧的 `context-<id>.html` 页面。
 - **采集与连接状态：**没有发现运行目录时，状态栏会明确提示，看板各列显示空态。页面分别显示看板服务断开和运行时采集失败，并保留最近一次成功快照；数据过期会单独提示。浅色/深色主题和窄屏布局均可使用。
 - **宿主中断：**仅在编码回执的摘要与已闭合操作者完成链一致且没有执行锁时，显示“宿主中断 · 历史编码状态”和等待受审计接续。原回执状态保留；缺失证明或仅时间过旧不会标记中断。
-- **设置：**只读显示本地配置摘要和待接入仓库。
+- **设置：**显示本地配置摘要；启用受控管理时读取和保存按仓库 coder／reviewer 默认预设、模型及渠道支持的思考控制。未保存修改、取消、切换提示、失败和版本冲突保留配置，不触发任务。
 
 更多字段、读取上限、未知值语义和产品边界见[Demo 范围与接口草案](docs/DEMO-SCOPE.md)。接口只服务当前原型，不是 Symphony 的稳定契约。
 
@@ -96,26 +96,27 @@ WSL 列表带纳秒修改时间；WSL 发布前将完整缓存固定为不可变
 从主仓根目录运行完整的仓库内代码检查（输出目录必须不存在）：
 
 ```sh
-python -B scripts/run_view_checks.py --output view/build/checks
+NODE_PATH="$PWD/view/build/browser/node_modules" python -B scripts/run_view_checks.py --output view/build/checks
 ```
 
-它执行全部 Python unittest、10 项 JS 轮次测试、实际 self_check 会话解析与第三方 HTML
+它执行全部 Python unittest、10 项 JS 轮次测试及设置页交互测试、实际 self_check 会话解析与第三方 HTML
 生成，以及迁移前固定结果的逐值比较；首次目录、配置路径、重叠采集及异常清理回归
-包含在新增检查中。跨平台 Python suite 保留原全部用例和新增分流/WSL 模拟回归；
+包含在新增检查中。浏览器依赖准备见下文；缺失时完整命令失败。跨平台 Python suite 保留原全部用例和新增分流/WSL 模拟回归；
 Linux 描述符、符号链接、FIFO 等专用用例仅在独立 Linux 阶段执行，不在 Windows
 suite 中加入 skip。缺依赖、零执行、skip、解析或渲染失败均返回非零。
 Linux 上该命令另在独立复制目录和解释器执行真实本地子进程扫描、复制、解析、SQLite、
 loopback HTTP/context/HTML 合成集成，以及坏 JSON、权限、消失、超时和恢复检查；前后
 源文件 SHA256 必须一致，临时 HTTP 服务收尾停止。冻结 worker 继续禁止真实子进程，
-没有放宽原门禁或更新迁移预期。该命令不证明真实运行接入，报告列出未执行的浏览器
-UI 和真实 Windows＋WSL；非 Linux 平台明确记录未执行 Linux 集成。
-主仓 CI 独立 View job 另执行下述浏览器检查，不改变 Elixir 或隔离门禁。
+没有放宽原门禁或更新迁移预期。该命令不证明真实运行接入，报告标明浏览器使用
+合成数据，真实 Windows＋WSL 未验收；非 Linux 平台明确记录未执行 Linux 集成。
+同一标准入口及主仓 CI 执行下述固定浏览器检查，包含设置页原生键盘操作、双角色和
+双仓库保存、失败／冲突／未保存提示、刷新及 390px 布局。不改变 Elixir 或隔离门禁。
 
 检查准备交给控制器的候选时，将 `--output` 指向仓库外尚不存在的临时目录，
 避免包括 ignored 文件在内的候选库存被检查产物污染。固定浏览器夹具的截图与
 smoke 报告写入该结果目录的 `fixture/browser/`，不另写源码树。
 
-浏览器固定依赖为 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
+完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
 
 ```sh
 npm install --prefix view/build/browser --no-audit --no-fund playwright@1.62.1
@@ -147,6 +148,7 @@ browser-smoke 检查任务／会话深链接、前进后退、关闭重开、刷
 ```bash
 python -m unittest discover -s tests -v
 node --test tests/rounds.test.mjs
+node --test tests/model-settings.test.mjs
 ```
 
 浏览器烟雾检查需要 Node.js、本机 Playwright、Chrome，以及至少一条任务和一条已采集的编码会话。先在一个终端启动服务，再在另一个终端运行脚本；把 `<Chrome 可执行文件路径>` 替换为本机路径：

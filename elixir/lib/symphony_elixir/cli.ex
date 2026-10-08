@@ -4,7 +4,7 @@ defmodule SymphonyElixir.CLI do
   """
 
   alias SymphonyElixir.LogFile
-  alias SymphonyElixir.Mvp.Preflight
+  alias SymphonyElixir.Mvp.{ModelSettingsServer, Preflight}
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, preflight: :boolean, logs_root: :string, port: :integer]
@@ -25,8 +25,26 @@ defmodule SymphonyElixir.CLI do
   def main(["--watchdog-once", command, path]), do: System.halt(watchdog_once(command, path))
   def main(["--watchdog-once", "block", path, reason]), do: System.halt(watchdog_block_once(path, reason))
 
+  def main(["--model-settings", path]) do
+    case model_settings_start(path) do
+      {:ok, _pid} ->
+        Process.sleep(:infinity)
+
+      _ ->
+        IO.puts(:stderr, "model settings: configuration or listener unavailable")
+        System.halt(1)
+    end
+  end
+
   def main(args) do
     main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
+  end
+
+  @doc false
+  @spec model_settings_start(Path.t()) :: GenServer.on_start()
+  def model_settings_start(path) do
+    with {:ok, _} <- Application.ensure_all_started(:bandit),
+         do: ModelSettingsServer.start_link(path)
   end
 
   defp watchdog_main([command, config_path]) when command in @watchdog_commands do

@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.Recovery do
   @moduledoc "Opt-in recovery budgets and diagnostic advice; diagnosis never grants acceptance or permissions."
 
-  alias SymphonyElixir.Mvp.Review
+  alias SymphonyElixir.Mvp.{DeepSeek, Review}
 
   defguardp valid_credit?(credit) when is_integer(credit) and credit >= 0
 
@@ -99,6 +99,10 @@ defmodule SymphonyElixir.Mvp.Recovery do
   end
 
   def parse(_), do: {:error, :mvp_invalid_diagnosis}
+
+  @doc "Parse a channel result using its original frozen service, preserving the strict core contract."
+  @spec parse(term(), map() | nil) :: {:ok, map()} | {:error, :mvp_invalid_diagnosis}
+  def parse(text, service), do: parse(DeepSeek.normalize_structured_output(text, service))
 
   @spec within_budget?(map(), term(), integer()) :: boolean()
   def within_budget?(policy, started_at_iso, now_unix_ms), do: within_budget?(policy, started_at_iso, now_unix_ms, 0)

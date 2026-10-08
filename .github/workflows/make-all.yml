@@ -77,9 +77,7 @@ jobs:
           python -m pip install -r view/requirements.txt
           npm install --prefix view/build/browser --no-audit --no-fund playwright@1.62.1
           view/build/browser/node_modules/.bin/playwright install --with-deps chromium
-      - name: Python, JS, self_check and fixed migration comparison
-        run: python -B scripts/run_view_checks.py --output view/build/checks
-      - name: Synthetic browser acceptance
+      - name: Python, JS, self_check, entrypoints and synthetic browser acceptance
         env:
           NODE_PATH: ${{ github.workspace }}/view/build/browser/node_modules
-        run: node view/tests/browser-fixture.cjs view/build/checks/fixture
+        run: python -B scripts/run_view_checks.py --output view/build/checks

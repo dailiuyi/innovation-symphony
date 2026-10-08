@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const {nativeReading, generatedReading} = require('./browser-refresh.cjs');
+const {settingsReading} = require('./browser-model-settings.cjs');
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
 const origin = option('--url', 'http://127.0.0.1:8613');
@@ -165,6 +166,12 @@ const out = path.resolve(option('--out', path.resolve(__dirname, '../build/_scre
     await page.screenshot({path:path.join(out, 'board-mobile.png')});
     assert.deepEqual(errors, []);
     check('dark/light and mobile layout, no browser script errors');
+    if (args.includes('--model-settings')) {
+      await settingsReading(page);
+      assert.deepEqual(errors, []);
+      check('model settings keyboard, native controls, two repositories and roles, failures, conflict, refresh and narrow layout');
+      await page.screenshot({path:path.join(out, 'model-settings-mobile.png')});
+    }
     await fs.writeFile(path.join(out, 'smoke-result.json'), JSON.stringify({passed:true,environment,checks, sessions:snapshot.sessions.length,stories:snapshot.stories.length,errors},null,2));
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error); process.exitCode=1;});

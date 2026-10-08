@@ -3,6 +3,50 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
 
   alias SymphonyElixir.Mvp.Review
 
+  test "bare and fenced reviews share semantic validation and protocol diagnostics" do
+    approved = review([criterion("A1", true)], [], true)
+    rejected = review([criterion("A1", false)], [blocker("A1", "code_defect")])
+    external = review([criterion("A1", false)], [blocker("A1", "external_condition")])
+
+    for valid <- [approved, rejected, external] do
+      for text <- [Jason.encode!(valid), " \n```json\n#{Jason.encode!(valid)}\n```\t "] do
+        assert {:ok, ^valid} = Review.parse(text, 2)
+        assert Review.validation_errors(text, 2) == []
+      end
+    end
+
+    legacy = %{"approved" => true, "summary" => "Passed"}
+    assert {:ok, ^legacy} = Review.parse("```json\n#{Jason.encode!(legacy)}\n```", 0)
+    assert Review.validation_errors("```json\n#{Jason.encode!(legacy)}\n```", 0) == []
+
+    for invalid <- [
+          Map.put(approved, "extra", true),
+          Map.put(approved, "approved", "true"),
+          Map.put(rejected, "approved", true),
+          Map.put(approved, "blockers", rejected["blockers"]),
+          put_in(external, ["blockers", Access.at(0), "handoff"], ""),
+          put_in(rejected, ["blockers", Access.at(0), "acceptance"], "Wrong A1")
+        ] do
+      raw = Jason.encode!(invalid)
+      fenced = "```json\n#{raw}\n```"
+      assert {:error, :mvp_invalid_review} = Review.parse(raw, 2)
+      assert {:error, :mvp_invalid_review} = Review.parse(fenced, 2)
+      assert Review.validation_errors(fenced, 2) == Review.validation_errors(raw, 2)
+      refute Review.validation_errors(fenced, 2) == []
+    end
+  end
+
+  test "review diagnostics reject invalid wrappers rather than extracting an approval" do
+    raw = Jason.encode!(review([criterion("A1", true)], [], true))
+    fenced = "```json\n#{raw}\n```"
+
+    for text <- [nil, "Result:\n" <> fenced, fenced <> "\nDone.", fenced <> "\n" <> fenced, "```text\n#{raw}\n```", "```json\n#{raw <> raw}\n```", "```json\n#{raw}"] do
+      assert {:error, :mvp_invalid_review} = Review.parse(text, 2)
+      assert [%{"code" => "invalid_json", "message" => message}] = Review.validation_errors(text, 2)
+      assert message =~ "single json code fence covering the entire response"
+    end
+  end
+
   test "legacy reviews and old rework payloads conservatively route rejection to code repair" do
     assert {:ok, legacy_rejection} = Review.parse(~s({"approved":false,"summary":"Needs a fix"}), 0)
     assert Review.disposition(legacy_rejection) == :repair_code

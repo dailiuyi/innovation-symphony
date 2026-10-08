@@ -2,7 +2,18 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.ModelServicesFixture, as: ServiceFixture
-  alias SymphonyElixir.Mvp.{Commands, ExecutionSandbox, Executor, ModelCatalog, ModelServices, Receipt, Recovery}
+
+  alias SymphonyElixir.Mvp.{
+    Commands,
+    DeepSeek,
+    ExecutionSandbox,
+    Executor,
+    Intake,
+    ModelCatalog,
+    ModelServices,
+    Receipt,
+    Recovery
+  }
 
   @url "https://github.com/owner/repo/pull/42"
 
@@ -58,6 +69,71 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
     assert first_round["comment"]["id"] == 1
     assert first_round["comment"]["candidate_sha"] == first.sha
     assert second_round["review"]["approved"]
+  end
+
+  test "DeepSeek fenced diagnosis retries malformed output, retaining raw evidence, read-only roles and candidate binding" do
+    context = context!()
+    for key <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.put_env(key, "synthetic-deepseek")
+    on_exit(fn -> for key <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.delete_env(key) end)
+    authority = ServiceFixture.settings(Path.join(context.root, "authority"), %{"reasoning_effort" => "high"}, "deepseek")
+    config = Map.merge(settings([["true"]], %{"diagnose_every" => 1}), authority)
+    {:ok, selected} = Intake.resolve_comments([], config)
+    opts = options(context, review: fn count -> count > 1 end, diagnosis: "retry_stage")
+    agent = opts[:agent]
+
+    opts =
+      Keyword.put(opts, :agent, fn workspace, prompt, issue, options ->
+        {:ok, result} = agent.(workspace, prompt, issue, options)
+        role = agent_role(options)
+        assert options[:model_service] == selected.services[if(role == :reviewer, do: "reviewer", else: "coder")]
+        fenced = "```json\n#{result.output_text}\n```"
+        text = if role == :diagnosis and length(calls(context, :diagnosis)) == 1, do: "Diagnosis:\n" <> fenced, else: fenced
+        if role == :coder, do: {:ok, result}, else: {:ok, %{result | output_text: text}}
+      end)
+
+    assert {:ok, @url} = Executor.run(context.workspace, context.issue, config, selected, context.receipt, opts)
+    assert length(calls(context, :coder)) == 2
+    assert length(calls(context, :diagnosis)) == 2
+    assert length(calls(context, :comment)) == 1
+    [first, final] = calls(context, :reviewer)
+    refute first.sha == final.sha
+    assert first.read_only and final.read_only
+    assert hd(calls(context, :diagnosis)).read_only
+    assert final.prompt =~ final.sha
+    assert [%{sha: sha}] = calls(context, :publish)
+    assert sha == final.sha
+    [rejected, approved] = Receipt.read(context.receipt)["rounds"]
+    refute rejected["review"]["approved"]
+    assert rejected["comment"]["candidate_sha"] == first.sha
+    assert approved["review"]["approved"]
+    assert approved["candidate_sha"] == sha
+    events = Receipt.read(context.receipt)["recovery"]["events"]
+
+    for event <- events, event["role"] == "diagnosis" do
+      raw = File.read!(Path.join(event["evidence"], "output.txt"))
+      outcome = File.read!(Path.join(event["evidence"], "outcome.json")) |> Jason.decode!()
+      assert raw =~ "```json"
+      normalized = DeepSeek.normalize_structured_output(raw, selected.services["coder"])
+      assert outcome["result"] =~ "normalized_output_text: " <> inspect(normalized)
+      assert outcome["result"] =~ "output_text: " <> inspect(raw)
+    end
+  end
+
+  test "legacy OpenAI fenced diagnosis exhausts bounded retries without approving or publishing" do
+    context = context!()
+    opts = options(context, diagnosis: "retry_stage")
+    agent = opts[:agent]
+
+    opts =
+      Keyword.put(opts, :agent, fn workspace, prompt, issue, options ->
+        {:ok, result} = agent.(workspace, prompt, issue, options)
+        if agent_role(options) == :diagnosis, do: {:ok, %{result | output_text: "```json\n#{result.output_text}\n```"}}, else: {:ok, result}
+      end)
+
+    assert {:error, :mvp_invalid_diagnosis} = run(context, settings([["false"]]), opts)
+    assert length(calls(context, :diagnosis)) == 3
+    assert calls(context, :reviewer) == []
+    assert calls(context, :publish) == []
   end
 
   test "an unknown check failure can retry trusted checks on the same SHA without recoding" do

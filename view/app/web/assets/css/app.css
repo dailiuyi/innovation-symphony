@@ -295,3 +295,10 @@
   #sidebar{width:200px}
   .pane{width:100vw}
 }
+
+/* Repository model controls remain usable at narrow widths. */
+#model-settings fieldset { margin: 1rem 0; min-width: 0; }
+#model-settings label { display: block; margin: .6rem 0; }
+#model-settings select, #model-settings input { display: block; max-width: 100%; width: 100%; padding: .5rem; }
+#model-settings button { margin: .4rem; padding: .5rem; }
+#model-settings p { overflow-wrap: anywhere; }

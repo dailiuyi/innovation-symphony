@@ -110,7 +110,7 @@ def main():
         render(args.fixture_stage.resolve(), output)
         return 0
     report = {"passed": False, "formal_acceptance": False, "real_windows_wsl": False,
-              "browser": "not executed by this code-check command", "commands": []}
+              "browser": "not yet executed", "commands": []}
     try:
         with tempfile.TemporaryDirectory(prefix="view-ci-") as directory:
             stage = Path(directory) / "view"
@@ -122,7 +122,8 @@ def main():
             validate_python_report({"passed": python["passed"], "python": python},
                                    frozen["python_baseline_count"], frozen["python_identities"])
             report["python"] = python
-            js = [args.node, "--test", "--test-reporter=tap", str(stage / "tests/rounds.test.mjs")]
+            js = [args.node, "--test", "--test-reporter=tap", str(stage / "tests/rounds.test.mjs"),
+                  str(stage / "tests/model-settings.test.mjs")]
             result = subprocess.run(js, capture_output=True, text=True, timeout=120)
             (output / "javascript.stdout").write_text(result.stdout)
             (output / "javascript.stderr").write_text(result.stderr)
@@ -131,7 +132,7 @@ def main():
                 print(result.stderr, file=sys.stderr)
             result.check_returncode()
             report["commands"].append(js)
-            report["javascript"] = validate_tap(result.stdout, frozen["javascript_baseline_count"])
+            report["javascript"] = validate_tap(result.stdout, frozen["javascript_baseline_count"] + 1)
             expected = json.loads(EXPECTED.read_text())
             if actual != expected:
                 raise AssertionError("fixed pre-migration snapshot/context/HTML results differ; inspect fixture/projection.json")
@@ -161,6 +162,14 @@ def main():
                 report["linux_integration"] = integration_report
             else:
                 report["linux_integration"] = "not executed: requires Linux"
+            browser = [args.node, str(stage / "tests/browser-fixture.cjs"), str(output / "fixture")]
+            report["commands"].append(browser)
+            report["browser"] = {"passed": False, "status": "attempted"}
+            subprocess.run(browser, check=True, timeout=180)
+            browser_report = json.loads((output / "fixture/browser-fixture-result.json").read_text())
+            if not browser_report.get("passed"):
+                raise AssertionError("synthetic browser acceptance failed")
+            report["browser"] = browser_report
             report["python_version"] = sys.version
             report["node_version"] = subprocess.check_output([args.node, "--version"], text=True, timeout=15).strip()
             report["passed"] = True
