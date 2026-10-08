@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     Executor,
     ExternalDraft,
     ExternalHandoff,
+    Intake,
     ModelCatalog,
     ModelServices,
     Receipt,
@@ -1831,6 +1832,53 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
     assert File.read!(counter) == "2"
     assert length(calls(context, :coder)) == 1
     assert length(calls(context, :reviewer)) == 1
+  end
+
+  test "DeepSeek fenced diagnostic handoff retains original bytes and resumes after an OpenAI default change" do
+    context = context!()
+    for key <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.put_env(key, "synthetic-handoff-deepseek")
+    on_exit(fn -> for key <- ~w(GH12_CODER_KEY GH12_REVIEWER_KEY), do: System.delete_env(key) end)
+    authority = ServiceFixture.settings(Path.join(context.root, "authority"), %{"reasoning_effort" => "high"}, "deepseek")
+    counter = Path.join(context.root, "deepseek-service-availability")
+    script = "import pathlib,sys; p=pathlib.Path(sys.argv[1]); n=int(p.read_text())+1 if p.exists() else 1; p.write_text(str(n)); sys.exit(1 if n==1 else 0)"
+    config = Map.merge(%{settings() | checks: [["python3", "-c", script, counter]]}, authority)
+    {:ok, selected} = Intake.resolve_comments([], config)
+    Process.put({context.key, :diagnosis_action}, "await_external")
+    Process.put({context.key, :reviews}, [approved_review()])
+    opts = options(context)
+    original = opts[:agent]
+
+    opts =
+      Keyword.put(opts, :agent, fn workspace, prompt, issue, options ->
+        role = if options[:output_schema] == Recovery.schema(), do: "coder", else: if(options[:read_only], do: "reviewer", else: "coder")
+        assert options[:model_service] == selected.services[role]
+        {:ok, result} = original.(workspace, prompt, issue, options)
+        if options[:output_schema] == Recovery.schema(), do: {:ok, %{result | output_text: "```json\n#{result.output_text}\n```"}}, else: {:ok, result}
+      end)
+
+    assert {:error, {:mvp_awaiting_external, _}} = Executor.run(context.workspace, context.issue, config, selected, context.receipt, opts)
+    data = Receipt.read(context.receipt)
+    record_path = data["external_handoff"]["record_path"]
+    record = File.read!(record_path) |> Jason.decode!()
+    assert record["source_raw"] =~ "```json"
+    assert record["source_digest"] == digest(record["source_raw"])
+    assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(record["source_raw"])
+    assert {:ok, parsed} = Recovery.parse(record["source_raw"], selected.services["coder"])
+    assert record["source_data"] == parsed
+
+    preset = config.model_services["presets"]["coding"] |> Map.put("provider", "openai") |> Map.put("adapter", "codex_app_server")
+    registry = put_in(config.model_services, ["presets", "new-openai"], preset)
+    {:ok, registry} = ModelCatalog.register(registry, "new-openai", "gpt-test", ["high"])
+    {:ok, service} = ModelServices.snapshot(%{config | model_services: registry}, "new-openai", :coder, "fixture")
+    {:ok, registry} = ModelCatalog.attest(registry, service, ServiceFixture.proof(:coder))
+    registry = put_in(registry, ["defaults", "coder"], "new-openai")
+    assert {:ok, _} = ModelServices.save(ModelServices.path(config), config.model_services, 0, registry)
+    proof = evidence_file!(context, "service restored")
+    auth = authorization(context, data["external_handoff"], proof, "deepseek-diagnostic-resume")
+    resume = resume_context(context, config, opts) |> Map.put(:models, Map.take(selected, [:coder, :reviewer])) |> Map.put(:services, selected.services)
+    assert {:ok, @url} = Executor.resume_external(resume, digest(File.read!(context.receipt)), auth)
+    assert File.read!(record_path) |> Jason.decode!() == record
+    assert Receipt.read(context.receipt)["services"] == selected.services
   end
 
   test "a diagnosis handoff receives a new code review comment before authorized repair resumes" do

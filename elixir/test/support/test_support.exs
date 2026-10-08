@@ -338,14 +338,14 @@ defmodule SymphonyElixir.ModelServicesFixture do
     end
   end
 
-  def settings(root, parameters \\ nil) do
+  def settings(root, parameters \\ nil, provider \\ "openai") do
     presets =
       Map.new([{"coding", "GH12_CODER_KEY", "medium"}, {"reviewing", "GH12_REVIEWER_KEY", "high"}], fn {id, key, effort} ->
         {id,
          %{
            "version" => 1,
-           "provider" => "openai",
-           "adapter" => "codex_app_server",
+           "provider" => provider,
+           "adapter" => if(provider == "deepseek", do: "deepseek_responses", else: "codex_app_server"),
            "model" => "gpt-test",
            "parameters" => parameters || %{"reasoning_effort" => effort},
            "connection" => %{"base_url" => "https://#{id}.example/v1", "protocol" => "responses"},
@@ -367,7 +367,7 @@ defmodule SymphonyElixir.ModelServicesFixture do
 
     registry =
       Enum.reduce(Map.keys(presets), registry, fn id, acc ->
-        efforts = if parameters == %{}, do: [], else: ~w(medium high)
+        efforts = reasoning_efforts(provider, parameters)
         {:ok, acc} = ModelCatalog.register(acc, id, "gpt-test", efforts)
         acc
       end)
@@ -383,6 +383,10 @@ defmodule SymphonyElixir.ModelServicesFixture do
     write_authority!(settings)
     settings
   end
+
+  defp reasoning_efforts(_, %{} = parameters) when map_size(parameters) == 0, do: []
+  defp reasoning_efforts("deepseek", _), do: ~w(none low high max)
+  defp reasoning_efforts(_, _), do: ~w(medium high)
 
   def write_authority!(settings) do
     config = %{

@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.Attempts do
   @moduledoc "Bounded fresh model sessions with durable evidence and independent usage accounting."
 
-  alias SymphonyElixir.Mvp.{ModelServices, Receipt, Recovery, Review, Usage}
+  alias SymphonyElixir.Mvp.{DeepSeek, ModelServices, Receipt, Recovery, Review, Usage}
 
   @type role :: :coder | :reviewer | :diagnosis
   @spec run(map(), role(), String.t(), (-> :ok | {:error, term()})) :: {:ok, map()} | {:error, term()}
@@ -18,7 +18,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
          :ok <- available(context),
          {:ok, evidence, usage_key} <- reserve(context, role, prompt, stage_attempt) do
       result = invoke(context, role, prompt, evidence, usage_key)
-      validated = validate(role, result, context.limit)
+      validated = validate(role, result, context.limit, get_in(context, [:services, "coder"]))
       integrity = with :ok <- verify_fun.(), do: time_available(context)
       outcome = if integrity == :ok, do: validated, else: integrity
 
@@ -105,6 +105,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
       with {:ok, service_options} <- ModelServices.options(context, role) do
         Usage.request(context.receipt, usage_key, service_options[:model_service])
         result = invoke_with_budget(context, prompt, service_options ++ options, remaining)
+        result = normalize_result(role, result, service_options[:model_service])
 
         actual =
           case result do
@@ -143,18 +144,26 @@ defmodule SymphonyElixir.Mvp.Attempts do
   defp output({:ok, result}), do: Map.get(result, :output_text, "")
   defp output(_), do: ""
 
-  defp validate(_, {:error, :wall_timeout}, _), do: {:error, :mvp_recovery_resource_exhausted}
-  defp validate(:coder, result, _), do: result
+  defp normalize_result(:diagnosis, {:ok, result}, service) do
+    # output_text and output.txt remain the original response. outcome.json also
+    # records the normalized text, bound to this attempt's frozen service.
+    {:ok, Map.put(result, :normalized_output_text, DeepSeek.normalize_structured_output(Map.get(result, :output_text, ""), service))}
+  end
 
-  defp validate(:reviewer, {:ok, result} = original, limit) do
+  defp normalize_result(_, result, _service), do: result
+
+  defp validate(_, {:error, :wall_timeout}, _, _), do: {:error, :mvp_recovery_resource_exhausted}
+  defp validate(:coder, result, _, _), do: result
+
+  defp validate(:reviewer, {:ok, result} = original, limit, _) do
     with {:ok, _} <- Review.parse(Map.get(result, :output_text, ""), limit), do: original
   end
 
-  defp validate(:diagnosis, {:ok, result} = original, _) do
-    with {:ok, _} <- Recovery.parse(Map.get(result, :output_text, "")), do: original
+  defp validate(:diagnosis, {:ok, result} = original, _, service) do
+    with {:ok, _} <- Recovery.parse(Map.get(result, :output_text, ""), service), do: original
   end
 
-  defp validate(_, result, _), do: result
+  defp validate(_, result, _, _), do: result
 
   defp retryable?(_, {:error, error}) when error in [:turn_timeout, :response_timeout], do: true
   defp retryable?(_, {:error, {:port_exit, _}}), do: true

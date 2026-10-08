@@ -25,7 +25,7 @@ defmodule SymphonyElixir.Mvp.InterruptedCoder do
          true <- diagnosis_finish["status"] == "finished" and coder_start["role"] == "coder",
          true <- coder_start["evidence"] == Path.join(last["evidence"], "agent-attempt-#{count}"),
          {:ok, output} <- read(Path.join(diagnosis_start["evidence"], "output.txt")),
-         {:ok, diagnosis} <- Recovery.parse(output),
+         {:ok, diagnosis} <- Recovery.parse(output, get_in(data, ["services", "coder"])),
          true <- diagnosis["action"] == "repair_code",
          feedback_event when is_map(feedback_event) <- Enum.at(events, -4),
          feedback when is_map(feedback) <- feedback_event["feedback"],

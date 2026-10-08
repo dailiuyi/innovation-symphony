@@ -99,7 +99,7 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     for action <- schema["properties"]["action"]["enum"] do
       value = diagnosis(action)
       assert {:ok, ^value} = Recovery.parse(" \n" <> Jason.encode!(value) <> "\n ")
-      assert {:ok, ^value} = Recovery.parse(" \n```json\n#{Jason.encode!(value)}\n```\n ")
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(" \n```json\n#{Jason.encode!(value)}\n```\n ")
     end
   end
 
@@ -133,7 +133,7 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     json = Jason.encode!(valid)
 
     fenced = "```json\n#{json}\n```"
-    assert {:ok, ^valid} = Recovery.parse(fenced)
+    assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(fenced)
 
     for text <- [
           nil,
@@ -215,6 +215,35 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
     end
 
     refute Recovery.within_budget?(policy, start, "now")
+  end
+
+  test "only the frozen DeepSeek Responses channel normalizes diagnosis fences before strict semantics" do
+    service = %{"provider" => "deepseek", "adapter" => "deepseek_responses", "connection" => %{"protocol" => "responses"}}
+    valid = diagnosis("repair_code")
+    json = Jason.encode!(valid)
+    fenced = " \n```json\r\n#{json}\r\n```\n "
+    assert {:ok, ^valid} = Recovery.parse(fenced, service)
+    assert {:ok, ^valid} = Recovery.parse(json, service)
+
+    for channel <- [nil, %{}, Map.put(service, "provider", "openai"), Map.put(service, "adapter", "codex_app_server"), put_in(service, ["connection", "protocol"], "chat")] do
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(fenced, channel)
+      assert {:ok, ^valid} = Recovery.parse(json, channel)
+    end
+
+    for text <- ["before " <> fenced, fenced <> " after", fenced <> fenced, "```json\n#{json <> json}\n```", "```text\n#{json}\n```", "```json\n#{json}", nil, [], 1] do
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse(text, service)
+    end
+
+    for invalid <- [
+          Map.put(valid, "approved", true),
+          Map.delete(valid, "steps"),
+          Map.put(valid, "steps", []),
+          Map.put(valid, "summary", " "),
+          Map.put(diagnosis("await_external"), "external_conditions", []),
+          put_in(diagnosis("await_external"), ["external_conditions", Access.at(0), "kind"], "code_defect")
+        ] do
+      assert {:error, :mvp_invalid_diagnosis} = Recovery.parse("```json\n#{Jason.encode!(invalid)}\n```", service)
+    end
   end
 
   defp bounds, do: [{"max_rework", 1, 100}, {"diagnose_every", 1, 10}, {"stage_attempts", 1, 5}, {"max_elapsed_ms", 1, 86_400_000}, {"max_agent_attempts", 1, 500}]

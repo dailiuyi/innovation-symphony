@@ -634,7 +634,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     with true <- is_binary(raw),
          true <- digest_hex(raw) == record["source_digest"],
-         {:ok, diagnosis} <- Recovery.parse(raw),
+         {:ok, diagnosis} <- Recovery.parse(raw, get_in(data, ["services", "coder"])),
          true <- diagnosis == record["source_data"],
          true <- diagnosis["action"] == "await_external" and diagnosis["external_conditions"] == record["conditions"],
          true <- is_map(event) and is_map(feedback),
@@ -2249,7 +2249,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     """
 
     with {:ok, result} <- run_agent(context, :diagnosis, prompt),
-         {:ok, diagnosis} <- Recovery.parse(result.output_text),
+         {:ok, diagnosis} <- Recovery.parse(result.output_text, get_in(context, [:services, "coder"])),
          :ok <- verify(context, sha) do
       next = context |> Map.delete(:force_diagnosis) |> Map.put(:diagnosis_raw, result.output_text)
       diagnostic_action(next, number, sha, feedback, diagnosis)

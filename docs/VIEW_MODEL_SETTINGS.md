@@ -23,22 +23,24 @@
 5. View 设置页增加双角色选择、取消、保存、冲突和切换未保存提示；任务采集仍只读。
    测试覆盖恶意输入、并发、失败保值、冻结/撤销、渠道能力与打包入口。
 
-### 本轮结构化结果修复计划
+### 当前诊断渠道修复计划
 
-依据本次 GH-16 返工材料，先核对实际源码而不直接采用反馈补丁：Review、Recovery
-与角色探测仍只解码裸 JSON。新增共用 StructuredOutput.decode/1，使用全字符串匹配，
-仅接受裸 JSON 或覆盖完整响应的单个小写 json 围栏（允许外层空白）。不提取散文中的
-JSON，不放行多个围栏、非 json 围栏、拼接或残缺结果；解码后保留各入口原有语义、
-精确 token、成功工具事件和角色证据校验，Review 错误反馈使用同一入口。
-扩展本地 Responses 工具往返夹具和双角色探测回归，保留 OpenAI 原用例。
-此为 IS-079 范围内的工程修复，不新增用户决定、权限或真实调用授权。
+前轮将围栏兼容扩展到公共 Recovery.parse/1，破坏既有严格裸 JSON 合同；
+冻结回归的拒绝断言正确，不是待控制器消解的规格冲突。本轮工程修复：
 
-冻结 `/baseline` 的 Recovery 用例明确拒绝单个 json 围栏，而固定 baseline 检查使用
-候选实现运行旧测试，两项合同冲突。候选回归应按本轮要求验收单围栏，基线不修改；
-原样运行两条固定检查，冲突失败须据实报告并交控制器处理，不能登记为通过。
+1. 恢复 Recovery.parse/1 的严格解码，直接围栏拒绝；新增显式服务参数入口，
+   由 DeepSeek 适配器核对冻结 provider、adapter、protocol 后规范化完整结果，
+   再执行原语义校验。保持其他渠道和缺失快照的旧任务严格行为。
+2. 核对全部诊断消费入口：Attempts 有限重试、Executor 普通诊断与外部等待源绑定、
+   InterruptedCoder 中断与超时恢复；均用原 services.coder，不重新读取当前默认。
+   保留原 output.txt/source_raw 及摘要，outcome.json 同时记录规范化文本。
+3. 回归直接拒绝围栏、DeepSeek 成功、OpenAI 裸 JSON、失败输入与有限重试，
+   对更改默认后的外部等待和中断恢复保留原始证据、只读及候选绑定验证。
+4. 同会话修复所有检查失败，运行固定 candidate、baseline 和完整 View 入口；
+   不修改基线、检查政策、控制器证据或测试环境来绕过断言。
 
-本轮不改变注册表或回执结构，无数据迁移。若回滚解析器，围栏结果会重新成为协议
-失败；原证据和预算保留，不把旧探测结果当作回滚后仍兼容的证明。
+无注册表／回执结构迁移；回滚代码不会改写原证据，但 DeepSeek 围栏诊断将停止，
+保留预算和停点。该修复不新增用户决定、权限或真实调用授权。
 
 ## 外部停点
 
@@ -129,11 +131,11 @@ TLS 夹具使用实际 Codex AppServer 和 exec-server 完成命令工具读取�
 | 合同 | 本轮回归 | 仍需外部证据 |
 | --- | --- | --- |
 | A03 完整结果格式 | StructuredOutputTest：裸 JSON、单 json 围栏及 CRLF／外层空白；拒绝散文、多／非 json 围栏、拼接、残缺和非字符串 | 新候选真实渠道结果 |
-| A03 语义校验 | ReviewExternalTest／RecoveryTest：围栏内错误字段、矛盾批准、无效外部条件仍拒绝；Review.validation_errors 与 parse 同规则 | 新候选独立 Review |
+| A03 语义校验 | ReviewExternalTest／RecoveryTest：Recovery 核心拒绝围栏，冻结 DeepSeek 适配后错误字段和无效外部条件仍拒绝；Review.validation_errors 与 parse 同规则 | 新候选独立 Review |
 | A03 双角色能力 | ModelServicesTest：双角色正确 token 和成功工具事件；错误 token、额外字段、非法包装、缺失／失败工具均拒绝 | 准确候选、角色、模型、渠道、有效参数及脱敏原始探测 |
 | A03 OpenAI／DeepSeek | ModelRoutingTest：原生 Codex、TLS Responses、真实工具往返；请求同时声明 tools 和 json_schema(strict)，DeepSeek 返回单围栏，OpenAI 保留裸 JSON；max／fixed 参数和双账号仍核验 | 真实账号双角色权限、reviewer 内核只读 |
 | A09 失败 Turn | 双角色 AppServer 探测在裸／围栏正确结果后收到 failed／interrupted 仍拒绝且不增加证据 | 生产执行隔离实测 |
-| A08／A09 返工和绑定 | RecoveryExecutorTest：围栏拒绝后重编码、只读诊断与独立 reviewer、单次评论和最终新候选 SHA 绑定 | 控制器正式证据及最终独立 Review |
+| A08／A09 返工和绑定 | RecoveryExecutorTest：DeepSeek 围栏诊断、恶意格式有限重试与 OpenAI 严格拒绝，重编码、只读角色、单次评论和最终新候选 SHA 绑定 | 控制器正式证据及最终独立 Review |
 
 ## 上一候选自检结果（历史）
 
@@ -485,8 +487,8 @@ formal_acceptance 和 real_windows_wsl 为 false。首次没有 NODE_PATH 的检
 789 项中 782 通过、1 失败、6 项既有外部 E2E 跳过、0 排除、0 无效。
 唯一失败是 RecoveryTest 的 `diagnosis requires one complete JSON object with
 nonempty summary and steps`，冻结文件 133–134 行要求单个 json 围栏返回
-`:mvp_invalid_diagnosis`，本轮要求则接受其中完整有效的诊断。这是冻结合同冲突，
-不是通过；须由控制器记录和处理后重新完整验证。没有修改 `/baseline`、可信脚本、
+`:mvp_invalid_diagnosis`。前轮错误地将其记为冻结合同冲突；实际是公共解析器
+放宽的代码缺陷，现按本页当前计划修复，保留这次历史失败结果。没有修改 `/baseline`、可信脚本、
 测试环境分支或检查政策。`policy_changes: []`；可信入口已有的权限夹具维护仍仅
 作用于临时 harness，并未处理或绕过本次 Recovery 冲突。
 
@@ -505,8 +507,9 @@ nonempty summary and steps`，冻结文件 133–134 行要求单个 json 围栏
 没有新增 skip 或 exclude。`git diff --check` 通过。
 
 GH16-A01／A02／A04–A10 的仓库内回归及本轮 A03 补充均通过相应 candidate／View
-检查，但 A11 的冻结 baseline 仍失败，整体验收不能登记为通过。须由控制器处理
-明确的冻结合同冲突、绑定准确新候选，重新正式验证并执行独立 gpt-6.1-sol/high
+检查，但当时 A11 的冻结 baseline 仍失败，整体验收不能登记为通过。此前建议
+由控制器处理“合同冲突”有误；必须先修复候选代码，再绑定准确新候选，
+重新正式验证并执行独立 gpt-6.1-sol/high
 Review；获授权操作者另补新候选真实账号双角色的渠道、模型、有效参数、工具执行、
 reviewer 只读、结构化结果及 SHA 绑定脱敏证据。真实内网部署和生产隔离证据仍按
 原合同验收，不用离线夹具或旧候选证据替代。
@@ -515,3 +518,67 @@ reviewer 只读、结构化结果及 SHA 绑定脱敏证据。真实内网部署
 不包含这些改动，不能充当新候选 SHA。仅保存所属仓库源码、测试、规格和本地检查
 产物；未提交、push、创建 PR、合并、安装、部署、升级服务或添加 ready。没有修改
 运行凭据、控制器证据、可信入口、冻结基线或检查政策；独立 Review 未在本会话执行。
+
+## 严格诊断合同与冻结渠道边界修复（本会话）
+
+依据 `/evidence/round-7/check-2.log` 只读核对，公共 Recovery.parse/1 接受围栏是
+候选代码缺陷；上节所谓“冻结合同冲突”及应交控制器修改的建议已撤回。直接解析
+恢复严格裸 JSON，DeepSeek Responses 的格式兼容由 DeepSeek 适配器按原冻结身份
+处理后再校验。OpenAI 和无完整服务身份的旧诊断保持原合同。
+
+本次没有注册表或回执迁移。Attempts 的 output.txt 保持原始响应，outcome.json
+额外记录规范化文本；外部 handoff 的 source_raw/source_digest 与解析后的 source_data
+分别保留。恢复重新从原始字节和原回执 services.coder 推导结果，不信任当前默认
+或单独的规范化字段。旧完整快照、当前撤权／凭据校验及恢复入口的服务绑定均保留。
+回滚前应停领并保留已有证据；回滚代码会恢复此前不兼容的诊断行为，不能把本次
+结果当作旧执行器的继续执行授权。不安装／切换服务或改写运行数据。
+
+本次验收对应（完整 GH16-A01–A11 对应表仍见上文）：
+
+| 合同 | 本次回归／证据 | 限制 |
+| --- | --- | --- |
+| A03 严格公共诊断与渠道适配 | RecoveryTest 直接拒绝围栏；DeepSeek provider/adapter/protocol 精确匹配后才接受完整 json 围栏；OpenAI 裸 JSON 保持 | 不代表真实模型可用 |
+| A03 恶意及无效输出 | 前后散文、多围栏、拼接、残缺、错误字段、空 summary/steps、无效外部条件拒绝 | 不调整核心 Schema 或语义 |
+| A03 角色能力与 Turn | ModelServicesTest 精确 token、成功工具事件、缺失／失败工具拒绝；ModelRoutingTest strict Schema、工具往返及失败／中断 Turn 拒绝 | 真实账号、内核执行隔离另行验收 |
+| A08 有限重试与冻结 | RecoveryExecutorTest DeepSeek 恶意格式重试后成功，原始及规范化文本分别保留；OpenAI 围栏耗尽三次后停止 | 原阶段／总次数／墙钟预算保留 |
+| A08 审计恢复 | ExternalHandoffTest 默认改为 OpenAI 后仍按冻结 DeepSeek 解析原始诊断并恢复；InterruptedResumeTest 原始字节摘要、中断续跑与候选绑定 | 不重读新默认、不改旧证据 |
+| A09 独立角色与最终候选 | RecoveryExecutorTest 单次拒绝评论、只读诊断／reviewer、重编码后新 SHA 绑定；既有隔离、撤权及正式检查全回归 | 独立 gpt-6.1-sol/high Review 由控制器执行 |
+| A01／A02／A04–A07 View 与配置 | 完整 View 检查：双仓库双角色、刷新、键盘、窄屏、取消、切换提示、409／503 恢复；Elixir 管理／目录回归 | 获准内网真实访问与部署仍未验收 |
+| A10／A11 同步规格和完整门禁 | REQUIREMENTS、DECISIONS、MODEL_SERVICES 与本页同步；固定 candidate、baseline 及 View 结果另记下文 | 准确候选 SHA 和正式验收由控制器绑定 |
+
+定向运行 RecoveryTest／RecoveryExecutorTest：38 项通过；
+InterruptedResumeTest／ExternalHandoffTest：72 项通过；无跳过。
+完整 View 检查退出 0，38 项 Python、11 项 JS、11 项 Linux 来源回归、八种入口和
+九组浏览器操作通过，无跳过；报告 `.check-evidence/gh16-channel-view/code-check-result.json`。
+此报告明确 synthetic=true、formal_acceptance=false、real_windows_wsl=false。
+
+首轮候选检查 `.check-evidence/gh16-channel-candidate.log` 发现新增测试的 alias／
+嵌套提示，已修正；814 项中另有旧 OpenAI 原生根配置测试一次 response_timeout，
+覆盖率仍为 100%。未放宽超时或验收政策，按同一固定入口顺序重跑最终工作区。
+本次目录初建前的两条日志重定向曾因 `.check-evidence` 不存在退出 1，检查尚未启动；
+建立仓库内本地输出目录后重跑，未改控制器证据。
+
+冻结 baseline 完整重跑退出 0：789 项中 783 通过、0 失败、6 跳过、0 排除、0 无效。
+固定入口为 `python3 /opt/symphony/scripts/check_isolated.py baseline`，报告目录
+`.check-evidence/baseline-1g0i4q9_/`，完整日志 `.check-evidence/gh16-channel-baseline.log`。
+`policy_changes: []`；可信工具自身已有的权限夹具维护仅作用于临时 harness，
+本会话没有修改维护入口、冻结文件或任何断言。
+
+最终工作区候选的完整覆盖测试通过：814 项中 808 通过、0 失败、6 跳过、0 排除、
+0 无效，覆盖率 100%；格式、公开函数规格和严格 Credo 同样通过。首轮旧 OpenAI
+原生根配置测试的 response_timeout 在保持原检查策略的串行重跑中未重现。
+跳过项均为原有真实 E2E：Asana、Jira、GitHub、GitLab、Linear 本地和 SSH；
+对应真实环境开关未启用，未新增 skip/exclude，也未放宽时间或覆盖率门槛。
+检查产物中的 candidate_sha 仍是工作区原 HEAD `c93bae36fea738e8b07625bb61ea0fa3b34360c8`，
+不包含本次未提交修改，不能作为新候选身份或替代控制器准确 SHA 的验证／Review。
+
+最终 `python3 /opt/symphony/scripts/check_isolated.py candidate` 退出 0：格式、公开
+函数规格、严格 Credo、完整覆盖测试、Dialyzer 与 escript build 均通过；报告目录
+`.check-evidence/candidate-v4cb5mr_/`，完整日志
+`.check-evidence/gh16-channel-candidate-final.log`，`policy_changes: []`。
+`git diff --check` 通过。本会话所有适用离线门禁已通过；A11 的准确最终候选正式
+验证和独立 gpt-6.1-sol/high Review 仍由控制器完成，不能用这些工作区产物替代。
+真实 DeepSeek／GPT 双角色账号调用、获准内网配置及访问、生产隔离实测未执行，
+没有凭据、付费调用或真实材料外发授权。不添加 ready，不修改运行预设。
+仅保存本仓库源码、测试、规格及本地检查产物；未提交、push、创建 PR、合并、
+安装、部署或升级服务，未修改 .git、运行凭据、兄弟目录或控制器证据。

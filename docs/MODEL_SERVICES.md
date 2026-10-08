@@ -271,13 +271,21 @@ operator_recheck 及更新时间；候选/base、旧 rounds、不可变外部 ha
 
 ## 失败、用量和验证边界
 
-Review、Recovery 诊断和目录角色探测共用 `StructuredOutput.decode/1`：接受裸 JSON，
-或覆盖完整响应的单个小写 `json` 代码围栏，允许外层空白。仍请求严格 JSON Schema；
-本地兼容部分渠道在声明 tools 后返回围栏的格式差异，不提取散文中的结果。
-前后散文、多个／非 json 围栏、拼接 JSON 和残缺输入拒绝。解码不授予批准或能力：
-原语义校验、精确探测 token、成功命令工具事件、角色证据、Turn 成功及候选 SHA
-绑定要求保留。Review.validation_errors 使用同一解码规则和原语义诊断。
-该工程修复不代表真实账号已验证；本轮证据和冻结基线冲突见 VIEW_MODEL_SETTINGS。
+Review 和目录角色探测保留 `StructuredOutput.decode/1` 的完整结果兼容规则。
+公共 `Recovery.parse/1` 恢复既有严格裸 JSON 合同，直接传入任何围栏均拒绝。
+诊断消费入口调用 `Recovery.parse/2`，仅当原冻结服务的 provider=deepseek、
+adapter=deepseek_responses、connection.protocol=responses 时，在 DeepSeek 适配边界
+规范化裸 JSON 或覆盖完整响应的单个小写 `json` 围栏（允许外层空白），再交原语义
+校验；其他渠道和缺少服务身份的旧任务仍严格解析裸 JSON。仍请求严格 JSON Schema，
+不提取散文中的结果；前后散文、多个／非 json 围栏、拼接和残缺输入均拒绝。
+普通诊断、有限重试、外部等待源绑定和宿主中断／超时审计恢复使用同一规则；恢复
+从原回执 services.coder 取渠道，不能读当前默认来解释旧输出。output.txt、外部
+source_raw 和摘要保留原始响应，outcome.json 另存 normalized_output_text；外部
+source_data 和返工反馈保存经过校验的诊断对象。原始字节及 outcome 摘要仍参与审计。
+格式兼容不授予批准或能力：原语义校验、精确探测 token、成功命令工具事件、角色
+证据、Turn 成功及候选 SHA 绑定要求保留。Review.validation_errors 与 parse 同规则。
+此前把 Recovery 核心合同放宽导致的冻结失败是代码缺陷，本轮修复不要求修改冻结
+测试或检查政策，也不代表真实账号已验证；新检查证据见 VIEW_MODEL_SETTINGS。
 
 模型未知、未验证、参数不支持、协议不兼容、管理员禁用、凭据缺失/失效/变更及证据
 过期在调用前给出具体原因；真实服务端 401/403、429、余额不足、型号不存在和服务
