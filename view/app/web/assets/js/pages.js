@@ -1,6 +1,7 @@
 // Agent 上下文页 + 设置页。
 
 import { $, esc, setHTML, setText, fmt, contextUrl } from './fmt.js';
+import { mountModelSettings } from './model-settings.js';
 import { state, visibleSessions, showRuntime, displayId } from './data.js';
 
 const ROLE_ORDER = ['编码', 'Review', '诊断', '预检', '未识别'];
@@ -69,7 +70,9 @@ export function renderSettingsPage() {
   const boot = state.boot || {};
   const repos = boot.repos || [];
   const pending = boot.pending || [];
+  if (document.getElementById('model-settings')) return;
   setHTML($('settings-body'), `
+    <div class="panel" id="model-settings"></div>
     <div class="panel">
       <h3>接入配置</h3>
       <p>配置文件：<code>${esc(boot.configPath || 'app/config.toml')}</code>${boot.configExists ? '' : ' <span class="muted">（还没有创建，全部用默认值）</span>'}</p>
@@ -87,7 +90,8 @@ export function renderSettingsPage() {
     <div class="panel">
       <h3>原型范围</h3>
       <p>任务进度、轮次证据、Agent 指令与会话记录来自运行时产物。未记录的字段会标明缺失。</p>
-      <p>看板只读。任务启动、重试、模型配置与 Prompt 修改由 Symphony 负责。</p>
+      <p>任务启动、重试与 Prompt 修改由 Symphony 负责。此页仅管理受控仓库默认模型。</p>
       <p>数据接口是本原型内部约定。未来合并时再根据 Symphony 的稳定接口适配，当前不承诺产品级接口。</p>
     </div>`);
+  mountModelSettings();
 }

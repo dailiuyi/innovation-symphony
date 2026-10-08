@@ -23,7 +23,8 @@
 | Issue #12 全部会话、返工原因与外部等待分析 | [ISSUE12_PROCESS_ANALYSIS.md](ISSUE12_PROCESS_ANALYSIS.md) |
 | V0 本地验证与未验收范围 | [VALIDATION_V0.md](VALIDATION_V0.md) |
 | 官方来源及改动接缝 | [UPSTREAM.md](UPSTREAM.md) |
-| GH-12 角色模型服务、目录、管理与迁移 | [MODEL_SERVICES.md](MODEL_SERVICES.md) |
+| GH-16 仓库默认设置、内网管理、方案与验收 | [VIEW_MODEL_SETTINGS.md](VIEW_MODEL_SETTINGS.md) |
+| GH-12／16 角色模型服务、目录、管理与迁移 | [MODEL_SERVICES.md](MODEL_SERVICES.md) |
 | GH-12 离线自检及外部验收边界 | [VALIDATION_MODEL_SERVICES.md](VALIDATION_MODEL_SERVICES.md) |
 | 当前产品需求与范围 | [REQUIREMENTS.md](REQUIREMENTS.md) |
 | 决策来源、历史替代关系 | [DECISIONS.md](DECISIONS.md) |

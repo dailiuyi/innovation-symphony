@@ -168,7 +168,7 @@ def main():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     shown = port or config.port
     print(f"serving http://127.0.0.1:{shown}/")
-    print(f"lan http://0.0.0.0:{shown}/")
+    print(f"listen {httpd.server_address if hasattr(httpd, 'server_address') else 'fixture'}")
     while True:
         started = time.monotonic()
         try:

@@ -51,6 +51,8 @@ class BoardConfig:
     stall_hours: float = 24.0
     cost: CostCfg = field(default_factory=CostCfg)
     transport: str = "auto"
+    model_settings_url: str = ""
+    model_settings_origin: str = ""
 
     def has_repo_entries(self):
         return bool(self.repos)
@@ -111,6 +113,8 @@ def _from_dicts(data, path, exists):
     transport = board.get("transport", "auto")
     resolve_transport(transport)
     stall_raw = board.get("stall_hours")
+    from .model_settings import validate_management
+    validate_management(board.get("model_settings_url", ""), board.get("model_settings_origin", ""))
     return BoardConfig(
         title=str(board.get("title") or "innovation-view"),
         interval=int(board.get("interval") or 5),
@@ -122,6 +126,8 @@ def _from_dicts(data, path, exists):
         stall_hours=24.0 if stall_raw is None else float(stall_raw),
         cost=cost,
         transport=transport,
+        model_settings_url=board.get("model_settings_url", ""),
+        model_settings_origin=board.get("model_settings_origin", ""),
     )
 
 

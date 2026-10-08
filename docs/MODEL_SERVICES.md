@@ -1,9 +1,12 @@
-# GH-12：角色模型服务配置
+# GH-12／GH-16：角色模型服务配置
 
-本轮用户确认的范围为 IS-060–063；下述格式、命令和参数是本次工程实现，不登记为
-用户批准的永久接口。只实现 OpenAI GPT / Codex AppServer 适配；DeepSeek 和其他
-适配器目前在调用前明确拒绝。调度、隔离、预算、正式检查、候选 SHA 绑定及独立
-Review 仍由 Elixir 控制器负责。View 没有写接口或新设置页面。
+GH-12 的 IS-060–063 及其历史验证保留。GH-16／IS-079 推进受控内网仓库默认设置
+和 DeepSeek Responses；GLM 后置。下述格式、命令和参数是工程实现，不登记为用户
+批准的永久接口。OpenAI／Codex AppServer 保持兼容，DeepSeek 使用独立
+`deepseek_responses` 适配身份，通过每会话自定义 Responses provider 复用现有
+AppServer、工具和执行隔离。GLM／未知适配器仍明确拒绝。调度、冻结、授权、预算、
+正式检查、候选 SHA 绑定及独立 Review 仍归 Elixir。设置页只转发受控默认管理，
+不直接写文件或控制任务；方案、接口、迁移和验收见 [VIEW_MODEL_SETTINGS](VIEW_MODEL_SETTINGS.md)。
 
 ## 评论合同
 
@@ -102,7 +105,7 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 `show` 提供安全引用、凭据是否配置、目录/验证记录，以及 availability 中逐预设、
 型号和角色的状态；`ModelCatalog.status` 返回可用、待验证、禁用、不兼容或未发现状态及原因。`show` 的展示字段不能直接
 当作保存文件，保存使用上面的原始注册表结构。后台 API 是 `ModelServices` 和
-`ModelCatalog`，未来设置页面可以通过控制器的获准管理边界复用它们。
+`ModelCatalog`；GH-16 的 `ModelSettings` 通过独立获准管理边界复用它们。
 
 保存先校验结构、预设版本和改变后的默认能力，再以修订号比较并交换，持独占本地
 文件锁，通过同步写入临时文件及原子 rename 持久化。并发请求返回 busy 或 conflict，
@@ -110,6 +113,23 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 修改默认；未验证的新默认保存失败。目录变化或管理员禁用可使原默认不可用，领取
 与调用明确停止，不擅自替换默认。异常退出留下的 `.lock` 是管理停点，管理员确认
 没有保存进程后才可处理；不得通过删除任务回执解决。
+
+## GH-16 默认组合与思考控制
+
+旧 `defaults` 字符串继续使用预设原模型及参数。新对象严格包含 `preset`、`model`、
+`parameters`，示例 `{"preset":"main-gpt","model":"gpt-example","parameters":{"reasoning_effort":"high"}}`。
+页面保存只修改双角色 defaults，保留预设 version、catalog 和历史证据，不用修改预设
+切换角色。独立模型评论继续取当前角色默认组合的渠道和参数，只替换模型。
+
+目录的 discovery 可选 `reasoning_mode` 为 unknown／fixed／effort／switch；旧条目按
+空参数集合为 fixed、非空为 effort 兼容。未知能力禁止选择；过期角色证据禁止保存
+或调用。发现中全部未知的未来 effort 不能当作不支持调节，已知参数保留独立校验。
+DeepSeek Responses 实际发送 `reasoning.effort`，只允许 none／low／high／max；
+OpenAI 可选值取对应账号 AppServer 目录，max 仅在该渠道目录明确支持时开放。
+DeepSeek `/models` 不提供参数能力，因此发现只登记 unknown，来源记录为 provider，
+与 OpenAI 的 appserver 来源区分；管理员必须在后台
+登记渠道支持的控制并验证精确角色配置，不凭模型名推断。调用使用独立环境凭据，
+DeepSeek 不接受 OpenAI 的 auth_home 认证路由，无服务／模型／账号回退。
 
 ## 发现与能力证据
 
@@ -124,7 +144,7 @@ mix mvp.models save WORKFLOW.md 3 REGISTRY.json
 参数证据；未知未来推理参数不发送，仍保留该型号已支持的参数和待验证状态。
 
 无法取得完整目录时用 `register` 人工登记型号及渠道支持的推理参数。此操作不产生
-推理验证证据。目录中尚未验证的 GPT 型号为待验证，非 GPT/未知适配器为不兼容。
+推理验证证据。目录中尚未验证的 GPT／DeepSeek 型号为待验证，非 GPT 的 OpenAI 型号及未知适配器为不兼容。
 每个选择需同时满足协议、目录、有效参数、当前凭据及本角色的能力证据。
 
 `verify` 必须启用 WORKFLOW 的 `mvp.sandbox`，通过既有 ExecutionSandbox 的内核只读工作区、无本地回退的工具执行环境运行真实调用；凭据仍留宿主，沙箱未启用时在调用前拒绝。管理入口先绑定指定 WORKFLOW，重载失败不沿用另一份运行配置。验证在受控临时工作区显式运行（须为包含 `.git` 的受管仓库工作区，满足既有沙箱挂载合同）：生成随机文件，要求模型通过命令
@@ -271,6 +291,6 @@ AppServer 输出、事件和诊断日志对该调用凭据值脱敏，快照仅�
 目录分页/失败/人工验证、保存冲突/失败/重读、凭据撤销/轮换、重试/诊断/恢复，沿用
 reviewer 只读、Review 结构与最终候选 SHA 回归。候选和原测试套件均须通过冻结
 `check_isolated.py` 门禁。真实 GPT 和真实 Linux 宿主隔离实测与这些模拟结果分开记录；
-维护者前置补丁证据不是本候选完整验收。本次离线沙箱的宿主隔离预检返回
+维护者前置补丁证据不是本候选完整验收。GH-12 离线历史阶段的宿主隔离预检返回
 `execution_sandbox: cgroup v2 is required`（退出码 2）；真实内核沙箱集成未执行，
 仅验证隔离入口及受控模拟协议，不降低环境要求。独立 Reviewer 由控制器另行执行。

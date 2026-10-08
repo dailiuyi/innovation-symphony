@@ -447,3 +447,8 @@ No network configuration write endpoint or View settings page is introduced.
 
 
 实验性的宽权限 rootless 容器、持久导出、失败分流和固定补证配置见 [实施合同](../docs/ROOTLESS_OPEN.md)。默认未启用；代码不代表已安装或实机验收，旧冻结任务保持原后端。
+
+GH-16 新增独立 escript `--model-settings CONFIG.json` 管理入口，仅启动 loopback HTTP
+管理服务，不启动 Symphony 调度监督器。复用 ModelServices 的仓库默认 CAS、角色
+授权与冻结，并增加 DeepSeek Responses 路由；运行配置和迁移见
+[VIEW_MODEL_SETTINGS](../docs/VIEW_MODEL_SETTINGS.md)。安装／内网代理仍须具体授权。

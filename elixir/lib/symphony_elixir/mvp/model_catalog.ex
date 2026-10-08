@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
   @moduledoc "Account-specific discovery is distinct from expiring, role-specific inference evidence."
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelServices}
+  alias SymphonyElixir.Mvp.{DeepSeek, ExecutionSandbox, ModelServices}
 
   @spec valid?(term(), term()) :: boolean()
   def valid?(catalog, validations) do
@@ -31,7 +31,7 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
 
   defp valid_metadata?(_), do: false
 
-  defp valid_efforts?(efforts), do: Enum.all?(efforts, &(&1 in ~w(none minimal low medium high xhigh)))
+  defp valid_efforts?(efforts), do: Enum.all?(efforts, &(&1 in ~w(none minimal low medium high xhigh max)))
 
   defp valid_discovery?(discovery) when is_map(discovery) do
     Enum.all?(discovery, &valid_channel?/1)
@@ -41,9 +41,10 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
 
   defp valid_channel?({channel, entry}) when is_map(entry) do
     is_binary(channel) and Regex.match?(~r/\A[0-9a-f]{64}\z/, channel) and
-      Enum.sort(Map.keys(entry)) == Enum.sort(~w(discovered_at reasoning_efforts source)) and
+      Map.keys(entry) -- ~w(discovered_at reasoning_efforts source reasoning_mode) == [] and
+      entry["reasoning_mode"] in [nil, "unknown", "fixed", "effort", "switch"] and
       timestamp?(entry["discovered_at"]) and is_list(entry["reasoning_efforts"]) and
-      valid_efforts?(entry["reasoning_efforts"]) and entry["source"] in ["manual", "appserver"]
+      valid_efforts?(entry["reasoning_efforts"]) and entry["source"] in ["manual", "appserver", "provider"]
   end
 
   defp valid_channel?(_), do: false
@@ -73,10 +74,13 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
     end
   end
 
+  @spec supported_adapter?(map()) :: boolean()
+  def supported_adapter?(service), do: {service["provider"], service["adapter"]} in [{"openai", "codex_app_server"}, {"deepseek", "deepseek_responses"}]
+
   defp supported_service(registry, service) do
     cond do
-      service["provider"] != "openai" or service["adapter"] != "codex_app_server" -> {:error, :model_provider_not_supported}
-      not String.starts_with?(service["model"], "gpt-") -> {:error, :model_protocol_incompatible}
+      not supported_adapter?(service) -> {:error, :model_provider_not_supported}
+      service["provider"] == "openai" and not String.starts_with?(service["model"], "gpt-") -> {:error, :model_protocol_incompatible}
       not Map.has_key?(registry["presets"], service["id"]) -> {:error, :model_service_revoked}
       service["model"] in Map.get(registry, "disabled_models", []) -> {:error, :model_disabled}
       true -> :ok
@@ -91,6 +95,8 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
     cond do
       metadata["disabled"] -> {:error, :model_disabled}
       is_nil(discovered) -> {:error, :model_catalog_channel_unverified}
+      service["provider"] == "deepseek" and effort not in [nil, "none", "low", "high", "max"] -> {:error, :model_reasoning_effort_unsupported}
+      discovered["reasoning_mode"] == "unknown" -> {:error, :model_reasoning_capability_unknown}
       effort && effort not in discovered["reasoning_efforts"] -> {:error, :model_reasoning_effort_unsupported}
       true -> :ok
     end
@@ -140,7 +146,7 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
   @spec refresh(map(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def refresh(settings, id, opts \\ []) do
     with {:ok, service} <- ModelServices.snapshot(settings, id, :coder, "catalog"),
-         {:ok, models} <- Keyword.get(opts, :discover, &AppServer.list_models/2).(service, opts),
+         {:ok, models} <- Keyword.get(opts, :discover, &discover/2).(service, opts),
          {:ok, entries} <- discovered_entries(models) do
       registry = settings.model_services
       previous = get_in(registry, ["catalog", id, "models"]) || %{}
@@ -151,9 +157,9 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
         Map.merge(
           previous,
           Map.new(entries, fn {model, entry} ->
-            observed = %{"discovered_at" => now, "reasoning_efforts" => entry["reasoning_efforts"], "source" => "appserver"}
+            observed = %{"discovered_at" => now, "reasoning_efforts" => entry["reasoning_efforts"], "source" => discovery_source(service), "reasoning_mode" => entry["reasoning_mode"]}
             discovery = Map.put(get_in(previous, [model, "discovery"]) || %{}, channel, observed)
-            {model, entry |> Map.put("disabled", get_in(previous, [model, "disabled"]) || false) |> Map.put("discovery", discovery)}
+            {model, entry |> Map.delete("reasoning_mode") |> Map.put("disabled", get_in(previous, [model, "disabled"]) || false) |> Map.put("discovery", discovery)}
           end)
         )
 
@@ -167,24 +173,43 @@ defmodule SymphonyElixir.Mvp.ModelCatalog do
     end
   end
 
+  defp discovery_source(%{"provider" => "deepseek"}), do: "provider"
+  defp discovery_source(_), do: "appserver"
+
+  defp discover(%{"provider" => "deepseek"} = service, opts), do: DeepSeek.list_models(service, opts)
+  defp discover(service, opts), do: AppServer.list_models(service, opts)
+
   defp discovered_entries(models) when is_list(models) do
     Enum.reduce_while(models, {:ok, %{}}, &discovered_entry/2)
   end
 
   defp discovered_entries(_), do: {:error, :invalid_model_catalog}
 
-  defp discovered_entry(%{"model" => name, "supportedReasoningEfforts" => efforts}, {:ok, acc}) when is_list(efforts) do
+  defp discovered_entry(%{"model" => name, "supportedReasoningEfforts" => efforts} = model, {:ok, acc}) when is_list(efforts) do
     values = Enum.map(efforts, &reasoning_effort/1)
 
-    if ModelServices.identifier?(name) and Enum.all?(values, &is_binary/1) do
-      supported = Enum.filter(values, &(&1 in ~w(none minimal low medium high xhigh)))
-      {:cont, {:ok, Map.put(acc, name, %{"reasoning_efforts" => supported, "disabled" => false, "discovery" => %{}})}}
+    if ModelServices.identifier?(name) and Enum.all?(values, &is_binary/1) and
+         Map.get(model, "reasoningMode") in [nil, "unknown", "fixed", "effort", "switch"] do
+      supported = Enum.filter(values, &(&1 in ~w(none minimal low medium high xhigh max)))
+
+      {:cont,
+       {:ok,
+        Map.put(acc, name, %{
+          "reasoning_efforts" => supported,
+          "disabled" => false,
+          "discovery" => %{},
+          "reasoning_mode" => Map.get(model, "reasoningMode", discovered_mode(values, supported))
+        })}}
     else
       {:halt, {:error, :invalid_model_catalog}}
     end
   end
 
   defp discovered_entry(_, _), do: {:halt, {:error, :invalid_model_catalog}}
+
+  defp discovered_mode([], []), do: "fixed"
+  defp discovered_mode(_, []), do: "unknown"
+  defp discovered_mode(_, _), do: "effort"
   defp reasoning_effort(entry) when is_map(entry), do: entry["reasoningEffort"]
   defp reasoning_effort(_), do: nil
 

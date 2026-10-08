@@ -1,0 +1,139 @@
+# GH-16 工程方案与验收记录
+
+来源：2026-10-08 GH-16 Issue 与本次离线编码指令；基线决定编号止于 IS-078。
+实施前已读取 AGENTS、README、REQUIREMENTS、DECISIONS、MODEL_SERVICES。
+本页方案是工程选择，不登记为用户永久指定的架构或参数。
+
+## 实施计划
+
+1. 复用 Elixir ModelServices 的持久注册表、CAS、角色证据和冻结快照。
+   默认选择扩展为预设、模型、实际参数的组合，兼容旧字符串默认；不修改预设，
+   因而不破坏在途任务与已有证据绑定。目录与有效角色证据共同决定可选项。
+2. 增加独立 Elixir 管理 HTTP 服务：受控静态清单把不透明仓库 ID 绑定到绝对
+   WORKFLOW 路径、仓库身份和独占 state_dir；读取时重新核验绑定。
+   不切换全局工作流，不启动调度器，不管理任务状态。
+3. 管理服务与启用管理的 View 只监听 loopback。获准内网访问通过既有受控反向代理；
+   本任务不安装代理或更改防火墙。管理员 Bearer 凭据来自后台环境引用，浏览器仅
+   在当前页内存保存输入；读写均鉴权，写操作严格校验 Origin、JSON 和仓库范围。
+   View 只向固定 loopback 管理地址转发，不接收客户端提供的 URL/文件路径。
+4. DeepSeek Responses 复用 Codex AppServer 的自定义 Responses provider 和隔离工具
+   执行环境，保留只读 reviewer、结构输出、预算和候选绑定。实际 reasoning.effort
+   原样发送 none/low/high/max；GPT 参数来自账号目录。DeepSeek 目录按连接查询，
+   不把 Codex 的 GPT 目录当作 DeepSeek 发现；无参数证据时不能猜测档位。
+5. View 设置页增加双角色选择、取消、保存、冲突和切换未保存提示；任务采集仍只读。
+   测试覆盖恶意输入、并发、失败保值、冻结/撤销、渠道能力与打包入口。
+
+## 外部停点
+
+离线环境无真实账号凭据，不发起付费调用或外发真实仓库材料。不添加 ready，
+不修改 Linux 运行预设；本任务 gpt-6.1-sol/high 的运行证据由控制器独立核验。
+真实 DeepSeek/GPT 双角色、批准内网代理配置及准确候选独立 Review 待控制器／所有者验收。
+
+## 迁移与回滚
+
+旧字符串 defaults 无须迁移。先由后台登记渠道能力并验证所需角色组合，再在页面选择。
+管理清单必须显式绑定仓库与现有 WORKFLOW/state_dir，不创建新调度范围。
+上线前备份 model-services.json；回滚到旧代码前，用当前管理入口将对象默认恢复为
+旧字符串预设并确认实际参数相符。在途完整快照保留，旧执行器无法识别时保持停点。
+若不存在组合相符且证据有效的旧预设，回滚保持停点，不隐式换回另一档参数。
+保存／源码交付不等于服务安装、网络配置或真实调用获准。
+
+
+## 配置与访问合同
+
+以下路径、域名、端口均为工程示例，必须由管理员替换为已有获准配置；本任务没有安装或
+启动运行服务。管理清单放在控制器侧受控目录，配置文件只含安全环境引用，不写令牌：
+
+```json
+{
+  "port": 8765,
+  "origin": "https://view.example.internal",
+  "token_ref": "env:SYMPHONY_SETTINGS_ADMIN",
+  "repositories": {
+    "repo-a": {"repository": "owner/a", "workflow": "/controlled/a/WORKFLOW.md", "state_dir": "/controlled/a/state"},
+    "repo-b": {"repository": "owner/b", "workflow": "/controlled/b/WORKFLOW.md", "state_dir": "/controlled/b/state"}
+  }
+}
+```
+
+后台令牌至少 32 字节，由既有受控后台环境提供，不通过 CLI 参数、WORKFLOW、浏览器
+存储或源码注册。打包入口 `elixir/bin/symphony --model-settings /controlled/manager.json`
+只启动 Bandit 及依赖，不启动 Symphony 调度监督器。清单缺失／损坏或令牌不可用启动失败；
+每个请求重读清单与令牌，撤权即时生效。仓库、WORKFLOW 和 state_dir 须唯一；读取时
+核验规范绝对路径、WORKFLOW 仓库身份及当前 state_dir，拒绝别名／跨仓库绑定。
+
+View 的 `[board]` 配置 `model_settings_url = "http://127.0.0.1:8765"` 和
+`model_settings_origin = "https://view.example.internal"`。后者必须与清单和浏览器实际
+Origin 精确一致。仅支持固定 loopback 目标；启用时 View 同样强制监听 127.0.0.1。
+内网代理必须只监听所有者获准内网地址、限制获准来源地址并使用 HTTPS；保留浏览器
+原始 Host、Origin、Authorization，不把任意来源改写成合法来源。代理不得把管理端口
+直接暴露出去，也不记录 Authorization 或请求正文。模板域名不授权任何新网段。
+
+管理服务为 `GET /repositories`、`GET /repositories/{id}`、`POST /repositories/{id}`；
+View 同源路径前缀 `/api/model-settings/`。读写均要求独立 Bearer 管理员令牌。
+POST 仅接受精确 Origin 和 application/json，有界 16 KiB 正文；View 另校验 Host、
+跨站请求标记、长度／重复头和固定路径。不用 Cookie 认证，不提供 CORS 许可。
+Body 严格为 `revision`、`workflow_version`、`defaults`；后者只包含 coder／reviewer，
+可为兼容字符串或严格的 preset／model／parameters 对象。成功 200；CAS 冲突或忙 409；
+授权失败 401，来源／格式拒绝 403，非法选择 422，代理故障 503。错误不返回文件原文、
+环境、密钥或认证路径；auth_home 仅显示已配置引用。页面令牌仅保存在当前页面内存。
+
+保存只修改原仓库 model-services.json 的 defaults 与 revision，不改变预设版本、
+目录和历史能力证据。保存和每次执行都校验完整组合。失败和并发冲突保留旧文件，
+页面保留草稿；默认变化不更新已领取快照或 GitHub 状态。GLM 没有可执行适配器。
+保存回应使用本次提交的配置快照，避免提交后重读失败或读到他人更新造成错误反馈。
+只修改一个角色时，页面保留另一角色原始默认表示，维持旧字符串预设的继承语义。
+
+## 验收条目与证据对应
+
+| GH-16 合同条目 | 仓库内验证 | 外部停点 |
+| --- | --- | --- |
+| 两仓库、双角色、持久读取及重启 | MvpModelSettingsTest：独立持久化、两个 packaged 管理进程读取 | 真实受管仓库配置与部署 |
+| 未保存、取消、切换、保存／失败／冲突 | model-settings.test.mjs：草稿、精确旧默认、CAS、角色隔离、焦点保持 | 真浏览器键盘、窄屏及刷新 |
+| OpenAI 兼容与 DeepSeek 工具／输出 | MvpModelRoutingTest：原 OpenAI 回归，原生 Codex + 本地 TLS Responses + 外部执行器工具往返 | 真实账号双角色权限与推理 |
+| 分档、开关、不可关闭、固定、未知、过期／绕过 | MvpModelSettingsTest／MvpModelServicesTest：按渠道目录、角色证据、非法参数及未来未知值拒绝；JS 深度标签与切换清除 | 当前真实账号目录 |
+| 参数、连接、凭据引用与角色隔离 | 路由测试检查独立 home、模型、provider、effort、HTTP 请求与冻结 options | 真实账号准确有效参数和返回 |
+| 写入失败／CAS／权限／跨站／秘密 | Elixir 管理测试：busy、并发、版本、畸形默认、原值保留；Python API 测试：Host／Origin／头／路径／限长；auth_home 脱敏 | 受控凭据注册 |
+| 内网监听和访问范围 | 管理 listener_info、View socket 及配置拒绝测试；两服务均 loopback | 所有者获准代理地址、来源限制和 TLS 实机验收 |
+| 只影响新领取、评论兼容、冻结与撤权 | 管理测试冻结旧 coder／diagnosis，新默认与独立评论；原模型服务／恢复测试 | 控制器准确候选验收 |
+| Reviewer 只读、隔离、预算、正式检查、SHA | 原 ExecutionSandbox／Review／Executor／Recovery／外部 handoff 冻结回归 | 生产内核挂载与准确候选正式证据 |
+| 同步规格与可追溯历史 | IS-079、REQUIREMENTS、MODEL_SERVICES、README 和 AGENTS | 同一个功能 PR 由控制器另行处理 |
+| 完整门禁及独立 Review | candidate／baseline 固定检查与下方实际结果 | 独立 Reviewer 由控制器执行 |
+
+TLS 夹具使用实际 Codex AppServer 和 exec-server 完成命令工具读取及结构化 JSON，
+请求包含 DeepSeek 实际 reasoning.effort=max。两角色使用各自的模拟凭据；夹具只在
+本任务外层离线沙箱内运行，内层执行器是测试替身，不作为生产 reviewer 内核只读
+或真实 DeepSeek 能力证明。原正式隔离回归保留。夹具仅在工具返回正确随机／指定内容
+后给出有效结果，父 Port 关闭即退出，不留下维持检查输出管道的后台进程。
+
+## 本次自检结果
+
+固定 `python3 /opt/symphony/scripts/check_isolated.py candidate` 的 format、lint、
+Credo、test、Dialyzer 和 build 全部通过；799 项测试中 793 通过、0 失败、6 跳过，
+覆盖率 100%。证据目录为 `.check-evidence/candidate-bgoj6nhp/`。
+固定 `python3 /opt/symphony/scripts/check_isolated.py baseline` 通过；789 项测试中
+783 通过、0 失败、6 跳过，证据目录为 `.check-evidence/baseline-4ocftike/`。
+两轮政策检查均为 `policy_changes: []`，`git diff --check` 通过。
+源码仅保存在工作区，没有提交、PR、安装或部署。独立 Review 未在此编码会话执行，
+真实模型和内网安装未验证；以下 View 环境失败使整体验收仍未完成。
+
+检查环境说明：继承的 umask=077 使原有导入恢复测试的 chmod(0600) 没有形成权限变化。
+固定候选与基线检查均显式使用 umask=022，保留原测试、冻结策略和门槛；没有修改隔离
+政策或控制器证据。6 个原有真实外部 E2E（GitHub、GitLab、Asana、Jira、Linear 本地／SSH）
+保持原环境开关的跳过状态，没有新增 skip／exclude。独立 Reviewer 尚未执行。
+
+View 的指定 `/opt/toolchain/view-validation/python/bin/python` 和
+`/opt/toolchain/view-validation/node/bin/node` 在此沙箱不存在，PATH 也没有 Node。
+系统 Python 3.14 的完整 suite 执行 38 项，37 通过、1 渲染错误：
+`test_first_cycle_caches_and_renders_without_existing_directories` 抛出
+`ModuleNotFoundError: No module named 'codex_transcript_viewer'`。
+修复新测试导入对 worker 的模块路径影响后，`scripts/run_view_checks.py` 再跑仍被该
+缺依赖错误阻断，未通过完整 View 门禁。独立尝试 root-default 打包入口同样在 self_check
+渲染处失败，其余 7 入口模式未执行。Linux 采集的 11 项合成子进程回归通过，后续服务
+渲染被同一依赖阻断，整项集成不记通过。Node 既有 JS 门禁、真实浏览器／窄屏和固定
+HTML 等价比较未执行。没有模拟渲染库、修改原预期或弱化检查来制造成功。
+
+新增配置 API 的 3 个 Python 测试通过；`gjs -m view/tests/model-settings.test.mjs`
+完成合成 DOM／API 交互回归（包括键盘焦点），不替代真实浏览器验收。目标 Elixir
+模型路由及管理 34 项测试通过，包括原生 Codex 工具链路和打包管理重启。所有真实账号
+验证、获准内网代理、服务安装和最终候选独立 Review 保持待外部验收。

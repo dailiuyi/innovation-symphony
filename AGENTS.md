@@ -2,7 +2,7 @@
 
 先读 `docs/README.md`、`docs/REQUIREMENTS.md`、`docs/DECISIONS.md`，再读相关规格。用户希望逐步讨论需求，每次聚焦一个关键问题；不得把候选架构、命令示例或实现默认值登记为用户已批准决定。
 
-当前项目正在基于官方 Symphony Elixir 实现第一版 GitHub MVP（IS-013/014）。不要把静态原型、旧博客控制器或旧 innovation 项目的同名容器当成本项目已实现的服务。调度与 AppServer 复用 elixir/，不要重新实现独立调度器；Python 可用于预览、验收脚本及 `view/` 独立只读采集与展示服务；`view/` 可维护自己的数据库、缓存和日志，启停不影响控制器。调度、编码、检查、Review、恢复、交付与 AppServer 仍归 `elixir/`。
+当前项目正在基于官方 Symphony Elixir 实现第一版 GitHub MVP（IS-013/014）。不要把静态原型、旧博客控制器或旧 innovation 项目的同名容器当成本项目已实现的服务。调度与 AppServer 复用 elixir/，不要重新实现独立调度器；Python 可用于预览、验收脚本及 `view/` 独立只读采集与展示服务；`view/` 可维护自己的数据库、缓存和日志，启停不影响控制器。GH-16 允许受控内网管理员通过 View 管理按仓库的双角色默认模型；配置校验、授权、持久化和冻结归 Elixir，任务仍只读，不扩展多仓库调度。调度、编码、检查、Review、恢复、交付与 AppServer 仍归 `elixir/`。
 
 已确认入口是机器人自动发现并领取 ready Issue，无需先指派机器人。模型通过固定格式的独立 Issue 评论由程序解析，编码与 Review 各有仓库默认值，用户指定按角色覆盖默认。标签承担基本状态和 ready 启动门槛，不用于选择模型。
 

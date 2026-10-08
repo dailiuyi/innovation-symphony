@@ -2,7 +2,9 @@
 
 先读根仓库指导及 `README.md`、`docs/MIGRATION.md`、`docs/DEMO-SCOPE.md`。
 
-`view/` 是独立 Python 只读采集与展示服务，可维护本地 SQLite、缓存、HTML 和日志。
+`view/` 是独立 Python 采集与展示服务，任务保持只读，可维护本地 SQLite、缓存、HTML 和日志。
+GH-16 唯一配置写入口通过受控 loopback 管理接口转发仓库双角色默认选择；
+授权、校验、CAS 持久化及执行快照由 Elixir 管理。不得在 View 直接写 WORKFLOW／注册表。
 调度、编码、检查、Review、恢复、交付与 AppServer 属于 `../elixir/`。
 不得增加任务控制入口、写控制器回执或 GitHub 状态，也不得用展示测试证明真实接入。
 

@@ -40,23 +40,67 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     defaults = registry["defaults"]
 
     is_map(defaults) and Enum.sort(Map.keys(defaults)) == Enum.sort(@roles) and
-      Enum.all?(@roles, &Map.has_key?(registry["presets"], defaults[&1]))
+      Enum.all?(@roles, &valid_default?(registry, defaults[&1]))
+  end
+
+  defp valid_default?(registry, id) when is_binary(id), do: Map.has_key?(registry["presets"], id)
+
+  defp valid_default?(registry, %{"preset" => id, "model" => model, "parameters" => parameters} = selection),
+    do:
+      map_size(selection) == 3 and Map.has_key?(registry["presets"], id) and
+        identifier?(model) and valid_parameters?(parameters)
+
+  defp valid_default?(_, _), do: false
+
+  @spec default_id(map(), String.t()) :: String.t()
+  def default_id(registry, role) do
+    case registry["defaults"][role] do
+      %{"preset" => id} -> id
+      id -> id
+    end
+  end
+
+  @spec default_snapshot(map(), atom(), String.t()) :: {:ok, map()} | {:error, term()}
+  def default_snapshot(settings, role, source) do
+    selection = settings.model_services["defaults"][Atom.to_string(role)]
+
+    id = default_id(settings.model_services, Atom.to_string(role))
+
+    with {:ok, service} <- snapshot(settings, id, role, source) do
+      case selection do
+        %{"model" => model, "parameters" => parameters} ->
+          selected = service |> Map.put("model", model) |> Map.put("parameters", parameters)
+          {:ok, attach_evidence(selected, settings.model_services)}
+
+        _ ->
+          {:ok, service}
+      end
+    end
   end
 
   defp valid_preset?(preset) when is_map(preset) do
     Enum.sort(Map.keys(preset)) == Enum.sort(@preset_keys) and
       is_integer(preset["version"]) and preset["version"] > 0 and
       identifier?(preset["provider"]) and identifier?(preset["adapter"]) and identifier?(preset["model"]) and
-      valid_parameters?(preset["parameters"]) and valid_connection?(preset["connection"]) and
+      preset_parameters?(preset) and valid_connection?(preset["connection"]) and
       valid_credential?(preset["credential_ref"])
   end
 
   defp valid_preset?(_), do: false
 
-  defp valid_parameters?(parameters) when is_map(parameters),
-    do:
-      Map.keys(parameters) -- ["reasoning_effort"] == [] and
-        Map.get(parameters, "reasoning_effort") in [nil, "none", "minimal", "low", "medium", "high", "xhigh"]
+  defp preset_parameters?(preset), do: valid_parameters?(preset["parameters"]) and provider_parameters?(preset)
+
+  defp provider_parameters?(%{"provider" => "deepseek", "adapter" => "deepseek_responses", "parameters" => parameters}),
+    do: parameters["reasoning_effort"] in [nil, "none", "low", "high", "max"]
+
+  defp provider_parameters?(_), do: true
+
+  defp valid_parameters?(parameters) when is_map(parameters) do
+    Enum.all?(parameters, fn
+      {"reasoning_effort", value} -> value in ~w(none minimal low medium high xhigh max)
+      _ -> false
+    end)
+  end
 
   defp valid_parameters?(_), do: false
 
@@ -151,10 +195,10 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     settings = %{model_services: proposed, model_command: command}
 
     Enum.reduce_while(@roles, :ok, fn role, :ok ->
-      id = proposed["defaults"][role]
+      id = default_id(proposed, role)
 
       changed =
-        is_nil(current) or current["defaults"][role] != id or
+        is_nil(current) or current["defaults"][role] != proposed["defaults"][role] or
           current["presets"][id] != proposed["presets"][id]
 
       check_default(changed, settings, role, id)
@@ -163,8 +207,8 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
   defp check_default(false, _, _, _), do: {:cont, :ok}
 
-  defp check_default(true, settings, role, id) do
-    with {:ok, service} <- snapshot(settings, id, String.to_existing_atom(role), "project_default"),
+  defp check_default(true, settings, role, _id) do
+    with {:ok, service} <- default_snapshot(settings, String.to_existing_atom(role), "project_default"),
          :ok <- ModelCatalog.available(settings.model_services, service) do
       {:cont, :ok}
     else
@@ -208,21 +252,23 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec select(map(), atom(), String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   def select(settings, role, selection, source, selected) do
     registry = settings.model_services
-    role_name = Atom.to_string(role)
-    id = if selection == "default", do: registry["defaults"][role_name], else: selection
 
-    with {:ok, service} <- snapshot(settings, id, role, source),
+    result =
+      case selection do
+        "default" -> default_snapshot(settings, role, source)
+        id -> snapshot(settings, id, role, source)
+      end
+
+    with {:ok, service} <- result,
          :ok <- ModelCatalog.available(registry, service) do
-      services = Map.put(Map.get(selected, :services, %{}), role_name, service)
+      services = Map.put(Map.get(selected, :services, %{}), Atom.to_string(role), service)
       {:ok, selected |> Map.put(role, service["model"]) |> Map.put(:services, services)}
     end
   end
 
   @spec select_model(map(), atom(), String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   def select_model(settings, role, model, source, selected) do
-    id = settings.model_services["defaults"][Atom.to_string(role)]
-
-    with {:ok, service} <- snapshot(settings, id, role, source),
+    with {:ok, service} <- default_snapshot(settings, role, source),
          service = service |> Map.put("model", model) |> attach_evidence(settings.model_services),
          :ok <- ModelCatalog.available(settings.model_services, service) do
       {:ok, selected |> Map.put(role, model) |> Map.put(:services, Map.put(Map.get(selected, :services, %{}), Atom.to_string(role), service))}
@@ -489,10 +535,12 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp provider_config(service, {:env, _, _}) do
-    ~s(model_provider = "symphony"\n[model_providers.symphony]\nname = "OpenAI"\nbase_url = #{Jason.encode!(service["connection"]["base_url"])}\nwire_api = "responses"\nenv_key = "SYMPHONY_MODEL_KEY"\n)
+    ~s(model_provider = "symphony"\n[model_providers.symphony]\nname = #{Jason.encode!(service["provider"])}\nbase_url = #{Jason.encode!(service["connection"]["base_url"])}\nwire_api = "responses"\nenv_key = "SYMPHONY_MODEL_KEY"\n)
   end
 
   @spec connection_ready(map()) :: :ok | {:error, atom()}
+  def connection_ready(%{"provider" => "deepseek", "credential_ref" => "auth_home:" <> _}), do: {:error, :model_auth_route_incompatible}
+
   def connection_ready(%{"credential_ref" => "auth_home:" <> home, "connection" => connection}) do
     chatgpt_route = valid_connection?(connection) and String.ends_with?(connection["base_url"], "/codex")
 

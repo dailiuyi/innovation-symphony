@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
-  alias SymphonyElixir.Mvp.ModelServices
+  alias SymphonyElixir.Mvp.{ModelCatalog, ModelServices}
 
   @initialize_id 1
   @thread_start_id 2
@@ -398,7 +398,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp prepare_service(service, environment, host, model) do
     with :ok <- ModelServices.validate_snapshot(service),
-         true <- (is_nil(host) and service["provider"] == "openai" and service["adapter"] == "codex_app_server") or {:error, :model_provider_not_supported},
+         true <- (is_nil(host) and ModelCatalog.supported_adapter?(service)) or {:error, :model_provider_not_supported},
          true <- model == service["model"] or {:error, :model_service_model_mismatch},
          :ok <- ModelServices.identity_matches(service),
          {:ok, credential} <- ModelServices.credential(service["credential_ref"]) do
