@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Mvp.Preflight do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
+  alias SymphonyElixir.Mvp.ExecutionReadiness
 
   @spec run(Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(path, opts \\ []) do
@@ -18,6 +19,7 @@ defmodule SymphonyElixir.Mvp.Preflight do
          :ok <- require_enabled(mvp),
          :ok <- Mvp.validate_runtime(config),
          :ok <- require_active_states(config),
+         :ok <- ExecutionReadiness.defaults(mvp, opts),
          {:ok, _apps} <- Application.ensure_all_started(:req),
          {:ok, issues} <- fetch_issues.(config.tracker.active_states, config.tracker) do
       {:ok, %{mode: "preflight", status: "passed", issue_count: length(issues)}}

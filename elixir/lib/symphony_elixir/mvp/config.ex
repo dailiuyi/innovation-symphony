@@ -2,15 +2,21 @@ defmodule SymphonyElixir.Mvp.Config do
   @moduledoc "Configuration for the opt-in GitHub MVP intake path."
 
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Mvp.{ExecutionSandbox, ModelServices, Recovery}
+  alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.Mvp.{ExecutionReadiness, ExecutionSandbox, ModelServices, Recovery}
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workflow
 
-  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery sandbox model_services)
+  @keys ~w(enabled coder_model reviewer_model allowed_models allowed_actors checks state_dir check_timeout_ms max_rework ready_label recovery sandbox model_services execution_readiness)
   @execution_keys ~w(coder_model reviewer_model allowed_models allowed_actors checks state_dir)
   @shell_names ["sh", "bash", "dash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]
 
   @type settings :: %{
+          optional(:execution_readiness) => map(),
+          optional(:execution_workspace_root) => Path.t(),
+          optional(:model_services) => map(),
+          optional(:model_command) => String.t(),
+          optional(:secret_environment_names) => [String.t()],
           configured: boolean(),
           workflow_path: Path.t() | nil,
           enabled: boolean(),
@@ -88,7 +94,8 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, check_timeout_ms} <- positive_integer(Map.get(config, "check_timeout_ms", 300_000)),
          :ok <- max_rework(Map.get(config, "max_rework", 0)),
          {:ok, recovery} <- Recovery.settings(config["recovery"]),
-         {:ok, sandbox} <- ExecutionSandbox.settings(config["sandbox"]) do
+         {:ok, sandbox} <- ExecutionSandbox.settings(config["sandbox"]),
+         {:ok, readiness} <- ExecutionReadiness.settings(config["execution_readiness"]) do
       {:ok,
        %{
          enabled: false,
@@ -102,6 +109,7 @@ defmodule SymphonyElixir.Mvp.Config do
          max_rework: Map.get(config, "max_rework", 0),
          recovery: recovery,
          sandbox: sandbox,
+         execution_readiness: readiness,
          ready_label: ready_label
        }}
     end
@@ -119,6 +127,8 @@ defmodule SymphonyElixir.Mvp.Config do
          :ok <- max_rework(Map.get(config, "max_rework", 0)),
          {:ok, recovery} <- Recovery.settings(config["recovery"]),
          {:ok, sandbox} <- ExecutionSandbox.settings(config["sandbox"]),
+         {:ok, readiness} <- ExecutionReadiness.settings(config["execution_readiness"]),
+         {:ok, runtime} <- Schema.parse(workflow_config),
          {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          :ok <- required_ready_label(workflow_config, ready_label),
          :ok <- validate_path_boundaries(state_dir, workflow_config),
@@ -127,6 +137,8 @@ defmodule SymphonyElixir.Mvp.Config do
        %{
          enabled: enabled,
          model_services: services,
+         execution_workspace_root: Path.expand(runtime.workspace.root, workflow_dir),
+         secret_environment_names: GitHubClient.secret_environment_names(runtime.tracker),
          model_command: get_in(workflow_config, ["codex", "command"]) || "codex app-server",
          coder_model: coder_model,
          reviewer_model: reviewer_model,
@@ -138,6 +150,7 @@ defmodule SymphonyElixir.Mvp.Config do
          max_rework: Map.get(config, "max_rework", 0),
          recovery: recovery,
          sandbox: sandbox,
+         execution_readiness: readiness,
          ready_label: ready_label
        }}
     end

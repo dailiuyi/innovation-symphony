@@ -323,7 +323,26 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp identity({:env, _, secret}), do: {:ok, fingerprint(secret)}
 
   defp identity({:home, home}) do
-    with {:ok, raw} <- File.read(Path.join(home, "auth.json")), do: {:ok, fingerprint(raw)}
+    with {:ok, raw} <- File.read(Path.join(home, "auth.json")) do
+      {:ok, fingerprint(stable_auth_identity(raw))}
+    end
+  end
+
+  # OAuth tokens rotate during normal login refresh. Bind the local auth file
+  # to its account and subject; unfamiliar formats retain the legacy binding.
+  defp stable_auth_identity(raw) do
+    with {:ok, %{"auth_mode" => "chatgpt", "tokens" => tokens}} <- Jason.decode(raw),
+         %{"account_id" => account, "id_token" => jwt} <- tokens,
+         true <- is_binary(account) and account != "" and is_binary(jwt),
+         [_, payload, _] <- String.split(jwt, "."),
+         {:ok, decoded} <- Base.url_decode64(payload, padding: false),
+         {:ok, %{"iss" => "https://auth.openai.com", "sub" => subject} = claims} <- Jason.decode(decoded),
+         true <- is_binary(subject) and subject != "",
+         %{"chatgpt_account_id" => ^account} <- claims["https://api.openai.com/auth"] do
+      :erlang.term_to_binary({:chatgpt_account_v1, account, subject}, [:deterministic])
+    else
+      _ -> raw
+    end
   end
 
   defp fingerprint(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)

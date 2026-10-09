@@ -19,6 +19,42 @@ defmodule SymphonyElixir.MvpModelServicesTest do
     %{root: root, settings: F.settings(root)}
   end
 
+  test "ChatGPT account identity survives token refresh but rejects account and subject changes", %{root: root} do
+    home = Path.join(root, "oauth")
+    File.mkdir_p!(home)
+
+    auth = fn account, subject, rotation ->
+      claims = %{"iss" => "https://auth.openai.com", "sub" => subject, "exp" => rotation, "https://api.openai.com/auth" => %{"chatgpt_account_id" => account}}
+      jwt = "header." <> Base.url_encode64(Jason.encode!(claims), padding: false) <> ".signature"
+
+      %{
+        "auth_mode" => "chatgpt",
+        "last_refresh" => rotation,
+        "tokens" => %{"account_id" => account, "id_token" => jwt, "access_token" => "access-#{rotation}", "refresh_token" => "refresh-#{rotation}"}
+      }
+    end
+
+    path = Path.join(home, "auth.json")
+    reference = "auth_home:" <> home
+    first = auth.("account-a", "user-a", 1)
+    File.write!(path, Jason.encode!(first))
+    assert {:ok, identity} = ModelServices.credential_identity(reference)
+    File.write!(path, Jason.encode!(auth.("account-a", "user-a", 2), pretty: true))
+    assert {:ok, ^identity} = ModelServices.credential_identity(reference)
+    service = %{"credential_ref" => reference, "credential_identity" => identity, "source" => "fixture"}
+    assert :ok = ModelServices.identity_matches(service)
+
+    for changed <- [auth.("account-b", "user-a", 2), auth.("account-a", "user-b", 2)] do
+      File.write!(path, Jason.encode!(changed))
+      assert {:error, :model_credential_changed} = ModelServices.identity_matches(service)
+    end
+
+    for changed <- [put_in(first, ["tokens", "id_token"], "malformed"), put_in(first, ["tokens", "account_id"], "mismatch"), %{"OPENAI_API_KEY" => "synthetic-key"}] do
+      File.write!(path, Jason.encode!(changed))
+      assert {:error, :model_credential_changed} = ModelServices.identity_matches(service)
+    end
+  end
+
   test "authorized commands accumulate by role and ID across both syntaxes, with explicit default", %{settings: s} do
     assert {:ok, initial} = Intake.resolve_comments([], s)
     assert initial.services["coder"]["source"] == "project_default"

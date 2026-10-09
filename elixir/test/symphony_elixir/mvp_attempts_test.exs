@@ -21,7 +21,7 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
       receipt,
       Jason.encode!(%{
         "status" => "coding",
-        "rounds" => [%{"evidence" => root, "usage" => %{}}],
+        "rounds" => [%{"round" => 1, "evidence" => root, "usage" => %{}}],
         "recovery" => %{"policy" => policy, "started_at" => DateTime.to_iso8601(DateTime.utc_now()), "agent_attempts" => 0, "events" => []}
       })
     )
@@ -139,6 +139,7 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
     assert data["recovery"]["policy"] == Jason.decode!(Jason.encode!(recovery["policy"]))
     assert data["recovery"]["agent_attempts"] == 14
     started = Enum.filter(data["recovery"]["events"], &(&1["status"] == "started"))
+    assert Enum.all?(started, &(&1["round"] == 1))
     assert Enum.map(started, &{&1["attempt"], &1["role"], &1["stage_attempt"]}) == [{13, "reviewer", 1}, {14, "reviewer", 2}]
     assert Enum.all?(Enum.filter(data["recovery"]["events"], &(&1["status"] == "finished")), &String.contains?(&1["outcome"], "serverOverloaded"))
     refute File.exists?(Path.join(context.workspace, "agent-attempt-15"))
@@ -151,7 +152,7 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
       File.mkdir!(root)
       receipt = Path.join(root, "receipt.json")
       data = Receipt.read(context.receipt)
-      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"evidence" => root, "usage" => %{}}]}))
+      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"round" => 1, "evidence" => root, "usage" => %{}}]}))
       bounded = %{context | workspace: root, receipt: receipt}
       bounded = if budget == :calls, do: put_in(bounded.settings.recovery.max_agent_attempts, 1), else: bounded
       {:ok, started, _} = DateTime.from_iso8601(data["recovery"]["started_at"])
@@ -185,7 +186,7 @@ defmodule SymphonyElixir.Mvp.AttemptsTest do
       File.mkdir!(root)
       receipt = Path.join(root, "receipt.json")
       data = Receipt.read(context.receipt)
-      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"evidence" => root, "usage" => %{}}]}))
+      File.write!(receipt, Jason.encode!(%{data | "rounds" => [%{"round" => 1, "evidence" => root, "usage" => %{}}]}))
       error = Map.put(@capacity_error, "codexErrorInfo", info)
       agent = fn _, _, _, _ -> {:error, {:turn_failed, error}} end
       bounded = with_agent(%{context | workspace: root, receipt: receipt}, agent)

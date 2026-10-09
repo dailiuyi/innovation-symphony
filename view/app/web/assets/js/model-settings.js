@@ -1,8 +1,24 @@
-// Administrator token lives only in this page's memory. Elixir owns persistence.
+// Remember administrator login in this browser only. Elixir owns model configuration.
 import { esc } from './fmt.js';
 let token = '', repositories = [], current = '', saved = null, draft = {}, busy = false;
 let message = '', started = false;
 const roles = ['coder', 'reviewer'];
+const tokenKey = 'symphony.model-settings.admin-token';
+const repositoryKey = 'symphony.model-settings.repository';
+function stored(key) { try { return window.localStorage?.getItem(key) || ''; } catch { return ''; } }
+function remember(key, value) { try { window.localStorage?.setItem(key, value); } catch {} }
+function forgetLogin() {
+  token = ''; repositories = []; current = ''; saved = null; draft = {};
+  try { window.localStorage?.removeItem(tokenKey); window.localStorage?.removeItem(repositoryKey); } catch {}
+}
+async function readRepositories() {
+  repositories = (await request('repositories')).repositories;
+  remember(tokenKey, token);
+  const remembered = stored(repositoryKey);
+  const id = repositories.find(r => r.id === remembered)?.id || (repositories.length === 1 ? repositories[0].id : '');
+  if (id) { const data = await request('repositories/' + id); current = id; accept(data); }
+  else message = '请选择仓库';
+}
 const canonical = value => value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const equal = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 export function dirty() { return !!saved && !equal(draft, normalizedDefaults(saved)); }
@@ -22,6 +38,7 @@ async function request(path, body) {
     ...(body ? {body: JSON.stringify(body)} : {}),
   });
   const data = await response.json();
+  if (response.status === 401) forgetLogin();
   if (!response.ok) throw new Error(response.status === 409 ? '版本冲突或正在保存，请重新读取后修改。原配置保留。' : (data.error || '配置服务不可用'));
   return data;
 }
@@ -29,7 +46,9 @@ export function mountModelSettings() {
   const root = document.getElementById('model-settings');
   if (!root || root.dataset.mounted) return;
   root.dataset.mounted = 'true';
+  token = stored(tokenKey);
   paint();
+  if (token) void perform(readRepositories);
   if (!started) {
     window.addEventListener('beforeunload', event => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } });
     started = true;
@@ -45,17 +64,22 @@ function paint() {
     ${saved ? `<p>配置版本 ${saved.revision} · ${dirty() ? '有未保存修改' : '已保存'}</p>${roles.map(renderRole).join('')}
     <button id="model-save" type="button" ${busy || !dirty() || roles.some(r => !draft[r]?.preset || !draft[r]?.model || !draft[r]?.parameters) ? 'disabled' : ''}>保存</button>
     <button id="model-cancel" type="button" ${busy ? 'disabled' : ''}>取消修改</button>` : ''}
-    <button id="model-reload" type="button" ${busy ? 'disabled' : ''}>重新读取</button>`}
+    <button id="model-reload" type="button" ${busy ? 'disabled' : ''}>重新读取</button>
+    <button id="model-logout" type="button" ${busy ? 'disabled' : ''}>退出登录并清除令牌</button>`}
     <p role="status" aria-live="polite">${esc(message)}</p>`;
   root.querySelector('#model-login')?.addEventListener('click', async () => {
     token = root.querySelector('#model-token').value;
-    await perform(async () => { repositories = (await request('repositories')).repositories; message = '请选择仓库'; }, true);
+    await perform(readRepositories, true);
   });
   root.querySelector('#model-repository')?.addEventListener('change', async event => {
     const id = event.target.value;
     if (dirty() && !window.confirm('当前仓库有未保存修改，放弃修改并切换？')) { paint(); return; }
     if (!id) { current = ''; saved = null; paint(); return; }
-    await perform(async () => { const data = await request('repositories/' + id); current = id; accept(data); });
+    await perform(async () => { const data = await request('repositories/' + id); current = id; remember(repositoryKey, id); accept(data); });
+  });
+  root.querySelector('#model-logout')?.addEventListener('click', () => {
+    if (dirty() && !window.confirm('放弃未保存修改并退出登录？')) return;
+    forgetLogin(); message = '已退出登录，当前浏览器保存的令牌已清除'; paint();
   });
   root.querySelector('#model-cancel')?.addEventListener('click', () => { draft = structuredClone(normalizedDefaults(saved)); message = '已取消修改'; paint(); });
   root.querySelector('#model-reload')?.addEventListener('click', async () => {

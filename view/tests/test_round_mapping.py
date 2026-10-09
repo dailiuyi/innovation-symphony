@@ -8,7 +8,7 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from symphony_board.derive import build_tasks, execution_summary, result_text
+from symphony_board.derive import build_tasks, execution_summary, result_text, attach_attempts, attach_evidence_rounds, rework_returns
 from symphony_board.wslpull import remote_script
 
 
@@ -162,6 +162,71 @@ class RoundMappingTests(unittest.TestCase):
         self.assertEqual(rows[-1]["attempt"], 500)
         self.assertTrue(all(row["round"] == 19 and row["status"] == "failed"
                             for row in rows))
+
+    def test_root_attempt_uses_receipt_directory_without_round_name(self):
+        thread = "01a119c8-1aad-7cc0-a102-eef6001274f9"
+        directory = os.path.join(self.evidence, "agent-attempt-3")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "messages.log"), "w") as handle:
+            handle.write(f'event: :session_started, session_id: "{thread}", thread_id: "{thread}"')
+        events = [{"attempt": 3, "role": "coder", "status": "started", "evidence": directory}]
+        receipt = {"rounds": [{"round": 1, "evidence": self.evidence}], "recovery": {"events": events}}
+        row = self.read_attempts(receipt, self.evidence)[0]
+        self.assertEqual((row["round"], row["session_id"], row["roundSource"]), (1, thread, "controller"))
+        receipt["rounds"].append({"round": 2, "evidence": self.evidence})
+        self.assertIsNone(self.read_attempts(receipt, self.evidence)[0]["round"])
+        receipt["rounds"] = [{"round": 1, "evidence": "/outside"}]
+        self.assertIsNone(self.read_attempts(receipt, self.evidence)[0]["round"])
+
+    def test_root_check_is_bound_by_receipt_and_keeps_failure(self):
+        item = {"name": "check-1.log", "path": os.path.join(self.evidence, "check-1.log"),
+                "exit": 10, "summary": "799 项测试，1 项失败，6 项跳过"}
+        receipt = {"rounds": [{"round": 1, "evidence": self.evidence}]}
+        attach_evidence_rounds([item], receipt)
+        self.assertEqual(item["round"], 1)
+        returns = rework_returns({"evidence": [item]})
+        self.assertEqual(returns[0]["n"], 1)
+        self.assertIn("1 项失败", returns[0]["why"])
+        receipt["rounds"].append({"round": 2, "evidence": self.evidence})
+        attach_evidence_rounds([item], receipt)
+        self.assertIsNone(item["round"])
+
+    def test_legacy_run_requires_unique_exact_sandbox_session(self):
+        receipt = {"rounds": [{"round": 1}], "_legacy_agent_runs": [
+            {"sessionsRoot": "/runtime/sandboxes/run-1/codex-home/sessions", "round": 1,
+             "role": "coder", "outcome": "timeout"}]}
+        raw = [{"meta": {"session_id": "old"},
+                "remote": "/runtime/sandboxes/run-1/codex-home/sessions/day/rollout.jsonl"}]
+        public = [{"id": "old"}]
+        attach_attempts(public, receipt, raw)
+        self.assertEqual((public[0]["round"], public[0]["attemptOutcome"]), (1, "timeout"))
+        attach_attempts(public, receipt, raw + [raw[0]])
+        self.assertIsNone(public[0]["round"])
+        raw[0]["remote"] = "/runtime/sandboxes/run-10/codex-home/sessions/day/rollout.jsonl"
+        attach_attempts(public, receipt, raw)
+        self.assertIsNone(public[0]["round"])
+
+    def test_legacy_snapshot_binds_original_artifact_and_rejects_other_task(self):
+        namespace = {}
+        exec(compile(remote_script(["/unused"]).split("roots = sorted(", 1)[0], "<helpers>", "exec"), namespace)
+        namespace["root"] = self.temp.name
+        directory = os.path.join(self.evidence, "operator-rechecks", "resume-1")
+        os.makedirs(directory)
+        artifact = {"role": "coder", "result_path": os.path.join(self.temp.name, "sandboxes", "run-1", "sandbox", "result.json")}
+        old = {"repository": "acme/repo", "issue": 16, "workspace": "/workspace/GH-16", "base_sha": "base",
+               "status": "blocked", "reason": ":wall_timeout", "recovery": None,
+               "rounds": [{"round": 1, "evidence": self.evidence}], "sandbox_artifacts": [artifact]}
+        path = os.path.join(directory, "receipt-before.json")
+        with open(path, "w") as handle:
+            json.dump(old, handle)
+        receipt = {**old, "recovery": {"events": [{"kind": "operator_initial_coder_resume", "operation_id": "resume-1"}]}}
+        reader = namespace["_legacy_agent_runs"]
+        self.assertEqual(reader(receipt, self.evidence)[0]["outcome"], "timeout")
+        receipt["issue"] = 17
+        self.assertEqual(reader(receipt, self.evidence), [])
+        receipt["issue"] = 16
+        receipt["sandbox_artifacts"] = []
+        self.assertEqual(reader(receipt, self.evidence), [])
 
     def test_unmatched_session_is_unassigned_for_controller_rounds(self):
         workspace = "/var/tmp/innovation-symphony-v0-rerun1/workspaces/GH-88"

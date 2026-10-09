@@ -199,6 +199,20 @@ def serve_connection(connection, policy, runner):
         if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(data) > LIMIT or len(fds) != 3:
             raise ValueError('invalid request or standard streams')
         argv = json.loads(data)
+        if isinstance(argv, list) and len(argv) == 2 and argv[0] == '--readiness':
+            # The same peer authentication and FD protocol applies, but this
+            # inventory request never launches a runner or creates task state.
+            sys.dont_write_bytecode = True
+            from execution_readiness import inspect_readiness
+            report = inspect_readiness(argv[1], policy)
+            with os.fdopen(os.dup(fds[1]), 'w', encoding='utf-8') as output:
+                output.write(json.dumps(report, sort_keys=True) + '\n')
+            # An unavailable environment is a successfully reported inventory,
+            # so preserve its JSON for the admission caller. Invalid requests
+            # and policy mismatches remain transport failures.
+            rejected = any(item['name'] == 'request' for item in report['blockers'])
+            connection.sendall(b'125' if rejected else b'0')
+            return
         scratch = validate(argv, policy)
         if scratch:
             temporary, argv = stage_inputs(argv, scratch, int(policy['fixed']['--disk-mb']) * 1048576)

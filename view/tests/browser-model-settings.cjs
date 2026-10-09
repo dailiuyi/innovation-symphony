@@ -158,11 +158,9 @@ async function settingsReading(page) {
     assert.deepEqual(after.defaults[other], before.defaults[other]);
     assert.deepEqual((await (await page.request.get(endpoint.replace(/a$/, 'b'), {headers})).json()), otherRepo);
   }
-  // Refresh clears the in-memory token and rereads persisted configuration.
-  await page.reload(); await field('token').waitFor({state:'visible'});
-  await field('token').focus(); await page.keyboard.type(token); await page.keyboard.press('Tab');
-  await page.keyboard.press('Enter'); await status('请选择仓库');
-  await read('a'); await checkRole('coder', 'legacy', 'gpt-legacy', null); await checkRole('reviewer', 'legacy', 'gpt-legacy', null);
+  // Refresh restores the remembered login and repository automatically.
+  await page.reload(); await status('已读取当前配置');
+  await checkRole('coder', 'legacy', 'gpt-legacy', null); await checkRole('reviewer', 'legacy', 'gpt-legacy', null);
   assert.doesNotMatch(await page.locator('#model-settings').innerText(), /当前选择不可用|深度 null/);
   await read('b'); await checkRole('coder', 'p', 'beta', 'high'); await checkRole('reviewer', 'q', 'beta', 'low');
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'narrow settings overflow');
@@ -174,6 +172,8 @@ async function settingsReading(page) {
     await field(id).focus(); await focus(id);
   }
   assert.equal(await page.evaluate(value => [localStorage, sessionStorage].some(storage =>
-    Object.values(storage).some(entry => entry.includes(value))), token), false, 'token persisted in browser storage');
+    Object.values(storage).some(entry => entry.includes(value))), token), true, 'successful login should persist in this browser');
+  await field('logout').click(); await field('token').waitFor({state:'visible'});
+  assert.equal(await page.evaluate(() => localStorage.getItem('symphony.model-settings.admin-token')), null);
 }
 module.exports = {settingsFixture, settingsReading};

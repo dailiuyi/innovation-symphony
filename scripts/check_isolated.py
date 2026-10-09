@@ -53,6 +53,43 @@ def copy_regular_tree(source: Path, target: Path) -> None:
     shutil.copytree(source, target, dirs_exist_ok=True)
 
 
+# Operator-authorized fixture maintenance, 2026-10-08, GH-16. The frozen
+# source stays immutable; only this exact historical fixture is repaired in
+# the disposable baseline harness. No production code or assertions removed.
+BASELINE_FIXTURE_SHA256 = 'a447f5010ee1c50f08e44d26e43d99b16f79c5114540dbd9ee5b7a2ef08f9191'
+BASELINE_FIXTURE_PATH = 'elixir/test/symphony_elixir/mvp_execution_sandbox_test.exs'
+BASELINE_FIXTURE_ANCHOR = '    File.write!(Path.join(workspace, "source.txt"), "original")\n'
+BASELINE_FIXTURE_INSERT = (
+    '    File.chmod!(Path.join(workspace, "source.txt"), 0o644)\n'
+    '    assert Bitwise.band(File.stat!(Path.join(workspace, "source.txt")).mode, 0o777) == 0o644\n'
+)
+
+
+def maintain_baseline_fixture(baseline: Path, harness: Path, kind: str) -> list[dict]:
+    """Normalize the known fixture input, never weaken its tamper assertions."""
+    if kind != 'baseline':
+        return []
+    source, target = baseline / BASELINE_FIXTURE_PATH, harness / BASELINE_FIXTURE_PATH
+    if not source.is_file() or source.is_symlink():
+        return []
+    original = source.read_bytes()
+    if hashlib.sha256(original).hexdigest() != BASELINE_FIXTURE_SHA256:
+        return []
+    if target.is_symlink() or target.read_bytes() != original:
+        raise ValueError('baseline maintenance target differs from frozen fixture')
+    anchor = BASELINE_FIXTURE_ANCHOR.encode()
+    if original.count(anchor) != 1:
+        raise ValueError('baseline maintenance anchor is not unique')
+    repaired = original.replace(anchor, anchor + BASELINE_FIXTURE_INSERT.encode(), 1)
+    target.write_bytes(repaired)
+    return [{'id': 'gh16-fixture-mode-20261008', 'path': BASELINE_FIXTURE_PATH,
+             'scope': 'disposable_baseline_harness',
+             'reason': 'initialize permission-tamper fixture to 0644 under umask 077',
+             'frozen_sha256': BASELINE_FIXTURE_SHA256,
+             'effective_sha256': hashlib.sha256(repaired).hexdigest(),
+             'assertions_removed': False}]
+
+
 def prepare_harness(candidate: Path, baseline: Path, harness: Path, kind: str) -> list[dict]:
     """Use frozen project configuration with candidate code and selected tests."""
     project = harness / 'elixir'
@@ -104,6 +141,11 @@ def main() -> int:
              tempfile.TemporaryDirectory(prefix='symphony-check-tmp-') as runtime_directory:
             harness = Path(directory)
             changes = prepare_harness(candidate, baseline, harness, options.kind)
+            maintenance = maintain_baseline_fixture(baseline, harness, options.kind)
+            (evidence / 'baseline-maintenance.json').write_text(json.dumps(
+                {'repairs': maintenance}, indent=2) + '\n')
+            if maintenance:
+                print('[baseline maintenance] exact historical fixture initialized to 0644; frozen input preserved', flush=True)
             (evidence / 'policy.json').write_text(json.dumps({'policy_changes': changes}, indent=2) + '\n')
             if changes:
                 print('Candidate gate configuration changed; frozen gate remains effective. Independent Review required.', flush=True)

@@ -13,6 +13,7 @@ export function attemptLabel(session) {
 }
 
 function evidenceRound(ev) {
+  if (Object.hasOwn(ev, 'round')) return Number.isInteger(ev.round) && ev.round > 0 ? ev.round : null;
   const match = /round-(\d+)\//.exec(String(ev.name || ''));
   return match ? Number(match[1]) : null;
 }

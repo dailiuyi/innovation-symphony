@@ -70,7 +70,7 @@ def main():
         raise PermissionError('administrator authentication required')
     if Path('/proc/sys/net/ipv4/ip_forward').read_text().strip() != '1':
         raise ValueError('host IPv4 forwarding is not prepared; no sysctl is changed automatically')
-    subprocess.run(['apt-get', 'install', '-y', 'podman', 'crun', 'uidmap', 'nftables', 'iptables', 'iproute2', 'e2fsprogs'], check=True)
+    subprocess.run(['apt-get', 'install', '-y', 'podman', 'crun', 'catatonit', 'uidmap', 'nftables', 'iptables', 'iproute2', 'e2fsprogs'], check=True)
     try:
         worker = pwd.getpwnam(args.worker)
     except KeyError:
@@ -86,6 +86,7 @@ def main():
     scripts.mkdir(parents=True)
     copy_check_payload(source, scripts)
     shutil.copy2(source / 'linux_bridge.py', INSTALL / 'bridge.py')
+    shutil.copy2(source / 'execution_readiness.py', INSTALL / 'execution_readiness.py')
     shutil.copy2(source / 'sandbox_artifacts.py', INSTALL / 'sandbox_artifacts.py')
     shutil.copy2(source / 'rootless_startup_guard.py', INSTALL / 'startup_guard.py')
     shutil.copy2(source / 'execution_sandbox.sh', scripts / 'execution_sandbox.root.sh')

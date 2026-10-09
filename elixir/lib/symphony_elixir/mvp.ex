@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Mvp do
 
   require Logger
   alias SymphonyElixir.{Config, Tracker, Workspace}
-  alias SymphonyElixir.Mvp.{Executor, Intake, ModelServices, Receipt}
+  alias SymphonyElixir.Mvp.{ExecutionReadiness, Executor, Intake, ModelServices, Receipt}
 
   @preserved_failure_statuses ["publish_pending", "comment_pending", "awaiting_external"]
 
@@ -12,17 +12,38 @@ defmodule SymphonyElixir.Mvp do
     case Config.mvp_settings() do
       {:ok, %{enabled: false, configured: false}} -> true
       {:ok, %{enabled: false}} -> false
-      {:ok, settings} -> Intake.ready?(issue, settings.ready_label) and not Receipt.exists?(settings, issue)
+      {:ok, settings} -> ExecutionReadiness.backend_ready?(settings) and Intake.ready?(issue, settings.ready_label) and not Receipt.exists?(settings, issue)
       {:error, _} -> false
     end
+  end
+
+  @doc "Check admission before the scheduler creates an in-memory claim or starts a worker."
+  @spec dispatch_readiness(map()) :: :ok | {:error, term()}
+  def dispatch_readiness(issue) do
+    case Config.mvp_settings() do
+      {:ok, %{enabled: true} = settings} ->
+        if Receipt.exists?(settings, issue), do: :ok, else: dispatch_prepared(issue, settings)
+
+      {:ok, _} ->
+        :ok
+
+      error ->
+        error
+    end
+  end
+
+  defp dispatch_prepared(issue, settings) do
+    with {:ok, _} <- ExecutionReadiness.prepare(issue, settings, []), do: :ok
   end
 
   @spec run(map(), pid() | nil, map(), keyword()) :: :ok
   def run(issue, recipient, settings, opts \\ []) do
     with :ok <- validate_runtime(),
          true <- Intake.ready?(issue, settings.ready_label),
+         true <- not Receipt.exists?(settings, issue) or {:error, :mvp_receipt_exists},
+         {:ok, prepared} <- ExecutionReadiness.prepare(issue, settings, opts),
          {:ok, file} <- Receipt.claim(settings, issue) do
-      execute_claimed(issue, recipient, settings, file, opts)
+      execute_claimed(issue, recipient, settings, file, opts, prepared)
     else
       {:error, reason} -> block(issue, recipient, reason)
       false -> block(issue, recipient, :issue_not_ready)
@@ -53,7 +74,13 @@ defmodule SymphonyElixir.Mvp do
     end
   end
 
-  defp execute_claimed(issue, recipient, settings, file, opts) do
+  defp prepared_models(nil, issue, settings, opts) do
+    with {:ok, models} <- Intake.resolve(issue, settings, opts), {:ok, services} <- ModelServices.freeze(models, settings), do: {:ok, Map.put(models, :services, services)}
+  end
+
+  defp prepared_models(models, _issue, _settings, _opts), do: {:ok, models}
+
+  defp execute_claimed(issue, recipient, settings, file, opts, prepared) do
     tracker = Tracker.bind_agent_tools().tracker_settings
 
     handler = fn message ->
@@ -64,10 +91,8 @@ defmodule SymphonyElixir.Mvp do
     options = opts |> Keyword.put(:tracker_settings, tracker) |> Keyword.put(:ready_label, settings.ready_label) |> Keyword.put(:on_message, handler)
 
     result =
-      with {:ok, models} <- Intake.resolve(issue, settings, options),
-           {:ok, services} <- ModelServices.freeze(models, settings),
-           models = Map.put(models, :services, services),
-           :ok <- Receipt.update(file, "preparing", %{"models" => Map.take(models, [:coder, :reviewer]), "services" => services}),
+      with {:ok, models} <- prepared_models(prepared, issue, settings, options),
+           :ok <- Receipt.update(file, "preparing", %{"models" => Map.take(models, [:coder, :reviewer]), "services" => models.services, "execution_readiness" => Map.get(models, :readiness)}),
            {:ok, workspace} <- Workspace.create_for_issue(issue, nil) do
         if is_pid(recipient), do: send(recipient, {:worker_runtime_info, issue.id, %{worker_host: nil, workspace_path: workspace}})
 

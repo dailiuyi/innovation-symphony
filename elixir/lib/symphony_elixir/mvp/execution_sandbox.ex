@@ -354,19 +354,21 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
   defp role_prompt(prompt, _), do: prompt <> "\n\nAll repository paths refer to the isolated copy at /workspace; the frozen base is /baseline and controller feedback is read-only at /evidence."
 
-  defp check_kind(["python3", "scripts/probe_rootless.py"]), do: {:ok, "linux_probe"}
+  @doc false
+  @spec check_kind([String.t()]) :: {:ok, String.t()} | {:error, atom()}
+  def check_kind(["python3", "scripts/probe_rootless.py"]), do: {:ok, "linux_probe"}
 
-  defp check_kind(["python3", script]) do
+  def check_kind(["python3", script]) do
     if Path.basename(script) == "check_view.py",
       do: {:ok, "view"},
       else: check_kind_legacy(["python3", script])
   end
 
-  defp check_kind(["python3", script | _]) do
+  def check_kind(["python3", script | _]) do
     check_kind_legacy(["python3", script])
   end
 
-  defp check_kind(_), do: {:error, :unsupported_isolated_check}
+  def check_kind(_), do: {:error, :unsupported_isolated_check}
 
   defp check_kind_legacy(["python3", script]) do
     case Path.basename(script) do

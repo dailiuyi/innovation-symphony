@@ -904,3 +904,366 @@ View 固定安装的数据、生成页及 rollout 缓存链接回原 `view/data`
 注册表或任务回执；已冻结的新服务任务不得交由不认识其快照的旧执行器自动续跑。
 
 本轮仅本机安装和服务切换，不执行 GitHub 写入、人工合并、真实派发或云部署。
+
+
+## 2026-10-08 10:15 CST：IS-079 最新 main 安装及切换
+
+来源：所有者要求“拉取最新main分支 并安装”。远端 main 固定于 `14764322043929a01f6da4892451ac720da297a7`，已人工合入 PR #14／#15，源码 tree 与本轮审查通过的 `dc89885` 完全相同。准确 main 的 [远端 CI](https://github.com/dailiuyi/innovation-symphony/actions/runs/37716335575) 中 make-all 与 View 均成功；本轮没有合并或推送操作。
+
+独立固定安装在 `.local/releases/main-1476432-20261008/`，用已固定工具链及相同依赖锁重新编译 escript；二进制 SHA256 `a06f32e9853dc5df37086b77a97363186cc718c1e5b4f859556a79876a20e018`。构建与只读 GitHub preflight 通过（issue_count=0）；preflight 只在私有工作流副本开启校验，原活动 WORKFLOW 逐字节保留。首次预检缺少既有 CLI acknowledgement 参数而拒绝，添加后成功，失败日志保留。View 完整检查通过：35 项 Python、10 项 JS、11 项独立 Linux 回归、固定 projection／HTML、self_check 和 8 种入口。本轮没有新增源码变更，因此完整 789 项／0 失败／6 既有跳过／100% 覆盖率的同树本地审查结果保持；本轮重新构建和实机切换核实分别记录，未将冻结旧暂停断言差异记作全通过。
+
+原启动器、runtime-env、WORKFLOW、View 配置及 SQLite 在线备份位于该安装目录 `deployment-backup/`；原未提交 patch 和未跟踪文档均另存备份。更新 `.local/start-symphony.sh`／`.local/launch-view.py`，runtime-env 仅新增可选运行 cwd，默认调用行为保留，控制器实际 cwd 为新固定 release 的 `elixir/`。View 保持 loopback 监听，数据库、rollout 缓存和会话页面仍使用原数据目录，不移动或覆盖历史。切换期间因旧端口释放等待导致首次访问核实失败；既有绑定重试后恢复，再执行最终验证通过。
+
+最终 controller PID 1464050、View PID 1464051，均 active/running、NRestarts=0。控制器 API 和 View bootstrap／snapshot 可用；真实采集 status=ok、source=local，5 个任务、2 个 story、35 个会话、1 个 runtime 保留。371 份任务及证据 JSON 摘要、原 WORKFLOW 与 View 配置相等；SQLite 510 条 transitions 完整包含原历史，2 个 attempts、35 个 sessions 保留。running／retrying／blocked 均为 0，mvp.enabled=false；未恢复或派发真实任务。
+
+rootless 桥的 bridge、startup guard、rootless runner／配方／DNS 和正式检查 Python 源码与 main 一致；本轮未更新旧冻结 legacy helper，未激活 rootless WORKFLOW，整体 rootless 实机验收缺口保持。最终清单为 `deployment-result.json`。回退入口为安装目录 `deployment-backup/rollback.py`，仅在确认当前控制器空闲后恢复原三个启动文件、重启这两个用户服务，不删除新版本、工作区、数据或任何回执；本轮未执行回退。
+
+开发工作区原始补丁保留，本次只追加安装决定／需求／运行记录；未提交或推送这些文档。看板 [http://127.0.0.1:8613/](http://127.0.0.1:8613/)，控制器 [http://127.0.0.1:4000/](http://127.0.0.1:4000/)。
+
+
+## 2026-10-08 10:33 CST：IS-080 View 内网访问
+
+用户要求内网访问地址。本机 Wi-Fi `wlp0s20f3` 地址为 `192.168.0.44/23`，缺省网关 `192.168.1.1`；排除 Docker 和代理 TUN 地址。`.local/launch-view.py` 的 View 绑定由 127.0.0.1 改为 0.0.0.0，仍加载固定 main `1476432`；只重启 View。旧端口 TIME_WAIT 使第一轮绑定等待 90 秒后失败，systemd 按既有策略重启一次，随后监听及采集正常，早期访问失败不记作通过。
+
+最终本机经 `http://192.168.0.44:8613/` 和 `http://127.0.0.1:8613/` 均获得 HTTP 200；bootstrap 的 collection.status=ok，source=local。View PID 1471844，controller PID 1464050 未变。没有修改防火墙、控制器、工作流、领取、回执、数据库或源代码。其他设备实测尚未执行。
+
+原启动器、修改前文档及结果在 `.local/view-lan-20261008/`；恢复 `launch-view.before.py` 至 `.local/launch-view.py` 并仅重启 View 即可回退监听。新增记录未提交或推送。
+
+
+## 2026-10-08 11:33 CST：IS-081 开启新任务领取
+
+所有者明确要求开启新任务领取。保留固定 main 14764322043929a01f6da4892451ac720da297a7 与控制器 PID 1464050，原 WORKFLOW、顶层回执摘要和激活记录保存在 `.local/intake-enable-20261008/`。原 legacy 桥真实 exec-server 传输探针通过；未激活 rootless。
+
+核实隔离路径本来生成 gpt-6.1-sol／high，不读取个人 config.toml 的 medium。按实际原账号与 ChatGPT Responses 连接登记 gpt61-existing-high，保留两个角色原有效默认值。真实账号 model/list 发现及双角色隔离工具／严格 JSON 验证通过，注册表 revision=1，持久路径 `/var/tmp/innovation-symphony-linux-runtime/state/model-services.json`，权限 0600。原始验证结果和配置绑定在 model-readiness.json、registry-verified.json 和 model-readiness.log；能力证据按既有实现于次日 11:32／11:33 CST 过期，不冒充永久权限。工具验证未发送真实仓库材料；actual_model 字段未由调用结果返回，记录 null，模型及 high 由 AppServer 有效配置通知核实。
+
+第一次验证使用工具默认 `/tmp` 证据目录，触发既有桥路径限制，返回 execution_environment_unavailable；当时领取仍关闭，未生成成功证据。将验证进程 TMPDIR 指向原获准 state 子目录后成功，不扩大桥权限。GitHub 只读预检 status=passed、issue_count=1。随后仅原子更新活动 WORKFLOW 的 mvp.enabled=true，服务热加载后于 11:33:39 领取 GH-16，11:33:58 编码会话开始；任务回执冻结原作者 models 评论及双角色 high、账号身份和对应能力证据，status=coding。
+
+GH-16 工作区 `/var/tmp/innovation-symphony-linux-runtime/workspaces/GH-16`，回执 `/var/tmp/innovation-symphony-linux-runtime/state/e2862601c0cc057fbb2794e8a88c3d9e57bab00012609e6063c91f5d1b668ade.json`。开发工作区的旧未提交补丁及既有任务回执保留。本次配置和运行记录未提交或推送，功能实现继续由控制器管理，尚未完成检查／Review 或创建新 PR。
+
+回退仅在任务空闲、确认无在途执行后，将 WORKFLOW.before.md 恢复为活动 WORKFLOW；如需完整撤销本次管理迁移，再保留并移出新注册表。不得在执行期间直接恢复 disabled 工作流：当前授权校验会同时撤销在途调用。回退不删除任务、工作区、证据或历史，本轮未执行。内网看板继续为 http://192.168.0.44:8613/。
+
+
+## 2026-10-08：IS-082 提高本机预算及资源
+
+`.local/resource-increase-20261008/` 保存原／新 WORKFLOW、桥代码、策略、启动保护及验证记录。活动 WORKFLOW 的 turn_timeout_ms／check_timeout_ms=3600000，stall_timeout_ms=1800000，agent.max_turns=20；恢复 enabled=true、max_rework=20、diagnose_every=3、stage_attempts=3、max_agent_attempts=96、max_elapsed_ms=21600000。sandbox 为 memory_mb=6144、disk_mb=16384、pids=512、cpus=6；并发一。
+
+原受保护桥对四项资源固定匹配，故管理员安装只接受原／新完整资源档位的策略校验，工作区／证据路径及准许运行命令保持。输入复制预算随已校验档位取值，启动保护摘要同步更新。第一次启动被 bridge.py 的旧固定摘要拒绝，安装器自动恢复旧桥；修正摘要后重装成功。root 备份在 /opt/innovation-symphony-linux-bridge/resource-backup-20261008。真实新探针 run-1791432614536035-1 读回 memory_max_bytes=6442450944、cpu_max=600000 100000、pids_max=512；原档位探针 run-1791432630845574-1 读回原值。两者 export_complete／cleanup_complete=true，OOM／PID 事件为零。回执摘要全部未变化，控制器热加载新 WORKFLOW，无需重启。
+
+当时 GH-16 仍为首次编码 wall_timeout、candidate_sha=null、recovery=null，现有 recover 只接受检查失败／返工耗尽，resume_recovery 要求已有恢复策略，不能直接套用。用户已明确指定接续，后续须补齐受控首次编码超时入口，保留原历史及导出修改；本条预算配置不冒充续跑完成。若回退，须待任务空闲，恢复 WORKFLOW.before.md 与 root 备份中的桥／策略／启动保护；不删除任何回执或证据。
+
+
+## 2026-10-08 12:31 CST：IS-083 GH-16 受控续跑
+
+原 recover 仅接受检查失败／返工耗尽，resume_recovery 要求已有恢复策略，均不覆盖 GH-16 的初轮编码 wall_timeout 且 candidate_sha=null。新增 Executor.resume_initial_coder 在原开放轮接续；严格核验原身份、服务、检查、base／分支、工作区和隔离结果摘要，要求完整导出及清理，并通过受信 owner_idle 回调核实控制器空闲与桥可用。统一 OperatorRecheck 锁前后重验，旧回执和显式授权保留，原模型、凭据、基线与检查不替换；准确授权后采用 IS-082 策略与资源。
+
+源码隔离工作树 `/home/innovation/.codex/worktrees/issue16-timeout-resume/innovation-symphony`，分支 codex/issue16-initial-coder-resume，本地提交 7575b8041c0e764e96e89754a01151746819a3ec。关键恢复回归 50 项通过；全量 791 项运行 7 失败／6 跳过，原因为验证进程读入个人 Codex 配置及使用过长临时目录。隔离 CODEX_HOME、移除 GitHub 凭据、使用 /tmp 后，受影响四模块与恢复两模块共 94 项通过。格式、specs、严格 Credo 均通过；本轮没有全量成功、覆盖率或 Dialyzer 成功的声明。源码提交未推送、未建 PR，主控制器仍为 main 1476432。
+
+`.local/issue16-resume-20261008/` 保存原回执、已导出 tracked patch、未跟踪文件 tar、原基线复核、授权、空闲执行者核实、事件与启动验证。用户服务 innovation-symphony-issue16-resume.service 以原 Elixir Executor 执行，不新增调度器；无自动重启、RuntimeMaxSec=21600，12:31:55 新会话 01a119c8-1aad-7cc0-a102-eef6001274f9 实际开始并发出工具事件。回执 status=coding，operation=issue16-initial-timeout-20261008，模型服务快照和原 coder 用量槽位与旧回执相等；原未知 reviewer 用量槽位保守计入历史模型次数，adopted_agent_attempts=2，当前新编码 attempt=3、stage_attempt=2。恢复累计时间使用原隔离 started_at=2026-10-08T03:33:50Z。
+
+View /api/snapshot 已显示 GH-16 编码中、包含原／新两个编码会话。4000 的原主调度器仍保留旧会话 blocked 条目，无法展示独立操作者会话；续跑状态应以任务回执、恢复服务及内网 View 为准，此展示差异不冒充实际任务仍堵塞，也不手工改写原调度器内存。后续正式检查、独立 Review 及 PR 未完成。本轮保留主控制器和 View 服务，不重启正在恢复的任务。
+
+### 2026-10-08 GH-16 受信门禁维护（IS-084）
+
+用户明确授权修复冻结夹具与 View 运行依赖。操作者在检查结束后的模型阶段暂时暂停 operator BEAM 调度处理，保留在途模型结果；安装后已恢复同一进程，没有重置回执、候选、模型或预算。没有改写原冻结基线、历史检查日志或生产恢复代码，也没有重启共享 root bridge。
+
+已安装 `/opt/innovation-symphony-linux-bridge/trusted/scripts/check_isolated.py`：SHA256 从 `82361e6fa95abcadbbedcb54b73aa3962a8e6af12620800981269505aa345742` 更新为 `27144980dfa90144aa67f2cba3eb9b784afd0e7800e5d6a824f9c0d333a14867`；startup_guard 同步绑定。精确白名单的旧恢复夹具 SHA256 为 `a447f5010ee1c50f08e44d26e43d99b16f79c5114540dbd9ee5b7a2ef08f9191`，实际摘要以源码常量和每次 baseline-maintenance.json 读回为准。检查在新临时 harness 内明确初始化0644并断言，保留全部篡改拒绝验证。未知输入、candidate 模式不应用维护；不一致或链接目标拒绝。
+
+root 所有只读工具链新增 `toolchain/view-validation/python/bin/python`，含 codex-transcript-viewer0.5.0；`toolchain/view-validation/node/bin/node` 为固定v24.19.0，归档已对官方SHASUMS256核对。没有修改全局PATH、账号凭据或生产View服务。安装采用临时目录完整准备、文件原子替换和目录发布，旧文件与安装回执保存在 root `gate-maintenance-backup-20261008/`；失败归档本操作新增目录并恢复原脚本，重试必须核实前一次状态。
+
+源码验证：新增维护分支3项通过，既有isolated检查18项通过、1项既有跳过，diff检查通过。一次独立只读审查确认临时修复未降低断言，并复核安装回滚。View完整本地合成检查38项Python、10项JS、11项Linux回归及渲染通过，formal_acceptance=false；在途coder随后实际报告指定沙盒工具链复检通过。不能据此声称真实账号、浏览器/窄屏、内网候选部署或独立Review已经通过。
+
+操作材料在 `.local/issue16-gate-maintenance-20261008/`，审计副本在原任务evidence的 `operator-maintenance/gh16-gate-maintenance-20261008/`；原候选10325f0d的独立真实沙盒基线探针已提交受信桥队列，结果待该目录baseline-native-result.json及原正式检查读回。修复源码保存在主工作区，尚未Git提交、推送或创建本维护PR；安装状态与源码发布状态分开。
+
+IS-084 维护后补充验证：原冻结测试文件在独立临时harness应用精确维护后，于umask077运行权限恢复原用例981行通过（1项、0失败，其余39项未运行；该原用例内部全部内容/权限/无变化场景保留）。同一独立harness恢复旧测试字节可重现原断言失败，随后还原维护后的临时测试。此为维护修复的针对性验证，不是完整基线通过。后续完整基线探针及GH-16正式门禁仍待独立结果，不能把本段写成任务交付通过。
+
+### 2026-10-08 固定Playwright环境补齐（IS-085）
+
+核实当前可复用的Codex runtime包实际上含Playwright与playwright-core1.62.1；此前任务调用没有解析到该固定位置。操作者在独立目录准备匹配包与对应Chromium1234（151.0.7922.34）、headless shell及FFmpeg，管理员认证后原子安装到 `/opt/innovation-symphony-linux-bridge/toolchain/view-validation/playwright/`，root所有、只读，完整文件摘要保存在installation.json。未改版本断言、旧版本、主控制器、View运行服务或任务预算。
+
+固定入口在沙盒内为 `/opt/toolchain/view-validation/playwright/node-playwright`，宿主为 `/opt/innovation-symphony-linux-bridge/toolchain/view-validation/playwright/node-playwright`。入口显式绑定只读node_modules与browsers目录，并检查1.62.1，再调用原固定Node24.19.0；调用 `node-playwright <候选>/view/tests/browser-fixture.cjs <新检查目录>/fixture`。不要以系统全局NODE_PATH或同名旧包替代。
+
+准确候选24a6343567ae9843772b28f7e57b90b5f49ef16b的独立副本：非浏览器View检查38Python、10Node通过；浏览器夹具实际启动Playwright1.62.1＋Chromium151.0.7922.34，8组导航、筛选、刷新、失败恢复、键盘及窄屏检查通过，页面脚本错误为空。证据在 `.local/issue16-playwright-20261008/view-check/fixture/browser/` 和browser-fixture-result.json，明确synthetic=true、real_windows_wsl=false、formal_acceptance=false。安装后又通过固定入口启动真实浏览器，验证页面读取及正常关闭，读回在installed-launch.json。
+
+这解除浏览器运行环境缺失，不等于GH-16已交付。读取原任务为blocked、mvp_recovery_resource_exhausted，独立Review等后续验收仍待执行；本操作没有重置预算或自动续跑。维护资料与工具入口保存在本机，未Git提交或发布。
+
+
+## 2026-10-08 18:34 CST：IS-086 重置 GH-16 恢复墙钟预算并继续
+
+来源：所有者要求“重置预算继续跑”。授权只追加有界墙钟额度并接续同一 GH-16 候选与历史；不重置累计调用与返工计数、不合并、不切换生产服务、不新增任务。操作材料在 `.local/issue16-budget-resume-20261008/`。
+
+上一轮留下的 `run.exs` 以 10:09 版 Executor 副本调用 `resume_recovery`，经只读推演会在绑定阶段失败：本任务首轮 evidence 位于初始会话根目录（不是 `evidence/round-1`），且 18:28 曾把活动策略改成 160 次／24h，与回执冻结策略 96 次／6h 不相等。本轮把该目录的 Executor 副本换为最近一次受控续跑使用的版本（原副本另存 `executor.prior-1009.ex`，SHA256 `7d0e313e…`；新副本基于 `e7cdb2db…`），只新增 `Executor.resume_budget/3` 与 `:budget` 模式：语义等同既有 `resume_recovery` 审计续跑，额外接受上述首轮历史布局，其余守卫、摘要、锁与拒绝语义不变。活动 WORKFLOW 的恢复策略回退为回执冻结值，使冻结策略与运行策略相等；额度只经授权参数 `wall_budget_extension_ms` 追加。回退前后文件分别为 `WORKFLOW.live-before-revert.md` 与 `WORKFLOW.before.md`。
+
+预检（`IS16_PREFLIGHT_ONLY=1`）三项副作用前拒绝全部符合预期：扩展 0 → `:mvp_recovery_wall_extension_invalid`、错误回执摘要 → `:mvp_resume_binding_mismatch`、错误工作区摘要 → `:mvp_recovery_workspace_digest_mismatch`；owner 空闲与桥就绪核实通过。预算记录见 `budget.json`：原 6h／96 次，追加 86_400_000 ms，接续时刻已用 25_230_244 ms，有效上限 108_000_000 ms，剩余 82_769_756 ms；累计 12 次调用、5 次返工不归零。
+
+运行：`innovation-symphony-issue16-budget-resume.service`（InvocationID `cc078ab44261429192ffd09e13472682`，MainPID 3056188）18:34:29 启动；18:34:42 第 13 次 coder 会话 `01a11b14-4868-7342-a290-4c23c83dc661` 实际开始，模型 gpt-6.1-sol／high。回执 status=recovering、`operator_recheck=issue16-budget-resume-20261008`，recovery 事件新增 `operator_wall_budget_extension`，policy 更新为 max_elapsed_ms=108000000、max_agent_attempts=96，workspace_digest `0bf1b7ef…`；内网 View 同一时刻显示 GH-16 为“recovering／诊断中”。追加额度对应墙钟有效期至北京时间 2026-10-09 17:33。
+
+边界：本轮不合并、不切换控制器与 View、不派发新任务；原冻结基线、检查命令、角色服务与历史证据保持。独立 Review、真实账号与内网候选验收仍未完成，后续检查／Review 结果以任务回执和内网 View 为准。操作材料与源码扩展未 Git 提交或推送。
+
+
+## 2026-10-08 20:52 CST：IS-087 火山方舟真实账号 DeepSeek 双角色探测
+
+来源：所有者授权“用我 cc-switch 的本机凭证，火山方舟的”执行 GH16-A03 的真实账号验证。只使用所有者本机 `~/.cc-switch` 中 codex 的“火山方舟”提供商（`https://ark.cn-beijing.volces.com/api/coding/v3`，`ark-` 前缀 key），未发送任何仓库材料：探测只在沙箱工作区内生成随机 token 文件并读回。
+
+隔离与边界：`.local/issue16-ark-verify-20261008/` 保存脚本与结果；探测使用独立的 `state/model-probe-ark-20261008/registry` 注册表、候选 `3da7fce7` 的两份克隆（探测工作区与运行检出）与独立 WORKFLOW 副本。活动注册表 `/var/tmp/innovation-symphony-linux-runtime/state/model-services.json` 复核未变（SHA256 `d4e7e10f…`），冻结的 GH-16 工作区未被读写，探测工作区事后无残留文件。
+
+真实通道核实（直接调用，未打印密钥）：`responses` 端点可用，`deepseek-v4-1-flash-260910` 与 `DeepSeek-V4-Flash` 均返回 200；`reasoning.effort` 的 high／minimal／none 均被接受；显式发送 `text.format=json_schema` 时返回裸 JSON `{"token": "…"}`，说明该通道本身支持结构化输出。
+
+角色探测（候选 `3da7fce7` 的 `deepseek_responses` 适配器 + 既有沙箱探测入口）：coder 角色 **工具执行通过**（模型在 `/workspace` 用 `exec_command` 读回随机 token，`exit code 0`），但 **结构化输出未通过**——最终回答是 ```` ```json … ``` ```` 围栏，未按严格 schema 返回裸 JSON，探测按既有规则判定 `model_inference_validation_failed`。同一探测链对 OpenAI 预设 gpt-6.1-sol 的 coder 角色通过（工具＋结构化），说明探测入口本身有效，差异在 DeepSeek 这条路由；Codex 会话亦记录 “Unknown model … fallback model metadata”。证据在 `ark-coder-evidence.json`、`verify-coder.log`、`verify-openai-control.log`、`summary.json`。
+
+结论与边界：GH16-A03 仍**未通过**，DeepSeek／火山方舟角色不能标记为真实账号已验证；直接通道支持 schema，因此下一步属于代码修复（让该路由实际携带并强制 `text.format`，例如声明模型能力或由适配器补齐请求），不是所有者提供的条件问题。reviewer 角色探测未单独执行（同一失败面），GH16-A07 内网验收与 GH16-A11 标准 View 检查仍未做，Draft 也未发布。本轮不合并、不切换服务、不派发新任务；源码未 Git 提交或推送。
+
+
+## 2026-10-08 20:58 CST：IS-088 修复外部交付崩溃与 DeepSeek 结构化输出
+
+来源：所有者要求“本地修复那个崩溃，修复结构化输出”。
+
+崩溃根因与修复：`ExternalDraft.ready/2`（`delivery.ex:132` 同）用 `Keyword.fetch!(opts, :ready_label)`，而我的 operator 续跑 `opts` 只有 `owner_idle`／`on_message`；控制器路径在 `mvp.ex` 的 `execute_claimed/5` 会补 `ready_label` 与 `tracker_settings`。已在 `.local/issue16-budget-resume-20261008/run.exs` 的 `context.opts` 内按控制器合同补上两项（`tracker_settings` 取该 WORKFLOW 解析后的 tracker，避免未启动应用时的惰性回退），并新增 `check-delivery-opts.exs` 前检：`ready_label=ready`、`tracker_settings` 通过 `GitHub.Client.validate_settings`，确认原 `KeyError` 路径不再出现。该修复只影响 operator 入口；后续真正发布 Draft 时才能确认端到端。
+
+结构化输出根因（抓包证据）：用带 TLS 的本地捕获代理把 codex 发往方舟的请求原样记录下来（`.local/issue16-ark-verify-20261008/capture/requests.jsonl`）。codex **确实**发送了 `text.format = {type: json_schema, strict: true, name: codex_output_schema, schema: {...}}`。对抓到的原始请求逐项重放证明问题在渠道侧：**只要同一请求声明了 tools，方舟就返回带 ```json 围栏的文本、不执行 schema**；去掉 tools 后同一 payload 返回裸 JSON；`type: json_object` 带 tools 也返回裸 JSON。另测 strict 缺省、`parallel_tool_calls=false`、`tool_choice=none/required`、非流式、推理关闭均不改变结论；`/api/v3` 路线对该账号未开放对应模型（404）。
+
+代码修复：隔离检出 `/var/tmp/innovation-symphony-fix`（候选 `3da7fce` 的克隆，分支 `codex/issue16-structured-output-fix`，提交 `5f671af`，补丁 `structured-output-fix.patch`）新增 `SymphonyElixir.Mvp.StructuredOutput.decode/1`，在 `Review.parse`、`Recovery.parse` 与角色能力探测三处改为“裸 JSON，或恰好一个 ```json 围栏”，解码后仍走原有语义校验；其他形状（多个围栏、非 json 围栏、前后散文、拼接 JSON）继续拒绝。相关 64 项测试通过（新增 helper 用例与更新后的 recovery 合同断言）。
+
+真实账号复验：用修复后的代码对同一方舟账号、候选 `3da7fce` 的隔离工作区重跑既有角色探测，**coder 与 reviewer 两个角色均通过**（`fix-verify-coder.log`、`fix-verify-reviewer.log`、`fix-summary.json`；两次 rollout 显示模型确实先执行 `exec_command` 读回随机 token，再以 ```json 围栏返回），证据绑定的验证时间 20:56 CST、有效期 24 小时。
+
+完整测试：修复检出跑全量 `mix test` 得 **806 项通过、0 失败、6 项既有跳过**（耗时 293s，未含覆盖率与 Dialyzer）；此前相关聚焦用例为 64 项通过。
+
+边界：这次修复等于**所有者授权下放宽“必须是无围栏裸 JSON”这一格式断言**——渠道不执行 schema 的事实被记录在案，结果仍由本地按原语义校验；未放宽任何其他断言，未改动冻结检查、基线或活动注册表（SHA256 `d4e7e10f…` 复核未变），冻结的 GH-16 工作区未被写入。修复只在隔离检出提交，未推送、未进入冻结候选，冻结候选 `3da7fce` 仍不含此改动；任务仍为 `awaiting_external`，Draft 尚未发布，独立 Review 与 GH16-A07／A11 仍待办。
+
+
+## 2026-10-08 21:20 CST：IS-089 把结构化输出修复作为新候选交回任务
+
+来源：所有者要求“把这个修复作为新候选交回任务跑检查＋独立 Review”。`awaiting_external` 原本只有“外部证据”入口（不允许代码返工），因此新增受控入口。
+
+前置后勤修复（崩溃封存）：IS-086 的续跑在交付路径崩溃时未执行 `OperatorRecheck.complete/2`，留下孤儿锁 `operator-recheck.lock`（内容 `issue16-budget-resume-20261008`）且缺 `completion.json`，使后续审计链的前驱校验失败。确认该用户服务 failed／inactive、MainPID=0、无在留进程后，用 `.local/issue16-external-repair-20261008/close-crashed-operation.py` 依记录事实写入 `completion.json`／`crash-closure.json`／`head.json`（结果标为 `{:error, {:mvp_operator_crash, :delivery_ready_label_missing}}`，绑定 `.local/issue16-budget-resume-20261008/crash-journal.txt` 与 `receipt-before.json` 摘要、当次操作留下的回执摘要 `236cd765…`）并释放锁。这是操作者对崩溃的封存，不是程序自报完成。
+
+一次操作失误与纠正：新入口的首次预检并非零副作用——缺少 `repair_feedback` 时会落到存储的 review／diagnosis 分派，实际执行了一次 diagnosis 模型调用（attempt 16），由该 diagnosis 建立 source=`diagnosis` 的新 pending handoff `external-1791465124134-s0NsRKRkQxs6`；候选、工作区、检查与历史未变，未执行编码轮，也未产生新 PR。已修：`resume_mode_guard` 现在先校验操作者反馈，缺失或畸形立即拒绝；随后预检 5 秒完成、无模型调用。
+
+新入口：`Executor.resume_external_repair/3`（绑定模式 `:external_repair`，操作目录 `.local/issue16-external-repair2-20261008/`）。它要求 awaiting_external＋pending handoff，绑定精确候选、工作区摘要 `f272b2d4…`、冻结检查、回执恢复策略、用量与返工计数，校验操作者代码缺陷反馈（`kind=code_defect`，含 reason／required_evidence／handoff 与带补丁说明的 operator_diagnostic），经 `OperatorRecheck` 锁后进入既有 `rework` 路径。**不增额、不改策略**：沿用回执已授权的墙钟延长（108000000 ms）。
+
+预检（零副作用）五项拒绝符合预期：缺反馈、畸形反馈 → `:mvp_repair_feedback_invalid`；带墙钟增额 → `:mvp_recovery_wall_extension_invalid`；错回执摘要 → `:mvp_resume_binding_mismatch`；错工作区摘要 → `:mvp_recovery_workspace_digest_mismatch`。
+
+运行：`innovation-symphony-issue16-external-repair2.service`（InvocationID `5d681098…`）21:13:33 启动；21:13 diagnosis（attempt 16）返回 `{"action":"repair_code"}`；21:15 第 7 轮 coder（attempt 17）开始，会话 rollout 显示正在写 `structured_output.ex` 与 `structured_output_test.exs`。回执 status=coding、`operator_recheck=issue16-external-repair2-20261008`、rework 6、agent attempts 17、候选仍为 `3da7fce`。检查与独立 Review 结果、以及是否再次进入 awaiting_external 或交付 Draft，随后如实记录。
+
+
+## 2026-10-09 02:06 CST：IS-090 准确候选 5405bcec 的真实 DeepSeek 与标准 View 补证
+
+来源：所有者要求“对 `5405bcec` 重跑真实方舟双角色验证（补 A03），以及跑标准 View 检查（补 A11） A07目标是指什么”；随后明确改为“A03使用ccswitch的deepseek官方api”。后者替代本轮方舟通道选择，不改变活动模型注册表、冻结任务合同或正式检查策略。
+
+准确候选为 `5405bcec5d26c5444581c4cfa4b19a4784354a4a`。从 GH-16 固定 Git 对象克隆独立运行目录 `/var/tmp/gh16-reverify-runtime-5405bcec-20261009`，重新编译 86 个 Elixir 源文件，逐文件绑定完整源码及编译 BEAM 摘要。标准 View 入口在该检出执行，全部产物、完整日志、角色结果和候选绑定封存于 `.local/issue16-reverify-5405bcec-20261009/verification-summary.json` 及同目录文件。
+
+GH16-A03 真实探测通过：使用 cc-switch 的 Codex「DeepSeek」提供商 `ce4e0b5a-f6a3-47f3-97af-f7e3decc7600`，原连接 `https://api.deepseek.com`、Responses 协议、请求型号 `deepseek-v4-flash`；原配置没有显式 reasoning effort，独立预设保留空 parameters，不自行登记为 high。密钥由只读 SQLite 查询后仅注入宿主进程环境，使用独立注册表与空 Git 合成工作区；模型材料只有随机 token 文件与能力提示，不发送真实仓库源码。coder 和 reviewer 均实际执行 `exec_command` 读取随机 token，并产生通过既有语义校验的结构化结果；两个探测工作区实际均只读。能力证据分别在 02:05:41／02:05:57 CST 生成，24 小时有效，服务端实际型号仍 unknown（原 proof.actual_model=null）。两个原生沙箱结果均 cleanup_complete、export_complete、descendants_cleaned=true；原始工具、rollout 摘要和资源结果自包含保存。
+
+GH16-A11 标准 View 检查通过：完整 `scripts/run_view_checks.py`，38 项 Python、11 项 JS，零失败／错误／跳过；固定迁移结果逐值一致、实际 self_check HTML 生成、8 种入口、独立 Linux 子进程／HTTP／恢复集成通过，源码前后相同且临时服务停止。Node 24.19.0、Playwright 1.62.1、Chromium 151.0.7922.34 实际执行 9 组浏览器检查，含设置页键盘、双仓库双角色、409／503 保留草稿、刷新及窄屏。标准入口原生 formal_acceptance=false、synthetic=true、real_windows_wsl=false 保留；本次结果证明完整仓库 View 检查，尚不等于补证后的独立 Reviewer 批准或真实内网部署验收。
+
+准备失败如实保留：独立 WORKFLOW 初次缺 GitHub token，尚无模型调用；用不参与网络调用的合成 tracker token 且 enabled=false 满足加载合同。最小探测工作区初次没有 `.git`，可信 runner 的路径检查失败，两个角色均在推理前得到 execution_environment_unavailable，被外层归为 model_inference_validation_failed；用附加原始错误诊断定位后仅初始化空 Git，重新完成两个角色。没有扩大桥权限、修改生产 runner 或用失败记录冒充通过。直接官方 `/models` 与最小 `/responses` 诊断均 HTTP 200，其结果不替代角色工具能力证明。
+
+GH16-A07 的目标是获准内网入口的实际访问控制：授权管理员可访问，未获准来源被拒绝，管理 listener／View 保持 loopback 且管理端口不直接暴露；核实获准代理地址、HTTPS/TLS、来源限制及日志不记录令牌或请求正文。当前仍缺具体获准内网地址／域名、允许访问来源及代理环境的实机证据；文档模板或 loopback 单元测试不作为真实部署通过。本轮只解释目标，没有登记新的网络部署选择或执行安装／防火墙变更。
+
+收尾：活动注册表 SHA256 `d4e7e10f43f39871826eea8a128aaf8d2db36be49ceb4c6fc3d721482e19cf11` 前后一致；GH-16 候选 SHA 与工作区清洁状态前后一致，未修改任务回执或补造审计导入，未派发任务 coder／Review、提交、push、发布 Draft、合并或切换服务。A03 与 A11 检查产物已保存，后续仍需经原审计入口由同一候选独立 Reviewer 审阅；A07 仍是外部停点。
+
+
+## 2026-10-09：IS-091 创建 GH-16 Draft PR #17 并可信对账
+
+来源：所有者要求“创建一个PR”。先核实远端 main=`14764322043929a01f6da4892451ac720da297a7`，不存在 GH-16 任务分支或既有 PR；原回执 status=awaiting_external，候选=`5405bcec5d26c5444581c4cfa4b19a4784354a4a`，第9轮两项正式检查退出0，独立 Review approved=false 且仅列 A03／A07／A11 外部条件。不可变交付意图及 review/check 原始摘要全部复核有效。
+
+发布只使用独立固定检出的既有候选，未提交或混入主工作区改动。HTTPS 推送因 gh OAuth 缺 workflow scope 被 GitHub 拒绝，远端 ref 未创建；改用现有 SSH 凭据与仅允许远端分支不存在的精确 lease 推送成功。首次 gh pr create 返回 GraphQL EOF，随后 GraphQL 与 REST 两路只读查询均确认没有 PR，才改用一次 REST 创建。实际 [Draft PR #17](https://github.com/dailiuyi/innovation-symphony/pull/17) 已创建并附加本聊天，标题为“GH-16: View 按仓库设置双角色默认模型，接入 DeepSeek 与思考深度”。远端 read-back 确认 open、draft=true、原任务 head 分支、准确候选 SHA 与 base=main。
+
+PR 描述逐字保留原不可变待验收意图，以便原审计链继续；其中 A03／A11 缺证陈述对应第9轮独立 Reviewer 当时所读材料。IS-090 已新增官方 DeepSeek 双角色及标准 View 通过证据，但这些尚未导入并被新的独立 Reviewer 接受，未将原描述或验收状态手改成通过。
+
+运行可信 `mix mvp.reconcile` 只读核对远端身份与描述后，程序关联原任务回执：pull_request=PR #17、external_delivery.status=delivered、status=awaiting_external。原 candidate、正式检查、Review、不可变 intent、外部 handoff 与预算未变；没有手改回执。操作前后回执、REST 请求／结果、远端 read-back 和对账日志保存在 `.local/issue16-pr-create-20261009/`，result.json 记录全部发布尝试及准确状态。
+
+本轮已实际发布任务分支并创建 Draft；没有合并、安装、服务切换或新增任务派发。A07 实际内网验收与新增证据的同候选独立 Review 仍待完成。
+
+
+## 2026-10-09：开发 main 更新与未提交差异整合（IS-092）
+
+所有者要求“拉取main分支最新代码 处理diff”。开发工作区从 `169ff8e` 快进至远端
+`6230f40`（PR #17 的合并），原始 34 份 tracked 修改及 3 份 untracked 文件先保存到
+源码树外 `/home/innovation/.codex/workspace-backups/innovation-symphony-main-20261008T184620Z/`，
+包括二进制补丁、原 HEAD／状态清单及 untracked 压缩包；另保留 stash
+`2c4fb5d191984e026cd61913fb1bd2cc0ceb2f14`。未删除备份或运行数据。
+
+恢复补丁产生 19 份文本冲突和两份同名新文档碰撞。核对确认大部分 Linux、AppServer、
+Draft、恢复及 View 修复已经进入 main；采用远端后续的原生客户端绑定、模型服务冻结、
+rootless 和可信采集保护，避免把旧补丁重复应用或回退。原两份 untracked 文档与新
+main 逐字节相同，无须再复制。保留尚未发布的本机操作记录、精确历史 SHA256 的
+baseline 临时夹具维护和三个相关回归用例；当前源码自身的测试初始化已修复，不扩大
+历史维护白名单。独立 Reviewer 已核对脚本与 View 三方差异。
+
+原远端 GH-16 合同与本机安装记录都用了 IS-079；决定文档将前者标为
+`GH16-IS-079` 并说明任务规格中的原编号按 GH-16 上下文解释。两条来源和授权范围
+均保留，本机后续 IS-080 至 IS-091 不改号、不重写历史。
+
+本次只更新开发工作区，保留剩余改动为未提交状态；没有新增 Git 提交、推送、PR
+合并、安装、服务切换或任务派发。运行版本不因开发 HEAD 前移自动升级。
+验证日志位于上述备份目录，完成结果在下方补记。
+
+
+### IS-092 本轮验证结果
+
+- 独立 Reviewer 三方核对和最终差异复核通过；`elixir/` 与 `view/` 源码均等于准确 main。
+- 初次默认 PATH 脚本检查：111 项、0 失败、22 项跳过；随后补齐既有工具链路径，
+  在原生客户端及私有 HOME／CODEX_HOME 下重跑：111 项、0 失败、2 项跳过。
+  余下两项要求另行配置的宿主沙盒集成，不登记为已执行。
+- 完整 Elixir `make all`：格式、公开函数规格及严格 Credo 通过，815 项、0 失败、
+  6 项既有跳过，覆盖率 100%，Dialyzer 0 错误，整体退出 0。
+- View 标准 `run_view_checks.py` 退出 0：Python、JS、固定迁移比较、self_check、
+  各调用入口、独立 Linux 合成集成及设置页／合成浏览器验收通过，
+  Playwright 1.62.1、Node v24.19.0。这是源码与合成检查，不代替生产内网或真实账号验收。
+- 依赖获取日志报告既有依赖安全公告，本轮没有变更依赖版本；这些提示未使
+  `make all` 失败。详细日志保留在备份目录的 `scripts.log`、`elixir.log`、`view.log`
+  及 `view-results/code-check-result.json`，`verification.json` 三项均为 0。
+- 最终 Git 状态：本地 main 与远端 main `6230f40b6cf82a2cd1998f165d42db9911b774e2`
+  一致，无冲突、无暂存；保留 5 份 tracked 修改和 1 份 untracked 回归文件，均未提交。
+
+
+## 2026-10-09：IS-093 最新 main 本机部署完成
+
+来源：所有者在 IS-092 整合完成后明确要求“部署最新的代码”。只读远端核对确认
+main 仍为 `6230f40b6cf82a2cd1998f165d42db9911b774e2`，本次部署该准确提交。
+新固定 worktree 为 `.local/releases/main-6230f40-20261009/`，tracked 源码与
+main 一致；主开发工作区的未提交维护、测试和文档保留，未新增提交或推送。
+
+使用既有 OTP 28.5／Elixir 1.19.5 工具链及原依赖锁重新构建 escript，退出 0，
+二进制 SHA256 `53aec8226d4b22a460999cbaf5b83ebb0683c224429b113596220eb9e3f4c7a4`。
+准确版本只读 preflight 通过，issue_count=1；核实唯一 open/ready 为已有回执的
+GH-16。切换前 running=0、retrying=0，没有在途 operator 服务；不自动重领原任务。
+同树 Elixir／View 源码完整门禁沿用 IS-092 的 815 项／0 失败／6 跳过、100%
+覆盖率、Dialyzer 0，以及完整 View 合成浏览器结果。本次另跑准确 release 的
+View self_check 和配置读取，退出 0；部署核验不冒充再次完成全量门禁。
+
+原启动器、runtime-env、WORKFLOW、View 配置、服务定义、回执／证据摘要、
+SQLite 在线备份和未提交补丁在该 release 的 `deployment-backup/`。仅将
+`.local/start-symphony.sh` 和 `.local/launch-view.py` 固定路径更新至新 release，
+停启两个既有用户服务。控制器 PID 253143，实际 cwd 与 escript 路径指向该安装；
+View PID 253144，加载该 release 的 Python 源码。两个服务 active/running，
+NRestarts=0，控制器监听 127.0.0.1:4000，旧只读 View 保持 0.0.0.0:8613。
+
+活动 WORKFLOW、model-services.json 和 View 配置逐字节保持；原领取 enabled=true
+及既有角色、预算、隔离配置保留，没有切换 rootless 工作流或更新 root 桥。
+3,084 份状态／证据文件前后摘要完全相同，639 条 SQLite transitions 原记录
+逐行仍在；attempts=7、sessions_db=65、evidence_files=53、log_files=1 保留。
+原控制器内存中的 GH-16 首轮 input_required blocked 记录已归档，重启后的 API
+counts 为 running=0／retrying=0／blocked=0；这不是持久任务停点被清除，原
+GH-16 回执仍 awaiting_external，全部历史字节不变，也没有由本次部署续跑。
+
+loopback、当前内网地址 `http://192.168.31.144:8613/` 和控制器首页均 HTTP 200。
+新 View 实际采集 status=ok，7 tasks、3 stories、65 sessions、1 runtime。
+真实 Chromium 151.0.7922.34／Playwright 1.62.1 打开本机和内网 URL，通过页面
+加载、真实采集、设置页新 UI 及无脚本错误检查；该内网 URL 由本机访问验证，
+其他设备实际访问未测。IP 为本次 Wi-Fi 地址，替代上次 DHCP 地址 192.168.0.44。
+
+模型管理配置仍未启用：新版设置页代码已部署，但既有 View 配置未提供独立
+loopback 管理地址、管理员凭据和获准代理／TLS／来源名单，管理请求返回 403。
+本次不自行登记这些新目标、不开放设置写入口，不能将代码升级记作 GH16-A07
+真实验收通过；真实账号补证和原任务独立 Review 仍遵循原审计入口。
+
+最终证明为该 release 的 `deployment-result.json`，另有 `build.log`、
+`controller-preflight.log`、`view-preflight.log` 和 `deployment-browser-result.json`。
+回退入口 `deployment-backup/rollback.py` 已做语法核验但未执行：仅在当前控制器
+没有运行／重试任务、且运行版本匹配时，恢复备份的两个启动器并重启原服务，
+回到 `1476432`；保留新 release、配置、任务和数据，不恢复覆盖旧 SQLite。
+保存、构建、安装与服务切换已完成；文档仍未提交，没有云部署或远端写入。
+
+
+## IS-094 本机模型管理运行配置（2026-10-09）
+
+运行代码沿用 main 6230f40 固定 release。新增用户服务 innovation-symphony-model-settings.service 和 innovation-symphony-https.service；View 改为回环监听，控制器不重启。Nginx 使用 Ubuntu 软件包解包后的本机独立二进制，不安装或修改系统 Nginx。HTTPS 代理保留 Host、Origin 和 Authorization，不记录访问日志；限制来源为当前 LAN 192.168.0.0/23 与本机 127.0.0.1。原 LAN HTTP 8613 重定向到 HTTPS 8443。
+
+本机配置目录 `.local/model-management-20261009/`，管理员令牌 `.local/runtime/secrets/model-settings-admin`（0600），CA 公钥 `Innovation-Symphony-CA.crt`。其他设备须导入该 CA，IP 改变时须更新来源、管理 origin 与证书 SAN。备份包含旧 View 启动器、配置、WORKFLOW、模型注册表和 SQLite；`python3 .local/model-management-20261009/rollback.py` 可停用新服务并恢复旧 View 配置，不恢复或覆盖任务状态。
+
+模型注册表中原双角色验证已过期，读取仍可用，但保存受模型验证有效期约束；不伪造续期、不修改默认模型。接口检查结果记录在本机 `verification.json`；当前主机测试不代表其他设备已完成证书信任或真实模型账号重新验证。
+
+IS-094 主机实测：CA 链和 IP SAN 校验通过；HTTPS 页面、鉴权后的仓库列表与模型设置均 200；无令牌 401，错误 Origin／Host 与禁止来源 403，无效保存请求 422，HTTP 跳转 308。WORKFLOW 与模型注册表 SHA-256 与启动前备份完全相同；控制器 PID 保持 253143。View 本机包装器启用 SO_REUSEADDR，以便同端口在不同本地地址上分别绑定代理和 View；没有启用 SO_REUSEPORT。
+
+
+## IS-095 真实模型重新验证（2026-10-09）
+
+固定 main 6230f40 上，以现有 Codex 登录验证 gpt-6.1-sol/high，以 CCSwitch codex DeepSeek 官方 API 凭证验证 deepseek-v4-flash（Responses、原空参数）。四项编码／Review 角色探测全部退出 0，真实沙盒工具读取随机文件及结构化 token 输出通过。服务未返回可核实的 actual_model，保留 null，不推断服务端型号。证据有效 24 小时，Codex 到 2026-10-10 14:34:04／14:34:29 CST，DeepSeek 到 14:34:42／14:34:53 CST。
+
+最初失败为临时证据位于 /tmp，被既有 bridge 状态路径策略拒绝，未开始模型调用；将本次 TMPDIR 调整到 state/model-revalidation-20261009/tmp 后通过，未放宽策略。原失败日志与独立注册表保留在 .local/model-revalidation-20261009/。通过 CAS 将新增 DeepSeek 预设和四项真实验证写入活动注册表，保留已有默认及历史证据。管理员凭据受限保存在 .local/runtime/secrets，runtime-env 按引用装载，不记录秘密。
+
+HTTPS 管理接口确认两个型号的双角色组合均 available；以原默认执行真实保存回读成功，未切换默认。管理后端重新加载凭据，控制器在运行／重试均为 0 后重启加载；任务状态和领取授权不变。能力探测不是真实 Issue 交付验收；未提交、推送或合并。最终主机管理验收见 final-result.json。
+
+
+## IS-096 DeepSeek 档位登记和真实验证（2026-10-09）
+
+官方 Responses 参数文档确认 reasoning.effort 的实际值 none／low／high／max。none 关闭思考，low／high／max 为三档思考强度；medium／xhigh 仅为 high 的兼容别名。本次没有将别名重复登记。此前页面固定参数提示来自空参数目录，不代表官方 API 无思考控制。
+
+沿用 CCSwitch 官方渠道凭证、固定 main 6230f40、deepseek-v4-flash 和受控 Codex AppServer；四档 × 编码／Review 共八项真实沙盒工具读取及结构化输出探测全部通过。通过 CAS 更新目录和精确参数绑定的验证证据，版本、原空参数预设、默认值及原有证据完全保留。主机 HTTPS API 回读的八个组合均 available；证据有效 24 小时，不把未知实际服务端型号补成请求型号。
+
+脚本、八项结果、CAS 安装及管理回读证据在 `.local/deepseek-efforts-20261009/`。目录元数据的 reasoning_mode 只保存于对应 discovery 通道记录；初次安装因错误的顶层字段被校验拒绝，原注册表保留，移除该字段后标准保存成功。修改只涉及本机受管注册表和操作文档，无生产源码补丁，无默认模型切换、任务派发、提交、推送或合并。浏览器读取实际 HTTPS 服务并检查双角色四档选择，草稿取消后恢复原默认，不保存临时选择；证书链验证由 HTTPS API 完成，Chromium 检查仅忽略本机 CA 尚未加入其信任库的问题。
+
+
+## IS-097 Codex GPT 目录与档位更新（2026-10-09）
+
+通过固定 main 6230f40 的 AppServer model/list 刷新当前 ChatGPT 登录渠道目录。8 个常规模型：gpt-5.5、gpt-5.6-luna／sol／terra、gpt-6-astra／luna／sol、gpt-6.1-sol；另有渠道返回的 gpt-reserve 备用条目。gpt-5.5 为 low／medium／high／xhigh，其余目录条目为 low／medium／high／xhigh／max。官方 API 部分型号支持 none，但当前 Codex 渠道未提供该值，保留差异，不自行补出。官方 GPT-5.5 退役日期为 2026-10-14，仅适用于 ChatGPT 登录产品，不外推到 API。
+
+全矩阵共 88 个双角色组合，已完成真实验证中 67 个通过；其余 21 个依据所有者“都可以用 你直接全部添加就行”明确确认，以 source=manual 的管理员 attestation 登记。原失败／超时和实际通过证据保留，不称 88 项全部实测通过。没有伪造 actual_model，人工与真实记录分别保存。初轮桥接服务串行处理与完整检出复制耗时影响部分超时；后续采用具有固定 Git HEAD 的最小合成工作区、串行探针互斥和仅文件读取的探针专用说明，真实判定仍要求工具成功及精确结构化随机 token。用户补充指令后停止测试，未执行准备的重试流程。
+
+通过标准 ModelServices.save 的版本比较与原子保存更新活动注册表，未修改生产源码、当前预设参数／版本或双角色默认，DeepSeek 目录复核未变。HTTPS 管理回读确认 9 个目录条目的全部角色／档位均 available；原默认值的保存及回读返回 200。真实 HTTPS Chromium 检查各角色全部型号和档位的原生下拉框，逐项选择后取消草稿，未切换默认。服务不因目录更新重启。
+
+配置快照、models.json、real probe logs、人工确认来源、manual-confirmations.json、management-result.json 与 browser-result.json 位于 .local/gpt-catalog-20261009/。保存与本机运行更新不表示提交、推送、PR 合并或真实 Issue 交付验收。
+
+
+## IS-098 管理登录持久化安装（2026-10-09）
+
+开发源码 view/app/web/assets/js/model-settings.js 增加成功登录后的令牌保存、上次仓库保存、自动恢复、退出清除及 401 清除。只有成功鉴权后保存令牌，令牌不渲染到页面正文。已调整对应合成 DOM 与浏览器回归的刷新／退出预期。
+
+当前固定 main 6230f40 的后端代码保持原安装，View 使用 .local/persistent-admin-login-20261009/web 前端覆盖目录；启动器显式选择该 WEB_DIR，View 已重启。该部署为固定后端加本地前端补丁，不宣称运行前端仍与 main 完全一致。旧启动器备份 launch-view.before.py，恢复它并重启 View 可回退前端；已经保存到浏览器的令牌应通过退出按钮清除。控制器和模型管理后端无需重启，模型默认和注册表不因该功能改变。
+
+实际 HTTPS Chromium 持久浏览器配置验证：成功登录保存、刷新免输、关闭后重开免输、退出清除、退出后刷新仍清除、模拟 401 清除。401 夹具只拦截测试浏览器响应，不修改后端令牌。结果 .local/persistent-admin-login-20261009/browser-result.json；测试浏览器资料在完成后删除，不含用户浏览器资料。生产前端已更新，其他浏览器首次成功登录后开始记住登录。没有提交、推送或合并。
+
+
+## 2026-10-09：修复 GH-16 首轮会话与检查证据的 View 关联
+
+所有者在查看“归属未记录”分析后要求“修复一下”。本次修复历史首轮布局的展示关联，保留真实失败、超时、用量和任务轮数，不改任务回执或派发任务。
+
+- 首轮 `evidence` 是回执证据根目录；`coder_attempt_3` 的事件原先无显式 round，View 仅用 `round-N/` 路径识别，导致 `01a119c8` 和根目录 `check-1.log` 未归类。现在按回执中的精确证据目录关联，冲突保留未知；后端给证据传递显式 round，前端与返工摘要使用同一字段。
+- 首次超时 `01a11993` 没有 recovery 尝试事件。只读核对初始接续审计保存的同仓库／Issue／工作区／base 原回执、当前仍保留的同一沙箱产物，并要求该原沙箱恰好一个已采集会话后，关联原第 1 轮。无唯一证据不猜测；编码超时结论还要求原 blocked、无候选及准确 timeout 原因。
+- Elixir 源码的尝试开始事件新增显式 round，尝试管理 25 项测试和两文件格式检查通过。此项源码尚未安装到控制器；本次不切换控制器。
+- Python 10 项轮次回归通过；View Python 全部 42 项在隔离管理后端离线条件后通过。直接运行原套件有一项已有测试因硬编码 8765 端口而碰到本机管理服务（实际 401、期望离线 503）；隔离只作用于测试运行器的 forward mock，未修改该测试或管理服务。JS 全部 12 项通过。没有执行完整仓库门禁。
+- View 以 `.local/round-association-20261009/app` 独立补丁副本加载，网页副本保留已有长期管理员登录修复；只重启 View。`.local/round-association-20261009/launch-view.before.py` 保留原启动器，恢复它并重启 View 可回退。固定 main 安装目录未改。
+- 真实 `/api/snapshot` 与 Playwright 1.62.1／Chromium 151.0.7922.34 检查确认：两个会话均 round=1，首次 outcome=timeout、续跑 attempt=3/outcome=completed；根目录检查 round=1、exit=10、799 项／1 失败／6 跳过保持。页面仍 9 轮，无 loose 分组、无 JS 错误；截图与报告在该本地补丁目录。GH-16 仍 awaiting_external。
+- GH-16 回执 SHA256 和控制器 MainPID 与安装前相同。本次源码及说明已保存，未 Git 提交、推送、合并或发布；本机 View 修复加载与控制器源码修改分别记录。
+
+
+## IS-099 身份绑定修复与本机恢复（2026-10-09）
+
+重启后管理 GET 返回 200，所有 GPT 组合为 model_catalog_channel_unverified，而 DeepSeek 正常；不是预设从注册表删除。auth.json 的 OAuth 刷新改变全文摘要，查不到旧渠道目录和精确绑定的验证。ModelServices 的 ChatGPT auth_home 身份改为一致的 account_id、JWT issuer、subject 的带版本摘要，令牌轮换与格式变化保持身份；未知／不一致格式保持旧摘要语义，不改变 env API key 身份规则。
+
+新增回归覆盖登录文件排版、JWT 时效及三个令牌轮换保持身份，账号／用户切换、JWT 损坏／account_id 不一致及 API key 模式切换失效。模型服务 27 项定向测试通过；初次继承真实 CODEX_HOME 导致既有旧迁移夹具失败，改用隔离空 CODEX_HOME 后 27 项全部通过，保留诊断，不修改该旧断言。本轮只跑适用定向检查与 escript 构建，不称完整门禁已重跑。
+
+安装到 detached .local/releases/main-6230f40-auth-20261009：基于 6230f40 加一份 ModelServices 源码修复，不宣称与远端 main 字节相同。准确源码／escript 摘要在 .local/auth-identity-fix-20261009/source-identity.json。当前前端继续使用 IS-098 本地覆盖。控制器空闲时停止，切换启动器和独立管理后端，真实刷新当前 Codex 目录，按 IS-097 人工确认重新绑定 88 个角色／档位组合，source=manual；旧绑定与 inference 历史保留。恢复控制器后未更改默认 medium、预设版本或 DeepSeek 目录，未重启任务、修改旧冻结服务或模型调用。
+
+HTTPS 管理和 Chromium 原生下拉框检查确认双角色均可选择所有 9 个 GPT 目录条目和对应档位。管理服务再次重启后回读确认双角色各 44 个 GPT 组合仍 available。快照、启动器备份、source-identity.json、management-result.json 与 browser-result.json 位于上述本机修复目录。回退需恢复两个旧启动器及备份注册表后重启管理／控制器；不得覆盖后续用户保存或任务证据。未提交、推送或合并。
+
+IS-099 静态检查边界：开发工作区全仓 Credo 提示 attempts.ex:83 的并行未提交改动长行；该文件属于本次范围之外，保留。检查真实安装的隔离 release，避免把其他工作区改动的检查结论混为本次修复结论。
+
+## IS-100 领取前执行环境就绪门槛（2026-10-09）
+
+所有者要求补齐“实际任务使用已批准执行环境，并在领取前确认编码、正式检查和真实验收准备条件”。本轮代码从独立 `codex/execution-readiness` 工作区合回开发仓库；保留已有模型身份、Recovery、View 及文档未提交修改。当前活动服务仍使用原固定安装，不能将以下源码结果登记为实际环境已切换。
+
+- 新增显式 `mvp.execution_readiness`：启用时要求 rootless。正常派发和活跃重试均在创建 worker/内存领取前检查；持久 `Receipt.claim` 前复查，并使用同一冻结角色快照。失败释放临时占位并保留具体缺项，不创建回执、执行 hooks、启动模型或降级后端；原冻结回执不迁移。
+- 核验实际双角色授权、身份、凭据及认证路由、原生 AppServer 与沙盒入口一致；核验固定桥策略、目录与资源、受信正式检查 inventory、工具链、worker/cgroup/网络前置、已声明 View 的固定依赖及来源、确切验收 profile 的 runner 摘要。报告绑定请求和服务摘要，明确 `formal_acceptance=false`。真实远端账号、镜像拉取/容器、安装配方、浏览器及候选验收仍须实际验证。
+- 最终开发仓库 `make all` 成功：828 项、0 失败、6 项既有跳过，覆盖率 100%，构建/格式/public specs/Credo/Dialyzer（0 errors）全部通过。Python scripts 全部 126 项、0 失败、22 项既有跳过。日志位于 `.local/execution-readiness-20261009/make-all-integrated-final.log` 与 `python-tests-integrated.log`。跳过与受控夹具不能证明真实 rootless 或账号验收。
+- 独立审查修正旧迁移凭据豁免、认证路由、配方工作区位置及调度重试绕过。静态分析的类型声明新增字段已补齐。整合时原 attempts.ex 新增 round 字段的长行触发已有 Credo 规则；仅将该新增字段表达为 Map.put，保留原逻辑与其未提交改动。
+- 实际只读安装核对发现 rootless 受信 View 源包缺失。已从本机 innovation-view 固定 commit `d734a087d83243530bd79f40dfbaedaabf8fe677` / tree `8a61f1a9d1aa13b7e97e0143ff3a4a33f123d73a` 的 Git 对象重建并认证，不读取真实 View 配置。ZIP SHA256 `a6849efb34a88b892a5d8773a301e490be17a85b5153985be33472ba79594bf2`，打包器与已安装固定版本一致。
+- `.local/execution-readiness-20261009/` 保存 pending WORKFLOW、桥 payload/固定来源、摘要清单、安装预览、回退脚本和 ACTIVATION.md。安装只更新独立 rootless 桥、固定来源及与当前获准任务根目录/资源一致的桥策略，原镜像/worker/受信工具身份须一致；备份、失败回滚和旧桥重启保留。临时目录故障注入验证了“来源目录创建前失败”回滚路径；它不是实机安装成功。
+- 实际 `sudo -n .../admin-install.py --apply` 被宿主 Linux 拒绝，原因 `interactive authentication is required`。没有执行管理员安装或活动控制器配置切换。活动 WORKFLOW SHA256 仍为 `54e1012970fc3c52dbdc07ed872600ba49b33d113ef76283c5183cad635e49d1`，控制器/View/两个隔离桥仍 active。高权限 Codex 文件访问不会赋予 Linux root 身份。
+- 尚待：交互管理员安装后，核验受认证桥完整报告、真实 rootless 公网/配方及三路正式检查，登记所需精确验收 profile，并在控制器空闲时安装保留现有 OAuth 身份修复的固定代码、切换新任务合同。pending `mvp.enabled=false`；`required_acceptances=[]` 未声明真实任务自动探针，不据此打开自动补证。原任务/模型默认/历史授权边界保持。
+
+本轮状态：源码和文档已保存、完整开发门禁通过；管理员安装、实际配置切换和实机候选验收未完成。未 Git 提交、推送、创建 PR、合并、派发新 Issue 或云部署。合同见 [EXECUTION_READINESS](EXECUTION_READINESS.md)。
+
+
+## IS-100 本机最新配置切换（2026-10-09）
+
+来源：所有者要求切换最新配置，并两次完成宿主管理员安装。初始就绪桥与固定 View 来源安装已核验；后续 rootless `--init` 补丁已核对受信文件摘要，rootless 桥 active。控制器和模型配置管理的实际启动入口改为 `.local/releases/main-6230f40-readiness-20261009`，最终包重启后恢复原获准 `mvp.enabled=true`，配置 `backend: rootless`、`rootless-open-v1`、`public-egress-v1` 与 `execution_readiness.enabled=true`。6 CPU、6144 MiB内存、512 PID、16384 MiB工作盘保持。
+
+registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持；切换前后顶层state文件逐字节摘要一致。View和HTTPS独立启动入口保持。没有创建/派发测试Issue、模型推理、Git提交、推送、合并或云部署。
+
+最终源码完整门禁830测试0失败6既有跳过、覆盖率100%、Dialyzer0；Python128测试0失败19明确跳过。新增真实PID namespace回归验证init回收孤儿；只读请求独立65秒截止保留GNU60秒子进程截止，真实stdout持有回归和System.cmd异常隔离回归通过，普通任务与正式门禁预算保持。
+
+实机资格以既有干净HEAD6230f40为候选，固定新rootless执行链依次通过环境探针、候选完整门禁、冻结基线与View；候选815测试/100%覆盖率/Dialyzer/构建通过，冻结基线815测试通过。四阶段memory/PID资源事件均0，export/cleanup/host_cleanup完整。先前未启用init的候选145失败、pids.max=157不得记为通过，后续重跑结果取代该失败的环境资格。最终新启动包空闲只读预检2.02秒通过，GitHub只读查询issue_count1。
+
+这些分别证明当前源码门禁和实机执行环境资格，不是某个新Issue精确候选的模型、真实账号/内网、Review及PR交付验收。`required_acceptances=[]`保持，没有虚构验收profile。固定启动包以6230f40加本地源码覆盖生成，未提交；文件摘要、完整日志、状态和原启动器/WORKFLOW备份保存在 `.local/execution-readiness-20261009/`。受信回滚备份：`/opt/innovation-symphony-rootless-bridge/readiness-backup-20261009T092747999741Z` 与 `reaper-backup-20261009T095554534683Z`。

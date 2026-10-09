@@ -106,3 +106,16 @@ test('accepted review is visible during the reviewing-to-conclude window', () =>
   cur.rounds[18].review = { approved: false, summary: 'controller decision' };
   assert.equal(roundsModel(cur).at(-1).kind, 'rejected');
 });
+
+
+test('explicit receipt round associates root evidence and preserves failed result', () => {
+  const cur = fixture();
+  cur.evidence = [{ name: 'check-1.log', round: 1, exit: 10, summary: '799 项测试，1 项失败，6 项跳过' }];
+  const rows = roundsModel(cur);
+  assert.equal(rows.length, 19);
+  assert.equal(rows[0].evidence.length, 1);
+  assert.equal(rows[0].evidence[0].exit, 10);
+  cur.evidence[0] = { name: 'round-1/check-1.log', round: null, exit: 10 };
+  assert.equal(roundsModel(cur).at(-1).n, null);
+  assert.equal(roundsModel(cur)[0].evidence.length, 0);
+});

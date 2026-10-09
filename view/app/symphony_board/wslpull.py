@@ -119,6 +119,70 @@ def _attempt_status(value, outcome):
         return "completed"
     return "unknown"
 
+def _receipt_round(receipt, directory):
+    # Match the owning directory, never a session timestamp or token count.
+    path = os.path.realpath(directory)
+    matches = {rnd.get("round") for rnd in receipt.get("rounds") or []
+               if isinstance(rnd, dict) and isinstance(rnd.get("evidence"), str)
+               and os.path.realpath(rnd["evidence"]) == path
+               and type(rnd.get("round")) is int and rnd["round"] > 0}
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _legacy_agent_runs(receipt, evidence_dir):
+    # A saved pre-resume receipt binds the old single-round sandbox to its
+    # original role. Only that exact artifact, still in the receipt, is used.
+    originals = []
+    if receipt.get("recovery") is None:
+        originals.append(receipt)
+    else:
+        for event in (receipt.get("recovery") or {}).get("events") or []:
+            if not isinstance(event, dict) or event.get("kind") != "operator_initial_coder_resume":
+                continue
+            ident = event.get("operation_id")
+            if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", ident):
+                continue
+            path = os.path.join(evidence_dir, "operator-rechecks", ident, "receipt-before.json")
+            try:
+                if _info(path).st_size <= 2_000_000:
+                    old = json.loads(_read(path))
+                    if (isinstance(old, dict) and old.get("repository") == receipt.get("repository")
+                            and old.get("issue") == receipt.get("issue")
+                            and old.get("workspace") == receipt.get("workspace")
+                            and old.get("base_sha") == receipt.get("base_sha")
+                            and old.get("recovery") is None):
+                        originals.append(old)
+            except (OSError, ValueError, TypeError):
+                continue
+    result = []
+    for old in originals:
+        rounds = old.get("rounds") or []
+        if len(rounds) != 1 or not isinstance(rounds[0], dict):
+            continue
+        number = _receipt_round(receipt, rounds[0].get("evidence") or "")
+        if number != rounds[0].get("round") or number is None:
+            continue
+        artifacts = [a for a in old.get("sandbox_artifacts") or []
+                     if isinstance(a, dict) and a.get("role") == "coder"]
+        if len(artifacts) != 1 or artifacts[0] not in (receipt.get("sandbox_artifacts") or []):
+            continue
+        path = artifacts[0].get("result_path")
+        if not isinstance(path, str):
+            continue
+        sandbox = os.path.dirname(path)
+        # Require the recorded native runtime sandbox layout and containment.
+        run = os.path.dirname(sandbox)
+        if (os.path.basename(path) != "result.json" or os.path.basename(sandbox) != "sandbox"
+                or not os.path.basename(run).startswith("run-")
+                or os.path.dirname(run) != os.path.join(root, "sandboxes")):
+            continue
+        outcome = "timeout" if (old.get("status") == "blocked" and old.get("candidate_sha") is None
+                                and str(old.get("reason") or "") in (":wall_timeout", ":response_timeout")) else "unknown"
+        result.append({"sessionsRoot": os.path.join(run, "codex-home", "sessions"),
+                       "round": number, "role": "coder", "outcome": outcome})
+    return result
+
+
 def _agent_attempts(receipt, evidence_dir):
     # Join controller attempt events to their bounded session-start evidence.
     rows = {}
@@ -178,6 +242,10 @@ def _agent_attempts(receipt, evidence_dir):
             except ValueError:
                 inside_evidence = False
             round_match = re.search(r"(?:^|/)round-(\d+)(?:/|$)", evidence_path.replace("\\", "/"))
+            recorded_round = _receipt_round(receipt, os.path.dirname(evidence_path)) if inside_evidence else None
+            if recorded_round is not None and row["round"] is None:
+                row["round"] = recorded_round
+                row["roundSource"] = "controller"
             if inside_evidence and round_match:
                 row["round"] = int(round_match.group(1))
                 row["roundSource"] = "evidence"
@@ -242,6 +310,7 @@ for root in roots:
                 if interruption:
                     rec["_execution_health"] = interruption
                 rec["_agent_attempts"] = _agent_attempts(rec, ev_dir)
+                rec["_legacy_agent_runs"] = _legacy_agent_runs(rec, ev_dir)
                 rec.pop("events", None)
                 rt["receipts"].append(rec)
                 if not os.path.isdir(ev_dir):

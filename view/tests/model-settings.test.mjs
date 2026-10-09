@@ -25,7 +25,8 @@ root = {
 globalThis.document = {getElementById: id => id === 'model-settings' ? root : null, get activeElement() { return focused; }};
 let confirm = false, confirmations = 0;
 if (!globalThis.window) globalThis.window = {};
-Object.assign(globalThis.window, {addEventListener() {}, confirm() { confirmations++; return confirm; }});
+const storage = new Map();
+Object.assign(globalThis.window, {localStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)}, addEventListener() {}, confirm() { confirmations++; return confirm; }});
 const selection = (preset, model, effort) => ({preset, model, parameters: effort === undefined ? {} : {reasoning_effort: effort}});
 const choice = (preset, model, effort, mode = 'effort', state = 'available') => ({selection: selection(preset, model, effort), provider: 'deepseek', credential_ref: 'env:FIXTURE', version: 1, reasoning_mode: mode, state});
 const options = [choice('p', 'a', 'high'), choice('p', 'a', 'max'), choice('p', 'b', 'low'), choice('p', 'switch', 'none', 'switch'), choice('p', 'switch', 'high', 'switch'), choice('p', 'fixed', undefined, 'fixed'), choice('p', 'unknown', undefined, 'unknown', 'pending_validation')];
@@ -108,6 +109,9 @@ assert(depthLabel(options[4]) === '开启思考 (high)', 'Switch control mislabe
 assert(depthLabel(options[6]) === '思考能力未知', 'Unknown capability mislabeled');
 assert(depthLabel(choice('legacy', 'gpt-legacy', null, 'fixed')) === '未指定思考参数（沿用预设）', 'Legacy null must not be labeled as depth or disabled thinking');
 assert(!root.html.includes('synthetic_admin'), 'Token leaked into rendered content');
+assert(storage.get('symphony.model-settings.admin-token') === 'synthetic_admin', 'Successful login must be remembered');
+await control('logout').fire('click');
+assert(!storage.has('symphony.model-settings.admin-token') && control('token'), 'Logout must clear saved login');
 console.log('Model settings interaction regression passed (synthetic DOM/API).');
 
 });

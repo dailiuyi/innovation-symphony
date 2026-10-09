@@ -88,8 +88,7 @@
 }
 ```
 
-后台令牌至少 32 字节，由既有受控后台环境提供，不通过 CLI 参数、WORKFLOW、浏览器
-存储或源码注册。打包入口 `elixir/bin/symphony --model-settings /controlled/manager.json`
+后台令牌至少 32 字节，由既有受控后台环境提供，不通过 CLI 参数、WORKFLOW 或源码注册；IS-098 授权页面在成功登录后将管理令牌保存在当前浏览器的同源 localStorage。打包入口 `elixir/bin/symphony --model-settings /controlled/manager.json`
 只启动 Bandit 及依赖，不启动 Symphony 调度监督器。清单缺失／损坏或令牌不可用启动失败；
 每个请求重读清单与令牌，撤权即时生效。仓库、WORKFLOW 和 state_dir 须唯一；读取时
 核验规范绝对路径、WORKFLOW 仓库身份及当前 state_dir，拒绝别名／跨仓库绑定。
@@ -108,7 +107,7 @@ POST 仅接受精确 Origin 和 application/json，有界 16 KiB 正文；View �
 Body 严格为 `revision`、`workflow_version`、`defaults`；后者只包含 coder／reviewer，
 可为兼容字符串或严格的 preset／model／parameters 对象。成功 200；CAS 冲突或忙 409；
 授权失败 401，来源／格式拒绝 403，非法选择 422，代理故障 503。错误不返回文件原文、
-环境、密钥或认证路径；auth_home 仅显示已配置引用。页面令牌仅保存在当前页面内存。
+环境、密钥或认证路径；auth_home 仅显示已配置引用。IS-098：页面在成功鉴权后将令牌与仓库选择保存在当前浏览器的同源 localStorage；刷新或浏览器重启后自动读取。退出登录和 401 清除保存的管理登录，令牌撤销仍由后端即时检查。其他设备／浏览器需首次登录。
 
 保存只修改原仓库 model-services.json 的 defaults 与 revision，不改变预设版本、
 目录和历史能力证据。保存和每次执行都校验完整组合。失败和并发冲突保留旧文件，
