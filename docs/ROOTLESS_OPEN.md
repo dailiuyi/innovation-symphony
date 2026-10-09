@@ -2,6 +2,8 @@
 
 来源：2026-10-07 用户明确要求实施本计划，并确认项目初期先放开沙盒权限、以后根据实际问题逐渐收紧。实现基线是 main `66b9b25fe55ff0f95b7f8e719b740a62e4c6f001`；原脏工作区保留。本文描述代码合同；IS-076 的独立桥安装及实机记录见 VALIDATION_ROOTLESS。桥安装不表示活动控制器已经切换或整体验收通过。
 
+领取前只读就绪检查保留命令的 60 秒 GNU timeout，并另设 65 秒 BEAM 截止，避免桥排队消息持有 stdout 文件描述符时无限等待 EOF；超时明确拒绝领取，不改变普通执行、正式检查或任务预算。这是当前工程截止参数，不是永久用户默认。
+
 ## 新配置和兼容
 
 旧任务缺少 `backend` 时继续使用原 Bubblewrap 参数与冻结合同。新配置必须显式选择 `backend: rootless`、`profile: rootless-open-v1`、`network: public-egress-v1`、带 sha256 digest 的 OCI 镜像及非 root 专用 worker。内存默认 4096 MiB，CPU 4，PID 512，工作盘 20480 MiB；这些是可调整的工程默认，并非用户永久指定参数。新配置不可用时准备失败，没有宿主回退。

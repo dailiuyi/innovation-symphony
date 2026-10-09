@@ -13,6 +13,7 @@ import shutil
 import selectors
 import select
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -21,11 +22,37 @@ from sandbox_artifacts import export_source, save_json, source_manifest
 from runtime_identity import native_client
 
 CGROUP = Path("/sys/fs/cgroup/innovation-symphony-execution")
+INIT_PATH = Path("/usr/bin/catatonit")
 BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
            "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "192.168.0.0/16",
            "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4")
 TOOLS = ("podman", "crun", "newuidmap", "newgidmap", "ip", "nft", "mount",
          "umount", "mkfs.ext4", "setpriv", "timeout", "iptables", "nsenter")
+
+
+def validate_init():
+    """Only the protected, native host init may become the container PID 1."""
+    if INIT_PATH.resolve(strict=True) != INIT_PATH:
+        raise ValueError("fixed container init must be canonical and non-linked")
+    for path in (INIT_PATH, *INIT_PATH.parents):
+        info = path.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("fixed container init and parents must be root-owned and protected")
+    info = INIT_PATH.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o005 != 0o005:
+        raise ValueError("fixed container init must be readable and executable by the worker")
+    with INIT_PATH.open("rb") as handle:
+        if handle.read(4) != b"\x7fELF":
+            raise ValueError("fixed container init must be a native ELF executable")
+
+
+def container_options(name):
+    """Shared runtime and environment-preparation container policy."""
+    return ["run", "--name", name, "--interactive", "--pull=never", "--runtime=crun",
+            "--init", "--init-path=" + str(INIT_PATH),
+            "--network=host", "--cgroups=disabled", "--user=0", "--cap-add=SYS_PTRACE",
+            "--security-opt=no-new-privileges",
+            "--hostname=symphony-task", "--workdir=/workspace", "--tmpfs=/tmp:rw,size=256m"]
 
 
 def public_destination(address):
@@ -117,6 +144,7 @@ def validate(args):
     worker = pwd.getpwnam(args.worker)
     if worker.pw_uid == 0 or worker.pw_name == "root":
         raise ValueError("worker must not be root")
+    validate_init()
     for name in TOOLS:
         if not shutil.which(name):
             raise ValueError("missing runtime: " + name)
@@ -350,10 +378,7 @@ def main(arguments=None):
 
         command(as_worker(["pull", args.image]), join_group=True)
         # No host namespace, runtime socket, credential environment or host HOME is inherited.
-        options = ["run", "--name", name, "--interactive", "--pull=never", "--runtime=crun",
-                   "--network=host", "--cgroups=disabled", "--user=0", "--cap-add=SYS_PTRACE",
-                   "--security-opt=no-new-privileges",
-                   "--hostname=symphony-task", "--workdir=/workspace", "--tmpfs=/tmp:rw,size=256m"]
+        options = container_options(name)
         mounts = [(str(resolver), "/etc/resolv.conf", "ro"), (str(volume / "workspace"), "/workspace", "ro" if args.read_only_workspace == "true" else "rw"),
                   (args.workspace + "/.git", "/workspace/.git", "ro"),
                   (args.toolchain, "/opt/toolchain", "ro"), (args.toolchain, args.toolchain, "ro"),

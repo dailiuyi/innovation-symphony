@@ -305,6 +305,23 @@ def evidence_round(name):
     return int(match.group(1)) if match else None
 
 
+def attached_evidence_round(item):
+    return item.get("round") if "round" in item else evidence_round(item.get("name"))
+
+
+def attach_evidence_rounds(items, receipt):
+    if not receipt.get("rounds"):
+        return
+    for item in items:
+        directory = os.path.normpath(os.path.dirname(item.get("path") or ""))
+        matches = {r.get("round") for r in receipt.get("rounds") or []
+                   if isinstance(r, dict) and isinstance(r.get("evidence"), str)
+                   and os.path.normpath(r["evidence"]) == directory
+                   and type(r.get("round")) is int and r["round"] > 0}
+        item["round"] = next(iter(matches)) if len(matches) == 1 else None
+        item["roundSource"] = "controller" if item["round"] is not None else "unassigned"
+
+
 def causes_for_group(items):
     reviews = [item for item in items if is_review_evidence(item)]
     checks = [item for item in items if not is_review_evidence(item)]
@@ -344,7 +361,7 @@ def rework_returns(task):
     grouped = {}
     for item in task.get("evidence") or []:
         if isinstance(item, dict):
-            grouped.setdefault(evidence_round(item.get("name")), []).append(item)
+            grouped.setdefault(attached_evidence_round(item), []).append(item)
     numbered = sorted(number for number in grouped if isinstance(number, int))
     if numbered:
         found = []
@@ -490,7 +507,7 @@ def checking_row(task):
         chosen = item
     if not chosen:
         return None
-    number = evidence_round(chosen.get("name"))
+    number = attached_evidence_round(chosen)
     title = f"第 {number} 轮 · 脚本审查进行中" if number else "脚本审查进行中"
     return {
         "kind": "gate",
@@ -622,9 +639,19 @@ def rounds_view(receipt):
     return rows
 
 
-def attach_attempts(publics, receipt):
+def attach_attempts(publics, receipt, raw_sessions=()):
     """Exact session ids link attempts to controller rounds; never infer a round."""
     links = {a.get("session_id"): a for a in receipt.get("_agent_attempts") or [] if a.get("session_id")}
+    for run in receipt.get("_legacy_agent_runs") or []:
+        prefix = run["sessionsRoot"].rstrip("/") + "/"
+        candidates = [s for s in raw_sessions if (s.get("remote") or "").startswith(prefix)]
+        # Multiple rollouts cannot be disambiguated by chronology or usage.
+        if len(candidates) == 1:
+            sid = (candidates[0].get("meta") or {}).get("session_id")
+            if sid and sid not in links:
+                links[sid] = {"round": run["round"], "roundSource": "controller",
+                              "outcome": run["outcome"],
+                              "status": "failed" if run["outcome"] == "timeout" else "unknown"}
     numbers = {r.get("round") for r in receipt.get("rounds") or [] if isinstance(r, dict)}
     for session in publics:
         link = links.get(session["id"], {})
@@ -796,10 +823,11 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
             evidence = evidence_by_receipt.get(receipt.get("_path"), [])
             evidence.sort(key=lambda item: natural_name(item.get("name") or ""))
             publics = [public_session(s) for s in matched]
-            attach_attempts(publics, receipt)
+            attach_attempts(publics, receipt, sessions)
+            attach_evidence_rounds(evidence, receipt)
             round_rows = rounds_view(receipt)
             latest_round = round_rows[-1]["round"] if round_rows else None
-            current_evidence = [ev for ev in evidence if evidence_round(ev.get("name")) == latest_round] if round_rows else evidence
+            current_evidence = [ev for ev in evidence if attached_evidence_round(ev) == latest_round] if round_rows else evidence
             role_counts = {}
             for item in publics:
                 role_counts[item["role"]] = role_counts.get(item["role"], 0) + 1

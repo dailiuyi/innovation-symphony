@@ -912,13 +912,30 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case refresh_issue_for_dispatch(issue) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        dispatch_ready_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
       {:skip, _reason} ->
         state
 
       {:error, _reason} ->
         state
+    end
+  end
+
+  @doc false
+  @spec dispatch_ready_issue_for_test(term(), Issue.t(), (Issue.t() -> :ok | {:error, term()})) :: term()
+  def dispatch_ready_issue_for_test(%State{} = state, %Issue{} = issue, readiness) do
+    dispatch_ready_issue(state, issue, nil, nil, readiness)
+  end
+
+  defp dispatch_ready_issue(state, issue, attempt, worker_host, readiness \\ &SymphonyElixir.Mvp.dispatch_readiness/1) do
+    case readiness.(issue) do
+      :ok ->
+        do_dispatch_issue(state, issue, attempt, worker_host)
+
+      {:error, reason} ->
+        Logger.warning("Skipping dispatch; execution readiness failed for #{issue_context(issue)}: #{inspect(reason)}")
+        release_issue_claim(state, issue.id)
     end
   end
 
@@ -1189,7 +1206,7 @@ defmodule SymphonyElixir.Orchestrator do
          worker_slots_available?(state, metadata[:worker_host]) do
       case refresh_issue_for_dispatch(issue) do
         {:ok, %Issue{} = refreshed_issue} ->
-          {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
+          {:noreply, dispatch_ready_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
 
         {:skip, :missing} ->
           {:noreply, release_issue_claim(state, issue.id)}

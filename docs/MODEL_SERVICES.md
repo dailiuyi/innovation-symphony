@@ -321,3 +321,10 @@ reviewer 只读、Review 结构与最终候选 SHA 回归。候选和原测试�
 维护者前置补丁证据不是本候选完整验收。GH-12 离线历史阶段的宿主隔离预检返回
 `execution_sandbox: cgroup v2 is required`（退出码 2）；真实内核沙箱集成未执行，
 仅验证隔离入口及受控模拟协议，不降低环境要求。独立 Reviewer 由控制器另行执行。
+
+
+## IS-099：OAuth 登录刷新与稳定账号绑定
+
+ChatGPT auth_home 的凭据身份优先绑定 auth_mode=chatgpt、id_token 的固定 issuer／subject 与一致的 chatgpt_account_id。access_token、refresh_token、last_refresh、JWT 时效字段或 JSON 排版变化不改变同一账号身份。不同 account_id／subject、模式切换或无法识别／不一致的 JWT 仍不能复用稳定绑定；未知 auth 格式保留原整文件摘要，环境变量 API key 继续绑定密钥摘要。此处读取的是受控本机认证资料的身份元数据，不把 JWT 解码称为签名校验，也不将它用作新的远端身份认证。实际模型请求仍由 Codex 校验登录凭据。
+
+从旧整文件摘要迁移到稳定摘要时保留旧目录和证明历史；当前配置按所有者既有人工确认重新绑定，source=manual，不把旧推理证明改写为新凭据下的真实验证。旧在途快照不静默重写。

@@ -30,7 +30,13 @@ defmodule SymphonyElixir.Mvp.Commands do
   end
 
   defp execute([executable | arguments], cwd, timeout_ms, opts, output) do
-    env = clean_env() ++ Keyword.get(opts, :env, [])
+    cleaned =
+      case Keyword.fetch(opts, :secret_environment_names) do
+        {:ok, names} -> clean_env(names)
+        :error -> clean_env()
+      end
+
+    env = cleaned ++ Keyword.get(opts, :env, [])
 
     case System.find_executable("timeout") do
       nil ->
@@ -75,9 +81,9 @@ defmodule SymphonyElixir.Mvp.Commands do
     end
   end
 
-  @spec clean_env() :: [{String.t(), String.t() | nil}]
-  def clean_env do
-    names = Tracker.bind_agent_tools().secret_environment_names
+  @spec clean_env([String.t()] | nil) :: [{String.t(), String.t() | nil}]
+  def clean_env(names \\ nil) do
+    names = if is_nil(names), do: Tracker.bind_agent_tools().secret_environment_names, else: names
 
     (names ++ ["GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ASKPASS", "SSH_ASKPASS"])
     |> Enum.uniq()

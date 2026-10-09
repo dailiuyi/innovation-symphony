@@ -81,6 +81,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
         File.write!(Path.join(evidence, "messages.log"), "", [:exclusive, :sync])
         rounds = List.replace_at(data["rounds"], -1, put_in(round, ["usage", key], Usage.empty()))
         event = %{"attempt" => count, "role" => Atom.to_string(role), "stage_attempt" => stage_attempt, "evidence" => evidence, "usage_key" => key, "status" => "started"}
+        event = Map.put(event, "round", round["round"])
         recovery = data["recovery"] |> Map.put("agent_attempts", count) |> Map.update!("events", &(&1 ++ [event]))
         Receipt.update(context.receipt, data["status"], %{"rounds" => rounds, "usage" => Usage.aggregate(rounds), "recovery" => recovery})
         {:ok, evidence, key}

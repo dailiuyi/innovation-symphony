@@ -2,6 +2,7 @@
 
 | 内容 | 文档 |
 | --- | --- |
+| 领取前执行环境就绪检查与激活边界 | [EXECUTION_READINESS.md](EXECUTION_READINESS.md) |
 | 三项 rootless 审查问题修复及回归 | [ROOTLESS_REVIEW_FIXES.md](ROOTLESS_REVIEW_FIXES.md) |
 | 宽权限实验代码验收与实机前置条件 | [VALIDATION_ROOTLESS.md](VALIDATION_ROOTLESS.md) |
 | 宽权限 rootless 容器、持久产物、固定补证与未完成验收 | [ROOTLESS_OPEN.md](ROOTLESS_OPEN.md) |

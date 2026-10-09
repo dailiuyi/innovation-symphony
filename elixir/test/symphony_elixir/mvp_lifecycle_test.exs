@@ -3,8 +3,9 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
   import ExUnit.CaptureIO
 
   alias Mix.Tasks.Mvp.{Check, Reconcile, Release}
-  alias SymphonyElixir.{AgentRunner, Config, Mvp, WorkflowStore, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Mvp, Orchestrator, WorkflowStore, Workspace}
   alias SymphonyElixir.Mvp.{Commands, Receipt}
+  alias SymphonyElixir.Orchestrator.State
   alias SymphonyElixir.Tracker.Issue
 
   test "missing MVP config preserves upstream availability; explicit disable and receipt close intake" do
@@ -13,6 +14,7 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
 
     write_github_workflow!(mvp: :omitted)
     assert {:ok, %{enabled: false, configured: false}} = Config.mvp_settings()
+    assert :ok = Mvp.dispatch_readiness(issue)
     assert Mvp.available?(issue)
 
     write_github_workflow!(mvp: %{"enabled" => false})
@@ -24,6 +26,7 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
     assert Mvp.available?(issue)
 
     assert {:ok, _receipt} = Receipt.claim(settings, issue)
+    assert :ok = Mvp.dispatch_readiness(issue)
     refute Mvp.available?(issue)
   end
 
@@ -50,6 +53,7 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
     )
 
     assert {:error, _reason} = Config.mvp_settings()
+    assert {:error, _} = Mvp.dispatch_readiness(issue)
     refute Mvp.available?(issue)
     assert :ok = AgentRunner.run(issue, self())
     assert_receive {:codex_worker_update, "GH-43", %{event: :turn_input_required}}
@@ -58,6 +62,112 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
     workspace = Path.join(Config.local_workspace_root(), Workspace.workspace_key(issue))
     refute File.exists?(workspace)
     refute_receive {:worker_runtime_info, "GH-43", _}
+  end
+
+  test "required rootless readiness refuses legacy execution before creating any receipt or workspace" do
+    root = Path.dirname(Workflow.workflow_file_path())
+    config = Map.put(valid_mvp(root), "execution_readiness", %{"enabled" => true, "required_backend" => "rootless", "required_acceptances" => []})
+    write_github_workflow!(mvp: config)
+    {:ok, settings} = Config.mvp_settings()
+    current = issue("GH-101", 101)
+    refute Mvp.available?(current)
+    assert {:error, :execution_readiness_backend_mismatch} = Mvp.dispatch_readiness(current)
+    assert :ok = Mvp.run(current, self(), settings, request_fun: fn _, _, _, _, _ -> flunk("must not read intake") end)
+    assert_receive {:codex_worker_update, "GH-101", %{message: message}}
+    assert message =~ "execution_readiness_backend_mismatch"
+    refute Receipt.exists?(settings, current)
+    refute File.exists?(Path.join(Config.local_workspace_root(), Workspace.workspace_key(current)))
+    refute_receive {:worker_runtime_info, "GH-101", _}
+  end
+
+  test "successful admission persists its exact roles and report without resolving intake again" do
+    root = Path.dirname(Workflow.workflow_file_path())
+    home = Path.join(root, "readiness-auth")
+    File.mkdir_p!(home)
+    File.write!(Path.join(home, "auth.json"), Jason.encode!(%{"OPENAI_API_KEY" => "synthetic-only"}))
+
+    sandbox = %{
+      "enabled" => true,
+      "backend" => "rootless",
+      "profile" => "rootless-open-v1",
+      "network" => "public-egress-v1",
+      "image" => "ubuntu@sha256:" <> String.duplicate("a", 64),
+      "worker" => "worker",
+      "root" => "/tmp/readiness-sandboxes",
+      "toolchain" => "/opt/toolchain",
+      "codex" => "/opt/codex",
+      "dependencies" => "/opt/dependencies",
+      "trusted_root" => "/opt/trusted",
+      "auth_home" => home
+    }
+
+    config =
+      valid_mvp(root)
+      |> Map.put("sandbox", sandbox)
+      |> Map.put("checks", [["python3", "scripts/check_candidate.py"]])
+      |> Map.put("execution_readiness", %{"enabled" => true, "required_backend" => "rootless", "required_acceptances" => []})
+
+    write_github_workflow!(mvp: config, before_run: "git init")
+    {:ok, settings} = Config.mvp_settings()
+    settings = Map.put(settings, :model_command, "/opt/codex app-server")
+    current = issue("GH-102", 102)
+
+    bridge = fn [_, _, _, raw], _, _ ->
+      {:ok,
+       Jason.encode!(%{
+         "schema" => 1,
+         "status" => "ready",
+         "backend" => "rootless",
+         "profile" => "rootless-open-v1",
+         "request_sha256" => :crypto.hash(:sha256, raw) |> Base.encode16(case: :lower),
+         "formal_acceptance" => false,
+         "blockers" => [],
+         "checks" => Enum.map(~w(task_roots trusted_inventory toolchain runtime image), &%{"name" => &1, "status" => "passed", "detail" => "synthetic"})
+       })}
+    end
+
+    request = fn method, path, params, body, tracker ->
+      send(self(), {:admission_intake, path})
+      intake_success(method, path, params, body, tracker)
+    end
+
+    roles = fn context, role ->
+      service = context.services[Atom.to_string(role)]
+      {:ok, [model_service: service]}
+    end
+
+    assert :ok =
+             Mvp.run(current, self(), settings,
+               request_fun: request,
+               readiness_command_run: bridge,
+               readiness_role_options: roles,
+               repository: fn _, _ -> raise "synthetic stop before model execution" end
+             )
+
+    data = Receipt.read(Receipt.path(settings, current))
+    assert data["execution_readiness"]["status"] == "ready"
+    assert data["execution_readiness"]["formal_acceptance"] == false
+    assert data["services"]["coder"]["model"] == "coder-model"
+    assert data["reason"] =~ "synthetic stop"
+    assert_received {:admission_intake, "/repos/owner/repo/issues/102/events"}
+    assert_received {:admission_intake, "/repos/owner/repo/issues/102/comments"}
+    refute_received {:admission_intake, _}
+  end
+
+  test "failed retry admission releases only the temporary scheduler claim and recovers on the next dispatch" do
+    write_github_workflow!(mvp: %{"enabled" => false})
+    current = issue("GH-103", 103)
+    supervisor = start_supervised!({Task.Supervisor, []})
+    state = %State{task_supervisor: supervisor, claimed: MapSet.new([current.id]), retry_attempts: %{current.id => %{attempt: 1}}}
+    refused = Orchestrator.dispatch_ready_issue_for_test(state, current, fn _ -> {:error, :environment_missing} end)
+    assert refused.running == %{}
+    assert refused.blocked == %{}
+    assert refused.claimed == MapSet.new()
+    assert refused.retry_attempts == %{}
+    assert Task.Supervisor.children(supervisor) == []
+    resumed = Orchestrator.dispatch_ready_issue_for_test(refused, current, fn _ -> :ok end)
+    assert Map.has_key?(resumed.running, current.id)
+    assert MapSet.member?(resumed.claimed, current.id)
   end
 
   test "403 and 503 intake failures create blocked receipts before workspace creation" do
