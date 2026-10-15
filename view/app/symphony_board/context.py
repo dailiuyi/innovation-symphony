@@ -13,7 +13,7 @@ MAX_ENTRY_TEXT = 16 * 1024
 MAX_LONG_TEXT = 64 * 1024
 MAX_PAGE_SIZE = 100
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-WORKSPACE_RE = re.compile(r"(?:^|/)workspaces/(GH-\d+|preflight)(?:/|$)")
+WORKSPACE_RE = re.compile(r"(?:^|/)workspaces/((?:GH|GL)-\d+|preflight)(?:/|$)")
 
 
 def valid_session_id(value):

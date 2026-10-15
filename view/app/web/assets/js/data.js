@@ -53,7 +53,7 @@ function statusEvents(tasks) {
       issueLabel: t.issueLabel,
       repo: t.repo,
       title,
-      detail: t.statusLabel + (pr && pr !== 'unknown' ? ` · PR ${pr}` : ''),
+      detail: t.statusLabel + (pr && pr !== 'unknown' ? ` · ${t.pr?.kind === 'merge_request' ? 'MR' : 'PR'} ${pr}` : ''),
       kind,
     });
   }

@@ -79,11 +79,11 @@ class BoardConfig:
             return []
         known = self.enabled_names()
         seen, rows = set(), []
-        from .common import repo_of, short_runtime
+        from .common import repo_raw, short_runtime
         for runtime in snapshot.get("runtimes", []):
             name = short_runtime(runtime["root"])
             for receipt in runtime.get("receipts", []):
-                repo = str((receipt or {}).get("repository") or "").strip()
+                repo = repo_raw(receipt)
                 if repo and repo not in known and (name, repo) not in seen:
                     seen.add((name, repo))
                     rows.append({"runtime": name, "repo": repo})

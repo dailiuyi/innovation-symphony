@@ -5,6 +5,7 @@ const http = require('node:http');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 const {settingsFixture} = require('./browser-model-settings.cjs');
+const {gitlabReading} = require('./browser-gitlab.cjs');
 const fixture = path.resolve(process.argv[2] || '');
 const web = path.resolve(__dirname, '../app/web');
 const json = (res, value, status = 200) => {
@@ -67,6 +68,8 @@ const json = (res, value, status = 200) => {
     assert.deepEqual(smoke.errors, []);
     assert(smoke.checks.includes('model settings keyboard, native controls, two repositories and roles, failures, conflict, refresh and narrow layout'),
       'settings browser acceptance must execute before the fixture can pass');
+    const gitlab = await gitlabReading('http://127.0.0.1:' + server.address().port, snapshot);
+    smoke.checks.push(gitlab.check);
     passed = true;
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

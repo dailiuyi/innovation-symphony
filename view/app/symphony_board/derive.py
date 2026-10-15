@@ -7,11 +7,12 @@ import json
 import os
 import re
 import subprocess
+from urllib.parse import urlsplit
 
 from .collector import parse_log, public_session, role_of
 from .common import (
     STATUS_LABEL, attempt_of, badge_class, clip, clock, dur, dur_from_stamps,
-    natural_name, repo_of, repo_slug, short_runtime, sort_ts, stage_of, task_repo,
+    natural_name, receipt_issue_identifier, repo_of, repo_raw, repo_slug, short_runtime, sort_ts, stage_of, task_repo,
 )
 
 EVIDENCE_RE = re.compile(r'^\{:command_failed,\s*(-?\d+),\s*"(.*)"\s*\}$', re.S)
@@ -171,7 +172,7 @@ def evidence_failed(item):
     return bool(re.search(r"[1-9]\d* 项失败", item.get("summary") or ""))
 
 
-def result_text(status, reason, cand, session_bits, evidence):
+def result_text(status, reason, cand, session_bits, evidence, delivery_kind="PR"):
     parts = []
     if status in ("coding", "checking", "reviewing", "recovering") or "mvp_invalid_review" in (reason or ""):
         evidence = []  # Previous check failures are history while this stage runs again.
@@ -201,7 +202,7 @@ def result_text(status, reason, cand, session_bits, evidence):
     elif "mvp_invalid_review" in (reason or ""):
         parts.append("审查输出未通过协议校验，任务受阻；该输出不是有效的通过或打回结论。")
     elif status in ("awaiting_review", "pr_ready"):
-        parts.append("已交付 Draft PR，等待人工审查。自动检查通过不代表已合并或部署。")
+        parts.append(f"已交付 Draft {delivery_kind}，等待人工审查。自动检查通过不代表已合并或部署。")
     elif status in ("done", "merged"):
         parts.append("任务完成。")
     elif reason and status == "blocked":
@@ -352,7 +353,7 @@ def rework_returns(task):
     if state == "changes":
         return [{"kind": "human", "title": "人工要求修改", "why": "最新审查结论是要求修改"}]
     if state == "closed":
-        return [{"kind": "human", "title": "人工未通过", "why": "PR 已关闭，没有合并"}]
+        return [{"kind": "human", "title": "人工未通过", "why": f"{pr_label(pr).split()[0]} 已关闭，没有合并"}]
     reason = task.get("reason") or ""
     if "response_timeout" in reason:
         return [{"kind": "timeout", "title": "编码超时", "why": "会话没有在时限内返回，没有进入脚本审查"}]
@@ -408,7 +409,8 @@ def beat_handoff(task):
 
 def pr_label(pr):
     number = pr.get("number") if isinstance(pr, dict) else None
-    return f"PR #{number}" if number else "PR"
+    kind = "MR" if isinstance(pr, dict) and pr.get("kind") == "merge_request" else "PR"
+    return f"{kind} #{number}" if number else kind
 
 
 def story_outcome(last):
@@ -528,14 +530,15 @@ def build_stories(tasks):
     groups, order = {}, []
     for task in tasks:
         repo = task_repo(task)
-        key = (repo, task["runtime"], str(task["issue"]))
+        key = (repo, task["runtime"], task.get("issueLabel") or f"GH-{task['issue']}")
         if key not in groups:
             groups[key] = []
             order.append(key)
         groups[key].append(task)
     stories = []
-    for repo, runtime, issue in order:
-        beats_src = groups[(repo, runtime, issue)]
+    for repo, runtime, identifier in order:
+        beats_src = groups[(repo, runtime, identifier)]
+        issue = str(beats_src[0]["issue"])
         beats_src.sort(key=lambda task: int(re.search(r"(\d+)", task["attempt"]).group(1)) if re.search(r"(\d+)", task["attempt"]) else 0)
         last = beats_src[-1]
         outcome, kind, badge, detail = story_outcome(last)
@@ -560,11 +563,12 @@ def build_stories(tasks):
             })
         title = next((task["title"] for task in beats_src if task.get("title")), f"Issue #{issue}")
         stories.append({
-            "id": f"story--{repo_slug(repo)}--{runtime}--GH-{issue}",
+            "id": f"story--{repo_slug(repo)}--{runtime}--{identifier}",
             "repo": repo,
             "runtime": runtime,
             "issue": issue,
-            "issueLabel": f"GH-{issue}",
+            "issueLabel": identifier,
+            **({"issueUrl": last["issueUrl"]} if last.get("issueUrl") else {}),
             "title": title,
             "meta": f"{repo} · {runtime} · Issue #{issue} · {len(beats)} 次尝试",
             "attempts": len(beats),
@@ -735,7 +739,7 @@ def attach_session_repos(snapshot, sessions):
         for receipt in runtime.get("receipts", []):
             repo = repo_of(receipt)
             repos_by_runtime.setdefault(name, set()).add(repo)
-            gid = f"GH-{receipt.get('issue')}" if receipt.get("issue") is not None else None
+            gid = receipt_issue_identifier(receipt)
             if gid:
                 issue_repos.setdefault((name, gid), set()).add(repo)
             workspace = (receipt.get("workspace") or "").rstrip("/")
@@ -777,7 +781,7 @@ def claim_sessions(snapshot, sessions):
         name = short_runtime(runtime["root"])
         for receipt in runtime.get("receipts", []):
             all_workspaces.add((receipt.get("workspace") or "").rstrip("/"))
-            gid = f"GH-{receipt.get('issue')}" if receipt.get("issue") is not None else None
+            gid = receipt_issue_identifier(receipt)
             if gid:
                 group_receipts.setdefault((name, gid), []).append(receipt)
     for session in sessions:
@@ -808,8 +812,8 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
         for log in logs_by_runtime.get(name, []):
             log_entries.extend(log["entries"])
         for receipt in runtime.get("receipts", []):
-            issue_no = str(receipt.get("issue"))
-            gid = f"GH-{issue_no}"
+            gid = receipt_issue_identifier(receipt) or "GH-None"
+            issue_no = gid.split("-", 1)[1]
             workspace = (receipt.get("workspace") or "").rstrip("/")
             attempt = attempt_of(workspace, receipt.get("_path"))
             matched = ([s for s in sessions if (s.get("cwd") or "").rstrip("/") == workspace]
@@ -855,11 +859,12 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
             tasks.append({
                 "id": ident,
                 "repo": repo,
-                "repoRaw": (str(receipt.get("repository") or "").strip() or "未知仓库"),
+                "repoRaw": (repo_raw(receipt) or "未知仓库"),
                 "runtime": name,
                 "attempt": attempt,
                 "issue": issue_no,
                 "issueLabel": gid,
+                **({"issueUrl": receipt["issue_url"]} if safe_web_url(receipt.get("issue_url")) else {}),
                 "title": title,
                 "meta": meta,
                 "status": status,
@@ -890,7 +895,7 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "evidence": evidence,
                 "logs": events,
                 "result": gap if stopped else result_text(status, reason, cand or "—",
-                                      [f"{role} {count} 次" for role, count in role_counts.items()], current_evidence),
+                                      [f"{role} {count} 次" for role, count in role_counts.items()], current_evidence, delivery_kind="MR" if gid.startswith("GL-") else "PR"),
                 "viewer": publics[0]["href"] if publics else "#",
                 "receipt": receipt,
                 "_matched": matched,
@@ -925,11 +930,27 @@ def build_logs(snapshot):
 PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)")
 
 
+def safe_web_url(url):
+    if not isinstance(url, str) or any(char.isspace() for char in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        return parsed.scheme in ("https", "http") and bool(parsed.hostname) and not parsed.username and not parsed.password
+    except ValueError:
+        return False
+
+
 def parse_pull_request(url):
     matched = PR_URL_RE.search(url or "")
-    if not matched:
+    if matched:
+        return {"repo": matched.group(1), "number": int(matched.group(2)), "url": matched.group(0)}
+    if not safe_web_url(url):
         return None
-    return {"repo": matched.group(1), "number": int(matched.group(2)), "url": matched.group(0)}
+    parsed = urlsplit(url)
+    merge = re.fullmatch(r"/([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)/-/merge_requests/([1-9]\d*)/?", parsed.path)
+    if not merge:
+        return None
+    return {"repo": merge.group(1), "number": int(merge.group(2)), "url": url, "kind": "merge_request"}
 
 
 def decisive_review(reviews):
@@ -974,6 +995,11 @@ def enrich_pulls(tasks):
         parsed = parse_pull_request(task.get("pullRequest") or "")
         if not parsed:
             task["pr"] = None
+            continue
+        if parsed.get("kind") == "merge_request":
+            # The controller records a delivery URL, not current remote state.
+            # Never send GitLab identifiers to the GitHub CLI.
+            task["pr"] = {**parsed, "state": "unknown", "title": "", "draft": False}
             continue
         key = (parsed["repo"], parsed["number"])
         if key not in cache:

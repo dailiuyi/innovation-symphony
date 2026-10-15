@@ -1,9 +1,11 @@
 defmodule SymphonyElixir.Mvp.Intake do
   @moduledoc """
-  Resolves an authorized ready event and model choices for one GitHub issue.
+  Resolves an authorized ready event and model choices for one forge issue.
   """
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitLab.Client, as: GitLabClient
   alias SymphonyElixir.Mvp.{ModelCatalog, ModelServices}
   alias SymphonyElixir.Tracker.Issue
 
@@ -37,7 +39,7 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   defp resolve_authorized(issue, settings, opts) do
     with :ok <- validate_settings(settings),
-         {:ok, reference} <- issue_reference(issue),
+         {:ok, reference} <- issue_reference(issue, opts),
          :ok <- ready_issue(issue, Map.get(settings, :ready_label, "ready")),
          {:ok, events} <- fetch_pages(reference, "events", opts),
          :ok <-
@@ -120,27 +122,42 @@ defmodule SymphonyElixir.Mvp.Intake do
   defp valid_model?(model, allowed) when is_binary(model), do: MapSet.member?(allowed, model)
   defp valid_model?(_model, _allowed), do: false
 
-  defp issue_reference(%Issue{native_ref: native_ref}), do: issue_reference(native_ref)
+  defp issue_reference(%Issue{native_ref: native_ref}, opts), do: issue_reference(native_ref, opts)
 
-  defp issue_reference(%{"repo" => repo, "number" => number}), do: normalized_reference(repo, number)
-  defp issue_reference(%{repo: repo, number: number}), do: normalized_reference(repo, number)
-  defp issue_reference(%{"repository" => %{"full_name" => repo}, "number" => number}), do: normalized_reference(repo, number)
-  defp issue_reference(%{repository: %{full_name: repo}, number: number}), do: normalized_reference(repo, number)
-  defp issue_reference(_issue), do: {:error, :invalid_issue_reference}
+  defp issue_reference(%{"kind" => "gitlab", "repo" => repo, "number" => number, "api_url" => api_url}, opts) do
+    tracker = Keyword.get_lazy(opts, :tracker_settings, fn -> Config.settings!().tracker end)
+    provider = Map.get(tracker, :provider, %{})
+    configured_repo = resolve_reference_setting(provider["project_path"], "GITLAB_PROJECT_PATH") |> normalize_reference_setting()
+    configured_url = String.trim_trailing(provider["api_url"] || "https://gitlab.com/api/v4", "/")
+
+    with true <- tracker.kind == "gitlab" and repo == configured_repo and api_url == configured_url,
+         true <- is_binary(repo) and String.match?(repo, ~r/\A[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\z/),
+         {:ok, parsed} <- issue_number(number) do
+      {:ok, %{kind: :gitlab, repo: repo, number: parsed}}
+    else
+      _ -> {:error, :invalid_issue_reference}
+    end
+  end
+
+  defp issue_reference(%{"repo" => repo, "number" => number}, _opts), do: normalized_reference(repo, number)
+  defp issue_reference(%{repo: repo, number: number}, _opts), do: normalized_reference(repo, number)
+  defp issue_reference(%{"repository" => %{"full_name" => repo}, "number" => number}, _opts), do: normalized_reference(repo, number)
+  defp issue_reference(%{repository: %{full_name: repo}, number: number}, _opts), do: normalized_reference(repo, number)
+  defp issue_reference(_, _), do: {:error, :invalid_issue_reference}
+
+  defp resolve_reference_setting(nil, fallback), do: System.get_env(fallback)
+  defp resolve_reference_setting("$" <> name, _), do: System.get_env(name)
+  defp resolve_reference_setting(value, _), do: value
+
+  defp normalize_reference_setting(value) when is_binary(value), do: String.trim(value)
+  defp normalize_reference_setting(_), do: nil
 
   defp normalized_reference(repo, number) when is_binary(repo) do
-    case issue_number(number) do
-      {:ok, parsed_number} ->
-        case String.split(repo, "/", parts: 3) do
-          [owner, name] when owner != "" and name != "" ->
-            {:ok, %{repo: repo, number: parsed_number}}
-
-          _ ->
-            {:error, :invalid_issue_reference}
-        end
-
-      error ->
-        error
+    with {:ok, parsed_number} <- issue_number(number),
+         [owner, name] when owner != "" and name != "" <- String.split(repo, "/", parts: 3) do
+      {:ok, %{kind: :github, repo: repo, number: parsed_number}}
+    else
+      _ -> {:error, :invalid_issue_reference}
     end
   end
 
@@ -157,16 +174,16 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   defp issue_number(_number), do: {:error, :invalid_issue_reference}
 
-  defp ready_issue(%Issue{dispatchable: true, state: "open", labels: labels}, ready_label)
-       when is_list(labels) and is_binary(ready_label) do
+  defp ready_issue(%Issue{dispatchable: true, state: state, labels: labels}, ready_label)
+       when state in ["open", "opened"] and is_list(labels) and is_binary(ready_label) do
     if Enum.any?(labels, &label_matches?(&1, ready_label)), do: :ok, else: {:error, :issue_not_ready}
   end
 
-  defp ready_issue(%{"state" => "open", "labels" => labels}, ready_label) when is_list(labels) do
+  defp ready_issue(%{"state" => state, "labels" => labels}, ready_label) when state in ["open", "opened"] and is_list(labels) do
     if Enum.any?(labels, &label_matches?(&1, ready_label)), do: :ok, else: {:error, :issue_not_ready}
   end
 
-  defp ready_issue(%{state: "open", labels: labels}, ready_label) when is_list(labels) do
+  defp ready_issue(%{state: state, labels: labels}, ready_label) when state in ["open", "opened"] and is_list(labels) do
     if Enum.any?(labels, &label_matches?(&1, ready_label)), do: :ok, else: {:error, :issue_not_ready}
   end
 
@@ -182,14 +199,17 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   defp fetch_pages(reference, resource, opts) do
     path = issue_resource_path(reference, resource)
-    fetch_page(path, 1, opts, [])
+
+    with {:ok, payload} <- fetch_page(path, 1, Keyword.put(opts, :intake_kind, reference.kind), []) do
+      {:ok, normalize_resource(payload, reference.kind, resource)}
+    end
   end
 
   defp fetch_page(path, page, opts, acc) do
     params = %{"per_page" => @page_size, "page" => page}
 
     with {:ok, payload} <- request("GET", path, params, opts),
-         true <- is_list(payload) or {:error, :github_unknown_payload} do
+         true <- (is_list(payload) and Enum.all?(payload, &is_map/1)) or {:error, payload_error(opts)} do
       updated = [payload | acc]
 
       if length(payload) < @page_size do
@@ -200,18 +220,22 @@ defmodule SymphonyElixir.Mvp.Intake do
     end
   end
 
+  defp payload_error(opts), do: if(Keyword.get(opts, :intake_kind) == :gitlab, do: :gitlab_unknown_payload, else: :github_unknown_payload)
+
   defp request(method, path, params, opts) do
     client_opts =
       []
       |> maybe_put(:request_fun, Keyword.get(opts, :request_fun))
       |> maybe_put(:tracker_settings, Keyword.get(opts, :tracker_settings))
 
-    case GitHubClient.request(method, path, params, nil, client_opts) do
+    client = if Keyword.get(opts, :intake_kind) == :gitlab, do: GitLabClient, else: GitHubClient
+
+    case client.request(method, path, params, nil, client_opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
       {:ok, %{status: status}} when is_integer(status) ->
-        {:error, {:github_api_status, status}}
+        {:error, {if(client == GitLabClient, do: :gitlab_api_status, else: :github_api_status), status}}
 
       {:error, reason} ->
         {:error, reason}
@@ -220,6 +244,33 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp normalize_resource(payload, :gitlab, "events") do
+    Enum.map(payload, fn event ->
+      %{
+        "id" => event["id"],
+        "event" => if(event["action"] == "add", do: "labeled", else: "unlabeled"),
+        "label" => event["label"],
+        "actor" => %{"login" => get_in(event, ["user", "username"])}
+      }
+    end)
+  end
+
+  defp normalize_resource(payload, :gitlab, "comments") do
+    payload
+    |> Enum.reject(&(&1["system"] == true))
+    |> Enum.map(fn note ->
+      author = note["author"] || %{}
+      Map.put(note, "user", %{"login" => author["username"], "type" => if(author["bot"] == true, do: "Bot", else: "User")})
+    end)
+  end
+
+  defp normalize_resource(payload, _, _), do: payload
+
+  defp issue_resource_path(%{kind: :gitlab, repo: repo, number: number}, resource) do
+    suffix = if resource == "events", do: "resource_label_events", else: "notes"
+    "/projects/#{URI.encode(repo, &URI.char_unreserved?/1)}/issues/#{number}/#{suffix}"
+  end
 
   defp issue_resource_path(%{repo: repo, number: number}, resource) do
     encoded_repo =
@@ -234,11 +285,11 @@ defmodule SymphonyElixir.Mvp.Intake do
        when is_list(events) and is_binary(ready_label) and is_list(allowed_actors) do
     latest =
       events
-      |> Enum.filter(&ready_labeled_event?(&1, ready_label))
+      |> Enum.filter(&ready_label_event?(&1, ready_label))
       |> Enum.max_by(&event_order/1, fn -> nil end)
 
     case latest do
-      %{"actor" => %{"login" => login}} when is_binary(login) ->
+      %{"event" => "labeled", "actor" => %{"login" => login}} when is_binary(login) ->
         if login in allowed_actors, do: :ok, else: {:error, {:unauthorized_ready_actor, login}}
 
       _ ->
@@ -246,10 +297,10 @@ defmodule SymphonyElixir.Mvp.Intake do
     end
   end
 
-  defp ready_labeled_event?(%{"event" => "labeled", "label" => label}, ready_label),
+  defp ready_label_event?(%{"event" => event, "label" => label}, ready_label) when event in ["labeled", "unlabeled"],
     do: label_matches?(label, ready_label)
 
-  defp ready_labeled_event?(_event, _ready_label), do: false
+  defp ready_label_event?(_event, _ready_label), do: false
 
   defp event_order(%{"id" => id}) when is_integer(id), do: id
 

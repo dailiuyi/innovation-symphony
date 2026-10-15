@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     ExternalHandoff,
     Failure,
     Feedback,
+    Forge,
     InterruptedCoder,
     ModelServiceMigration,
     ModelServices,
@@ -31,7 +32,8 @@ defmodule SymphonyElixir.Mvp.Executor do
   def run(workspace, issue, settings, models, receipt, opts \\ []) do
     limit = Map.get(settings, :max_rework, 0)
 
-    with true <- (is_integer(limit) and limit in 0..5) or {:error, :mvp_rework_not_supported},
+    with :ok <- Forge.receipt_scope(Receipt.read(receipt), opts),
+         true <- (is_integer(limit) and limit in 0..5) or {:error, :mvp_rework_not_supported},
          true <- is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started} do
       execute(workspace, issue, settings, models, receipt, opts)
     end
@@ -1583,6 +1585,7 @@ defmodule SymphonyElixir.Mvp.Executor do
          true <- Base.encode16(:crypto.hash(:sha256, raw), case: :lower) == digest,
          {:ok, data} <- Jason.decode(raw),
          true <- is_map(data),
+         :ok <- Forge.receipt_scope(data, context.opts),
          true <- audited_resume_mode?(mode) or not File.exists?(Path.join(context.evidence, "operator-rechecks")),
          true <- resume_identity?(context, data, mode),
          true <- not dirty_resume_mode?(mode) or resume_checks_binding?(context, data),

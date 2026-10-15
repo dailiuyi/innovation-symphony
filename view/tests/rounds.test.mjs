@@ -119,3 +119,14 @@ test('explicit receipt round associates root evidence and preserves failed resul
   assert.equal(roundsModel(cur).at(-1).n, null);
   assert.equal(roundsModel(cur)[0].evidence.length, 0);
 });
+
+const fmtSource = await readFile(new URL('../app/web/assets/js/fmt.js', import.meta.url), 'utf8');
+const { prAnchor, beatSteps } = await import('data:text/javascript;base64,' + Buffer.from(fmtSource).toString('base64'));
+
+test('GitLab MR links and human review steps preserve native labels and URLs', () => {
+  const pr = { kind: 'merge_request', number: 3, state: 'unknown', url: 'https://gitlab.example/team/luca/-/merge_requests/3' };
+  assert.match(prAnchor(pr), /处理 MR #3/);
+  assert.ok(prAnchor(pr).includes(pr.url));
+  assert.equal(beatSteps({ pr, status: 'awaiting_review' }, { outcomeKind: 'human' }, true).at(-1).title, '等待处理 MR');
+  assert.match(prAnchor({ ...pr, kind: undefined }), /处理 PR #3/);
+});

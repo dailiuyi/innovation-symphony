@@ -176,3 +176,9 @@ prototypes/              旧版完整会话 HTML（gitignored）
 
 配置更改后需重启看板。数据库、rollout 缓存、生成页、截图、日志及依赖均为本地数据。
 不自动删除旧数据库或搬移旧配置；保留、切换及回退须按迁移说明操作，不自动切换服务。
+
+## GitLab 任务展示
+
+View 同时识别 `GH-<number>` 与 `GL-<iid>` 的任务指令、工作区和会话关联，按完整标识区分同号的 GitHub/GitLab 任务。新回执读取 `issue_identifier`、`tracker_kind`、`issue_url`，仓库缺省时读取 `issue_native_ref.project_path`（支持子组路径）；缺少这些字段的历史 GitHub 回执保持原标识和深链接。
+
+GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 不通过 `gh` 查询 GitLab；MR 当前远端状态显示为未知，链接本身不证明已合并。待办：如后续要求自动追踪 MR 合并状态，需增加受授权的 GitLab 只读采集与真实验收。当前改动只增加本地展示，不启用任务、升级运行服务或授权真实外部调用。

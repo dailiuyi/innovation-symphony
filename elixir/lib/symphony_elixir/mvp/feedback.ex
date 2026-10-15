@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.Feedback do
   @moduledoc "At-most-once rejection comments; uncertain writes can only be reconciled by reads."
 
-  alias SymphonyElixir.GitHub.Client
+  alias SymphonyElixir.Mvp.Forge
   alias SymphonyElixir.Mvp.Receipt
 
   @spec post(Path.t(), map(), keyword()) :: :ok | {:error, atom()}
@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Mvp.Feedback do
     round = List.last(data["rounds"])
     external_id = Keyword.get(opts, :external_review_id)
 
-    if already_attempted?(data, round, external_id) do
+    if Forge.receipt_scope(data, opts) != :ok or already_attempted?(data, round, external_id) do
       {:error, :mvp_comment_already_attempted}
     else
       intent = %{
@@ -24,7 +24,7 @@ defmodule SymphonyElixir.Mvp.Feedback do
 
       save_intent(receipt, "comment_pending", intent)
 
-      case Client.request("POST", path(data), %{}, %{"body" => intent["body"]}, opts) do
+      case Forge.comments("POST", data["repository"], data["issue"], %{}, %{"body" => intent["body"]}, opts) do
         {:ok, %{status: 201, body: comment}} -> confirm(receipt, intent, comment)
         _ -> {:error, :mvp_comment_uncertain}
       end
@@ -36,8 +36,9 @@ defmodule SymphonyElixir.Mvp.Feedback do
     data = Receipt.read(receipt)
     intent = pending_intent(data)
 
-    with true <- is_map(intent),
-         {:ok, comments} <- comments(path(data), 1, opts, []),
+    with :ok <- Forge.receipt_scope(data, opts),
+         true <- is_map(intent),
+         {:ok, comments} <- comments(data, 1, opts, []),
          [comment] <- Enum.filter(comments, &matches?(&1, intent)),
          :ok <- confirm(receipt, intent, comment) do
       {:ok, "Issue comment #{comment["id"]}; execution remains blocked"}
@@ -46,10 +47,10 @@ defmodule SymphonyElixir.Mvp.Feedback do
     end
   end
 
-  defp comments(path, page, opts, acc) do
-    case Client.request("GET", path, %{"per_page" => 100, "page" => page}, nil, opts) do
+  defp comments(data, page, opts, acc) do
+    case Forge.comments("GET", data["repository"], data["issue"], %{"per_page" => 100, "page" => page}, nil, opts) do
       {:ok, %{status: 200, body: values}} when is_list(values) ->
-        if length(values) == 100, do: comments(path, page + 1, opts, acc ++ values), else: {:ok, acc ++ values}
+        if length(values) == 100, do: comments(data, page + 1, opts, acc ++ values), else: {:ok, acc ++ values}
 
       _ ->
         {:error, :mvp_comment_lookup_failed}
@@ -93,8 +94,6 @@ defmodule SymphonyElixir.Mvp.Feedback do
     do: is_integer(id) and id > 0 and body == intent["body"] and (is_nil(intent["id"]) or intent["id"] == id)
 
   defp matches?(_, _), do: false
-
-  defp path(data), do: "/repos/#{data["repository"]}/issues/#{data["issue"]}/comments"
 
   defp body(round, review) do
     # Render all model text literally, and remove ASCII @ even inside escaped HTML.

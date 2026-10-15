@@ -66,6 +66,44 @@ defmodule SymphonyElixir.MvpModelSettingsTest do
     assert {:error, :model_disabled} = ModelServices.options(%{settings: s, services: before.services}, :diagnosis)
   end
 
+  test "a gitlab workflow binds the configured project path reference", c do
+    System.put_env("GH16_GITLAB_PROJECT", "company/team/luca")
+    System.put_env("GITLAB_PROJECT_PATH", "company/team/luca")
+
+    on_exit(fn ->
+      System.delete_env("GH16_GITLAB_PROJECT")
+      System.delete_env("GITLAB_PROJECT_PATH")
+    end)
+
+    s = F.settings(Path.join(c.root, "gl"))
+    {:ok, workflow} = Workflow.load(s.workflow_path)
+
+    tracker = %{
+      "kind" => "gitlab",
+      "provider" => %{"project_path" => "$GH16_GITLAB_PROJECT", "api_url" => "https://forge.test/api/v4", "api_key" => "fixture-token"},
+      "required_labels" => ["ready"],
+      "active_states" => ["opened"],
+      "terminal_states" => ["closed"]
+    }
+
+    config = put_in(c.config, ["repositories", "gl"], %{"repository" => "company/team/luca", "workflow" => s.workflow_path, "state_dir" => s.state_dir})
+
+    for project <- ["company/team/luca", "$GH16_GITLAB_PROJECT", nil] do
+      write_gitlab_workflow(workflow, s, tracker, project)
+      assert {:ok, settings} = ModelSettings.settings(config, "gl")
+      assert settings.coder_model == "gpt-test"
+    end
+
+    write_gitlab_workflow(workflow, s, tracker, "company/team/other")
+    assert {:error, :model_settings_repository_unavailable} = ModelSettings.settings(config, "gl")
+  end
+
+  defp write_gitlab_workflow(workflow, settings, tracker, project_path) do
+    provider = Map.put(tracker["provider"], "project_path", project_path)
+    config = put_in(workflow.config, ["tracker"], Map.put(tracker, "provider", provider))
+    File.write!(settings.workflow_path, "---\n" <> Jason.encode!(config) <> "\n---\nfixture")
+  end
+
   test "strict malformed input and repository binding refuse writes", c do
     assert :ok = ModelSettings.validate(c.config)
     assert {:ok, _} = ModelSettings.load(c.path)
