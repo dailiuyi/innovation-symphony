@@ -91,8 +91,14 @@ defmodule SymphonyElixir.Mvp.Delivery do
   end
 
   defp reconcile_pull(receipt, data, opts) do
-    with :ok <- Forge.receipt_scope(data, opts),
-         true <- data["status"] in ["publish_pending", "awaiting_human"],
+    case Forge.receipt_scope(data, opts) do
+      :ok -> reconcile_scoped_pull(receipt, data, opts)
+      error -> error
+    end
+  end
+
+  defp reconcile_scoped_pull(receipt, data, opts) do
+    with true <- data["status"] in ["publish_pending", "awaiting_human"],
          {:ok, [pull]} <- matching_pulls(data["repository"], data["branch"], opts),
          :ok <- verify_pull(pull, data["repository"], data["branch"], data["candidate_sha"], data["base"], opts) do
       Receipt.update(receipt, "awaiting_human", %{"pull_request" => pull["html_url"]})

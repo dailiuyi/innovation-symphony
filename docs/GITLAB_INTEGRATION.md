@@ -18,9 +18,11 @@
 
 - GitLab provider 使用 `api_url`（以 `/api/v4` 结尾）、`project_path`、`api_key` 与可选 `ca_file`。凭据只以环境引用配置，禁止提交明文。
 - 默认停用的示例工作流见 [elixir/WORKFLOW.gitlab.example.md](../elixir/WORKFLOW.gitlab.example.md)；未配置 `ca_file` 时必须省略该项，只写不可用路径会被配置检查拒绝。
+- `api_url` 的协议、主机和端口必须与实例对外返回的 Web 链接一致（即 GitLab 的 `external_url`）：MR 的 `web_url` 会与按 `api_url` 推导出的地址逐字比较，这是防重定向的身份校验，不因内网/公网差异放宽。若实例面向客户端返回公网域名而配置写成内网地址，交付会以 `:mvp_pr_identity_mismatch` 失败；此时改配置，不改校验。
 - 读取 `resource_label_events` 的 ready 授权用户与事件，模型参数从独立 notes 解析；撤销 ready 后禁止交付。
 - GitLab 回执保存 tracker 类型、API 地址、项目路径、Issue iid/URL；旧 GitHub 回执保持兼容。
 - 交付后校验同项目、source/target 分支、准确 SHA、Draft 与 URL；跨项目 MR 拒绝。写入结果不确定时只读对账，不能自动重复发布。
+- 回执作用域与当前配置不符时统一返回 `:mvp_tracker_scope_mismatch`（2026-10-16 review 修正）：`Forge.receipt_scope` 的失败不再被 `:mvp_comment_already_attempted`、`:mvp_no_unique_matching_pr`、`:mvp_no_unique_matching_comment` 掩盖，排查时能直接区分配置错配与业务停点。影响 `Mvp.Feedback.post/reconcile`、`Mvp.Delivery.reconcile`、`Mvp.ExternalDraft.reconcile`。
 - Git 使用指定 HTTPS 实例的受限凭据头和 CA，禁止重定向；SSH 当前只作为连接诊断证据，不把用户 SSH 密钥交给模型。
 - 当前 View 的 MR 合并状态来自回执或显示未知，不使用 GitHub CLI 查询 GitLab。
 
@@ -44,7 +46,7 @@
 | `mix credo --strict` | 通过，0 issues | 同上 |
 | 目标回归：GitLab 交付/入站/传输/适配器 + GitHub 外部恢复、任务与执行器 | 208 tests, 0 failures | `.local/test-image/target-tests.log` |
 | `mix dialyzer --format short`（`MIX_ENV=dev`，容器 PLT） | 0 errors | `.local/test-image/dialyzer.log` |
-| 全量 `mix test --cover` | 854 tests, 8 failures, 6 skipped；覆盖率 99.98%（门槛 100%） | `.local/test-image/full-cover-4.log` |
+| 全量 `mix test --cover` | 855 tests, 8 failures, 6 skipped；覆盖率 99.98%（门槛 100%） | `.local/test-image/full-cover-5.log` |
 | View：`node --test tests/rounds.test.mjs tests/model-settings.test.mjs` | 13 tests, 0 failures | 主机 Node 24.21.0 |
 | View：`python3 -B -m unittest discover -s tests` | 46 项中 45 通过；1 项因缺少 `codex-transcript-viewer` 报错 | 主机 Python 3.14.4 |
 

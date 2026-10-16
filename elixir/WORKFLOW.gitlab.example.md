@@ -3,6 +3,8 @@ tracker:
   kind: gitlab
   provider:
     # Instance API root; must be an https URL ending in /api/v4.
+    # Scheme, host and port must match the instance's external web URL: merge
+    # request links are compared byte-for-byte against this address.
     api_url: $GITLAB_API_URL
     # Group/subgroup/project path, for example innovation/luca.
     project_path: $GITLAB_PROJECT_PATH

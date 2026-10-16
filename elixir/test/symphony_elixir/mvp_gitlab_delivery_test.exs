@@ -63,12 +63,29 @@ defmodule SymphonyElixir.MvpGitLabDeliveryTest do
     tracker = put_in(tracker(), [:provider, "api_url"], "https://other.example/api/v4")
     cross_instance = fn _, _, _, _, _ -> flunk("cross-instance read") end
 
-    assert {:error, :mvp_no_unique_matching_pr} =
+    assert {:error, :mvp_tracker_scope_mismatch} =
              Delivery.reconcile(c.receipt, tracker_settings: tracker, request_fun: cross_instance)
 
     github = %{kind: "github", provider: %{}}
     assert {:error, :mvp_tracker_scope_mismatch} = Forge.receipt_scope(Receipt.read(c.receipt), tracker_settings: github)
     refute_received {:api, "POST", _, _}
+  end
+
+  test "a tracker scope mismatch is reported as such instead of as a retried comment or missing MR" do
+    c = context!()
+    github = %{kind: "github", provider: %{}}
+    Receipt.update(c.receipt, "blocked", %{"rounds" => [%{"round" => 1, "candidate_sha" => c.sha}]})
+
+    assert {:error, :mvp_tracker_scope_mismatch} =
+             Feedback.post(c.receipt, %{"approved" => false, "summary" => "fix"}, tracker_settings: github)
+
+    assert {:error, :mvp_tracker_scope_mismatch} = Feedback.reconcile(c.receipt, tracker_settings: github)
+
+    Receipt.update(c.receipt, "comment_pending", %{"external_delivery" => %{"intent" => %{}}})
+    assert {:error, :mvp_tracker_scope_mismatch} = Delivery.reconcile(c.receipt, tracker_settings: github)
+
+    Receipt.update(c.receipt, "publish_pending", %{"external_delivery" => nil, "candidate_sha" => c.sha, "branch" => @branch, "base" => "main"})
+    assert {:error, :mvp_tracker_scope_mismatch} = Delivery.reconcile(c.receipt, tracker_settings: github)
   end
 
   test "ready revocation and existing branch stop publication" do

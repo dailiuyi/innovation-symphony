@@ -7,10 +7,18 @@ defmodule SymphonyElixir.Mvp.Feedback do
   @spec post(Path.t(), map(), keyword()) :: :ok | {:error, atom()}
   def post(receipt, review, opts) do
     data = Receipt.read(receipt)
+
+    case Forge.receipt_scope(data, opts) do
+      :ok -> post_rejection(receipt, data, review, opts)
+      error -> error
+    end
+  end
+
+  defp post_rejection(receipt, data, review, opts) do
     round = List.last(data["rounds"])
     external_id = Keyword.get(opts, :external_review_id)
 
-    if Forge.receipt_scope(data, opts) != :ok or already_attempted?(data, round, external_id) do
+    if already_attempted?(data, round, external_id) do
       {:error, :mvp_comment_already_attempted}
     else
       intent = %{
@@ -34,10 +42,17 @@ defmodule SymphonyElixir.Mvp.Feedback do
   @spec reconcile(Path.t(), keyword()) :: {:ok, String.t()} | {:error, atom()}
   def reconcile(receipt, opts) do
     data = Receipt.read(receipt)
+
+    case Forge.receipt_scope(data, opts) do
+      :ok -> reconcile_comment(receipt, data, opts)
+      error -> error
+    end
+  end
+
+  defp reconcile_comment(receipt, data, opts) do
     intent = pending_intent(data)
 
-    with :ok <- Forge.receipt_scope(data, opts),
-         true <- is_map(intent),
+    with true <- is_map(intent),
          {:ok, comments} <- comments(data, 1, opts, []),
          [comment] <- Enum.filter(comments, &matches?(&1, intent)),
          :ok <- confirm(receipt, intent, comment) do

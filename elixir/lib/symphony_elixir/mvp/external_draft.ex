@@ -282,10 +282,17 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
   @spec reconcile(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def reconcile(receipt, opts) do
     data = Receipt.read(receipt)
+
+    case Forge.receipt_scope(data, opts) do
+      :ok -> reconcile_delivery(receipt, data, opts)
+      error -> error
+    end
+  end
+
+  defp reconcile_delivery(receipt, data, opts) do
     delivery = data["external_delivery"]
 
-    with :ok <- Forge.receipt_scope(data, opts),
-         %{"intent" => intent} <- delivery,
+    with %{"intent" => intent} <- delivery,
          :ok <- valid_journal(receipt, delivery),
          true <- intent["candidate_sha"] == data["candidate_sha"] and intent["repository"] == data["repository"] and intent["branch"] == data["branch"],
          {:ok, review, proof} <- review_proof(data, receipt, data["workspace"]),
