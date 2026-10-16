@@ -88,6 +88,24 @@ mix mvp.release /绝对路径/回执.json
   3. `Executor.run_legacy_agent` 与 `Attempts.run`：自动通过 `ModelServices.persistent_home` 将持久目录注入 agent options。
 - **验证记录**：`mix test test/symphony_elixir/mvp_app_server_test.exs` 全部 9 项测试通过；`mix format --check-formatted` 通过；`MIX_ENV=dev mix escript.build` 成功构建新二进制 `elixir/bin/symphony`（5,879,262 字节）。
 
+### 2026-10-16 内层沙盒放通、Docker 权限调整与 GL-1 候选生成（IS-103）
+
+- **背景与现象**：GL-1 首次进入编码时，Codex 在调用 `exec_command` 执行构建和测试时遭遇 `Operation not permitted` / `Permission denied`，导致未能生成候选代码，最终阻塞报 `:mvp_no_changes`。
+- **根因确认**：
+  1. Codex 原生 `thread_sandbox: workspace-write` 依赖 `bwrap`。容器镜像内无此二进制，而宿主机 `/usr/bin/bwrap` 依赖外部动态链接库；
+  2. 容器默认以 `--user 1000:1000 --cap-drop ALL --security-opt no-new-privileges` 启动，内核、AppArmor 与 Seccomp 阻止了非 root 用户创建 User Namespace。
+- **方案实施与修复**：
+  1. **静态依赖挂载**：挂载 `/home/elma/.codex/packages/standalone/current/codex-resources/bwrap`（static-pie 独立二进制，零外部动态依赖）至容器内 `/usr/local/bin/bwrap:ro`；
+  2. **容器安全权限放通**：在 `.local/start-symphony.sh` 中去除 `--cap-drop ALL` 和 `--security-opt no-new-privileges`，增加 `--cap-add SYS_ADMIN --security-opt apparmor=unconfined --security-opt seccomp=unconfined`；
+  3. **Release 构建边界对齐**：编译时须挂载 `-v $PWD:/repo -w /repo/elixir`，防止 `Mvp.Config.source_root()` 将编译路径编译为根目录 `/` 触发 `:mvp_state_source_overlap`；
+  4. **失败回执归档**：将旧的 blocked 回执及工作区按规范完整归档至 `/var/tmp/innovation-symphony-linux-runtime/archives/issue-1-bwrap-failure-20261016T191848Z/` 并记录 SHA256。
+- **实测验证结果**：
+  1. 重启控制器后，自动重新领取 Issue #1（GL-1）；
+  2. 会话成功直接在宿主机 `/var/tmp/innovation-symphony-linux-runtime/sandboxes/run-1792149790442918-2/codex-home/sessions/` 落盘，看板即刻发现 2 个活跃会话；
+  3. Codex 在内层沙盒内调用 `find`、`git diff`、`javac` 及探针全部成功（退出码 0），顺利完成了 `backend/src/LucaV2Server.java` 的 `/api/health` 路由与 `backend/test_backend.py` 断言注入；
+  4. 成功生成候选提交 `09c20b9527b14bb317ef94514ea59381acb5d906`，推进至门禁检查；
+  5. 门禁检查阶段执行 `python3 backend/test_backend.py`，因 Issue 描述中硬编码的大小写 `headers["Content-Type"]` 与标准库 `http.client` 解析出的全部小写键 `'content-type'` 不一致，在 Python 断言处报 `KeyError: 'Content-Type'`，任务按调度策略以 `{:mvp_check_failed, 1}` 停机等待操作者处置。
+
 
 ## 2026-10-05 Issue #12 ready 与领取启用前诊断
 
