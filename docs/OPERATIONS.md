@@ -1387,6 +1387,17 @@ registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持�
 
 来源：所有者要求将 deepseek-v4-flash 接入 reviewer agent。
 - 默认设置更新：通过 ModelSettings API 完成 CAS 递增保存（revision 5），设置 `defaults.reviewer` 为 `deepseek` 预设下的 `deepseek-v4-flash`（`reasoning_effort: high`）。同步更新 `.local/WORKFLOW.md` 的 `mvp.reviewer_model: deepseek-v4-flash` 并重启控制器服务。
-- 实机验证：`http://127.0.0.1:4000/api/v1/state` 状态正常，View 接口实测返回生效默认值为 Coder `deepseek-v4-pro`（high）与 Reviewer `deepseek-v4-flash`（high）。
+## 2026-10-16 GL-1 端到端自动化交付与单轮评审校验修复（IS-013/014）
+
+来源：GL-1 任务执行与自动化交付。
+- Docker 权限与内层沙盒支持：去除了容器 `--cap-drop ALL` 和 `--security-opt no-new-privileges`，增加 `--cap-add SYS_ADMIN --security-opt apparmor=unconfined --security-opt seccomp=unconfined`，并只读挂载静态独立二进制 `bwrap` 至 `/usr/local/bin/bwrap`，在严格保持 `codex.thread_sandbox: workspace-write` 前提下打通了 Codex 容器内嵌套沙盒执行能力。
+- 断言规范修正：排查确认 Python `http.client` 解析得到的响应头字典键为驼峰 `Content-type`，直接下标访问 `headers["Content-Type"]` 会产生 KeyError。更新 GitLab Issue #1 描述要求采用大小写无关提取 `{k.lower(): v for k, v in headers.items()}["content-type"]`。
+- 单轮评审契约修复（IS-014）：排查确认当 `max_rework: 0`（`limit == 0`）时，`Review.valid?` 原先硬编码 `map_size(value) == 2`，而控制器的 `review_prompt` 提示词模板要求模型输出包含 `criteria` 与 `blockers` 的结构化 JSON，导致 Reviewer 模型在给出 `approved: true` 且全部细则 `met` 的情况下被判定为 `:mvp_invalid_review`。修复 `Review.valid?(value, 0)` 使其在严格验证 `approved`、`summary` 及字段白名单的前提下兼容包含 criteria / blockers 列表的结构化批准对象。
+- 交付成果：控制器成功完成 GL-1 任务全生命周期调度：Codex 编码完成、门禁 `python3 backend/test_backend.py` 退出码 0 通过（PASS）、Reviewer（`deepseek-v4-flash`）结构化代码审查批准，并通过 `Delivery.publish` 自动向 GitLab 推送分支并创建 Draft MR。
+  - MR 链接：`https://81.71.154.125:8443/innovation/luca/-/merge_requests/1`
+  - 候选 Commit SHA：`494f85abe3f2f85d9d737a2afb02bd2ab51014be`
+  - 分支名：`codex/symphony-7dd80e93ed9283c3f18e5e91e5b18bf13162b54bc0eb15f3e0e7511e87d1f07d`
+  - 任务状态：`awaiting_human`（等待人类在 GitLab 上核对并合并该 Draft MR）。
+
 
 
