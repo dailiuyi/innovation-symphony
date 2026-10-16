@@ -268,4 +268,85 @@ defmodule SymphonyElixir.MVPAppServerTest do
              "fake app-server process #{pid} survived a closed port"
     end
   end
+
+  test "persistent codex_home option is preserved and not cleaned up on stop_session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-persistent-home-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    workspace = Path.join(test_root, "workspaces/MVP-1")
+    custom_home = Path.join(test_root, "sandboxes/run-1/codex-home")
+    codex_binary = Path.join(test_root, "fake-codex")
+
+    File.mkdir_p!(workspace)
+    File.mkdir_p!(custom_home)
+    write_fake_app_server!(codex_binary)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.dirname(workspace),
+      codex_command: "#{shell_quote(codex_binary)} app-server",
+      codex_turn_timeout_ms: 5_000
+    )
+
+    System.put_env("GH12_CODER_KEY", "test-key-coder")
+    System.put_env("GH12_REVIEWER_KEY", "test-key-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    settings = SymphonyElixir.ModelServicesFixture.settings(test_root)
+    {:ok, service} = SymphonyElixir.Mvp.ModelServices.snapshot(settings, "coding", :coder, "fixture")
+    service = Map.put(service, "command", "#{codex_binary} app-server")
+
+    assert {:ok, session} =
+             AppServer.start_session(workspace,
+               model: "gpt-test",
+               model_service: service,
+               codex_home: custom_home,
+               read_only: false,
+               tools: false
+             )
+
+    assert File.exists?(Path.join(custom_home, "config.toml"))
+
+    AppServer.stop_session(session)
+
+    # Must NOT be deleted after session stop
+    assert File.dir?(custom_home)
+    assert File.exists?(Path.join(custom_home, "config.toml"))
+  end
+
+  test "ModelServices.standalone_run_home generates runtime sandboxes codex-home when sandbox disabled" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-runtime-root-#{System.unique_integer([:positive])}"
+      )
+
+    state_dir = Path.join(test_root, "state")
+    File.mkdir_p!(state_dir)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    assert {:ok, home} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: state_dir})
+    assert is_binary(home)
+    assert String.starts_with?(home, Path.join(test_root, "sandboxes"))
+    assert String.ends_with?(home, "codex-home")
+    assert File.dir?(home)
+
+    # When sandbox is enabled, must return {:ok, nil} and not allocate a home
+    assert {:ok, nil} =
+             SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{
+               state_dir: state_dir,
+               sandbox: %{enabled: true}
+             })
+
+    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
+    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{})
+  end
 end

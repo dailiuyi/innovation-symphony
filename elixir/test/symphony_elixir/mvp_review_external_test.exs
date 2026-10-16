@@ -58,6 +58,24 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert {:ok, ^old_rework} = Review.parse(Jason.encode!(old_rework), 1)
     assert Review.disposition(old_rework) == :repair_code
     assert Review.external_conditions(old_rework) == []
+
+    structured_approval = %{
+      "approved" => true,
+      "summary" => "Ready",
+      "criteria" => [criterion("A1", true)],
+      "blockers" => []
+    }
+
+    assert {:ok, %{"approved" => true}} = Review.parse(Jason.encode!(structured_approval), 0)
+
+    string_criteria_approval = %{
+      "approved" => true,
+      "summary" => "Ready",
+      "criteria" => ["AC1 met", "AC2 met"],
+      "blockers" => []
+    }
+
+    assert {:ok, %{"approved" => true}} = Review.parse(Jason.encode!(string_criteria_approval), 0)
   end
 
   test "rework schema requires strict blockers while preserving legacy parse compatibility" do
@@ -73,7 +91,12 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert schema["properties"]["blockers"]["items"]["properties"]["kind"]["enum"] ==
              ["code_defect", "external_condition"]
 
-    assert Review.schema(0)["properties"] == %{"approved" => %{"type" => "boolean"}, "summary" => %{"type" => "string"}}
+    assert Review.schema(0)["properties"] == %{
+             "approved" => %{"type" => "boolean"},
+             "summary" => %{"type" => "string"},
+             "criteria" => %{"type" => "array"},
+             "blockers" => %{"type" => "array"}
+           }
   end
 
   test "external-only blockers wait and are returned without relying on summary wording" do
@@ -209,5 +232,52 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
       },
       overrides
     )
+  end
+
+  test "schema(0) exposes criteria and blockers properties while keeping required fields minimal" do
+    schema = Review.schema(0)
+    assert schema["required"] == ["approved", "summary"]
+    assert Map.has_key?(schema["properties"], "criteria")
+    assert Map.has_key?(schema["properties"], "blockers")
+
+    # Valid structured approval with valid criteria is accepted at limit 0
+    valid_structured = %{
+      "approved" => true,
+      "summary" => "All good",
+      "criteria" => [criterion("A1", true)],
+      "blockers" => []
+    }
+
+    assert {:ok, ^valid_structured} = Review.parse(Jason.encode!(valid_structured), 0)
+    assert Review.disposition(valid_structured) == :approved
+
+    # Malformed criteria or blockers in limit 0 (numbers, empty strings) must be rejected
+    invalid_criterion = %{
+      "approved" => true,
+      "summary" => "Broken criterion",
+      "criteria" => [123],
+      "blockers" => []
+    }
+
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(invalid_criterion), 0)
+
+    empty_item = %{
+      "approved" => true,
+      "summary" => "Empty item",
+      "criteria" => [""],
+      "blockers" => []
+    }
+
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(empty_item), 0)
+
+    # Approved: true with non-empty blockers must be rejected at limit 0
+    contradictory_blockers = %{
+      "approved" => true,
+      "summary" => "Contradiction",
+      "criteria" => [criterion("A1", true)],
+      "blockers" => [blocker("A1", "code_defect")]
+    }
+
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(contradictory_blockers), 0)
   end
 end

@@ -97,7 +97,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          :ok <- validate_execution_environment(execution_environment, worker_host, expanded_workspace),
          service = Keyword.get(opts, :model_service),
          :ok <- ModelServices.credential_boundary(service, [expanded_workspace]),
-         {:ok, service_runtime} <- prepare_service(service, execution_environment, worker_host, model),
+         {:ok, service_runtime} <- prepare_service(service, execution_environment, worker_host, model, Keyword.get(opts, :codex_home)),
          {:ok, port} <- start_port(expanded_workspace, worker_host, binding, execution_environment, service_runtime) do
       metadata = port_metadata(port, worker_host)
       session_workspace = if execution_environment, do: execution_environment.cwd, else: expanded_workspace
@@ -394,22 +394,34 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp prepare_service(nil, _, _, _), do: {:ok, nil}
+  defp prepare_service(service, environment, host, model, codex_home \\ nil)
+  defp prepare_service(nil, _, _, _, _), do: {:ok, nil}
 
-  defp prepare_service(service, environment, host, model) do
+  defp prepare_service(service, environment, host, model, codex_home) do
     with :ok <- ModelServices.validate_snapshot(service),
          true <- (is_nil(host) and ModelCatalog.supported_adapter?(service)) or {:error, :model_provider_not_supported},
          true <- model == service["model"] or {:error, :model_service_model_mismatch},
          :ok <- ModelServices.identity_matches(service),
          {:ok, credential} <- ModelServices.credential(service["credential_ref"]) do
-      service_home(service, environment, credential)
+      service_home(service, environment, credential, codex_home)
     end
   end
 
-  defp service_home(service, environment, credential) when is_map(environment),
+  defp service_home(service, environment, credential, _codex_home) when is_map(environment),
     do: {:ok, service_runtime(service, environment.codex_home, false, credential)}
 
-  defp service_home(service, nil, credential) do
+  defp service_home(service, nil, credential, codex_home) when is_binary(codex_home) do
+    with :ok <- File.mkdir_p(codex_home),
+         :ok <- File.chmod(codex_home, 0o700),
+         :ok <- ModelServices.write_home(codex_home, service, credential) do
+      {:ok, service_runtime(service, codex_home, false, credential)}
+    else
+      _ ->
+        {:error, :model_service_home_failed}
+    end
+  end
+
+  defp service_home(service, nil, credential, nil) do
     home = Path.join(System.tmp_dir!(), "symphony-model-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower))
 
     with :ok <- File.mkdir(home), :ok <- File.chmod(home, 0o700), :ok <- ModelServices.write_home(home, service, credential) do

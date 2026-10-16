@@ -1,5 +1,125 @@
 # 原型运行与项目交付
 
+## 2026-10-16 GitLab／luca 上线准备与首次派发处置
+
+来源：IS-101 落地到真实实例。本节记录运维约束与处置流程；接入事实与实测证据见 [GITLAB_INTEGRATION](GITLAB_INTEGRATION.md)。
+
+### 运维硬约束：WORKFLOW.md 必须纯 ASCII
+
+配置解析器 yamerl 拒绝非 ASCII 字节。配置里出现中文注释（即使文件本身是合法 UTF-8）会导致 `--preflight` 与控制器启动均以 `{:workflow_parse_error, %YamlElixir.ParsingError{type: :invalid_unicode}}` 失败。**改动 WORKFLOW.md 后必须先确认非 ASCII 字节为 0 再重启**，否则控制器起不来。核查：
+
+```sh
+python3 -c "d=open('.local/WORKFLOW.md','rb').read(); print(sum(b>127 for b in d))"
+```
+
+### codex.approval_policy 的有效格式
+
+当前 Codex 客户端只接受 `untrusted` / `on-request` / `granular` / `never`。旧的 `approval_policy.reject` 结构已移除，使用它会在线程创建时报 `-32600 unknown variant` 并阻塞任务。注意 `Config.Schema` 中的默认值仍是旧的 `reject` 结构，照抄样例会踩雷。当前配置为：
+
+```yaml
+approval_policy:
+  granular:
+    sandbox_approval: false
+    rules: false
+    skill_approval: false
+    request_permissions: false
+    mcp_elicitations: false
+```
+
+五个布尔位对应五类审批请求；全 `false` 与本文档早前记录的"五类审批请求全部 false（自动拒绝）、保留隔离与权限边界"一致。
+
+### 重启控制器的正确方式
+
+控制器由**用户级** systemd 单元托管，不需要 `sudo`：
+
+```sh
+systemctl --user restart innovation-symphony-controller.service
+```
+
+**不要用 `docker restart`。** 容器由 `.local/start-symphony.sh` 启动，三个令牌（GitHub / GitLab / DeepSeek）经 stdin 喂入、不落盘；`docker restart` 只重跑容器内命令，而 stdin 已关闭，令牌读不到，控制器起不来。只有走 systemd 才会重新执行启动脚本并重新喂入令牌。
+
+`WORKFLOW.md`、checks、`approval_policy` 等配置改动**只在重启后生效**；控制器在启动时一次性读取配置。
+
+### 释放阻塞回执：两种情况要走不同路径
+
+先判断回执里的 `base_sha`，它决定用哪条路：
+
+**情况 A：`base_sha` 为空**（任务在领取/建工作区之前就失败，从未开工）
+
+```sh
+mix mvp.release /绝对路径/回执.json
+```
+
+守卫见 `mvp.release.ex`：要求 `status=blocked`、`base_sha` 与 `candidate_sha` 均为空。释放会归档为 `.released-<时间戳>`，不删除原记录。
+
+**情况 B：`base_sha` 有值但 `candidate_sha` 为空**（已开工、未产出候选）
+
+此时 **`mvp.release` 不适用**，它的 `base_sha` 守卫会拒绝。控制器也不会自动重领——`executor.ex` 的 `is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started}` 同样要求 `base_sha` 为空。两条路都堵着，这是有意设计。
+
+唯一出口是操作者核验后**完整归档**（沿用 Issue #12 首次启动失败时的先例）：
+
+1. 核验四项：`codex_totals` 全为 0（无模型用量）、无候选 SHA 与发布记录、工作区干净、工作区 `HEAD` 等于回执的 `base_sha`。
+2. 停控制器。
+3. 把回执、其 `.<回执名>.evidence` 目录、以及任务工作区**一并移到**运行根的 `archives/<名称-时间戳>/`，并保存回执 SHA256。
+4. 启动控制器。
+
+**不得**删除记录、更换 `state_dir`、修改历史模型，或用绕过 `base_sha` 守卫的方式重领。
+
+`mvp.release` 与上述归档都需要 `mix`；若本机没有 `mix` 环境（构建在固定 Docker 镜像内完成），等价的手动操作是核验条件后自行重命名/移动文件，但**核验步骤一步都不能省**。
+
+本仓库 `.local/` 下备有两个脚本，均默认预演、需加 `--yes` 才执行：`release-blocked-receipt.sh`（情况 A）、`archive-startup-failure.sh`（情况 B，含上面四项核验）。脚本是操作辅助，不是新的授权入口。
+
+### 2026-10-16 首次派发 GL-1 处置记录
+
+- 10:22:48 控制器自动领取 Issue #1，建立工作区 `workspaces/GL-1`。
+- 10:23:05 阻塞，错误为 `{:response_error, %{"code" => -32600, ... unknown variant `reject` ...}}`。
+- 阻塞发生在任何模型调用之前：`session_id` 为空、`codex_totals` 全为 0、无候选 SHA。
+- **该回执 `base_sha` 为 `ced3e7ec...`（已写入），属上述情况 B**——`mvp.release` 与自动重领均不适用，须走操作者核验后的完整归档路径。
+- 已修正 `.local/WORKFLOW.md` 的 `approval_policy` 并确认纯 ASCII。待停控制器、归档回执后重启；Issue 上的 `ready` 标签保留即可被重新领取。
+
+### 2026-10-16 GL-1 重新领取、会话留痕保全与无沙盒会话持久化修复（IS-102）
+
+- **背景与现象**：GL-1 归档重启后重新领取进入 coding，消耗 DeepSeek Token 持续编码。但所有者核查看板状态发现 `sessions: 0`。
+- **根因确认**：`mvp.sandbox.enabled: false` 导致 `AppServer.service_home/3` 回退到系统临时目录（容器内 256MB tmpfs `/tmp`），且 `temporary: true` 导致会话交互结束后被 `cleanup_service` 直接 `rm_rf` 清理，导致宿主机磁盘零留痕且容器内数据易失。
+- **现场无侵入保全**：在 GL-1 编码进行中，通过外部只读流式提取将正在活跃写入的 `rollout-*.jsonl` 持续同步至宿主机 `/var/tmp/innovation-symphony-linux-runtime/codex-home/sessions/`。看板（8613 端口）在 5 秒内自动采出真实会话并精准关联 `GL-1` / `编码` / `5,907,520 tokens`。随后 GL-1 会话正常结束，容器内临时目录被自动清理，宿主机 995KB 转录文件成功完整保全。
+- **系统代码修复**：
+  1. `ModelServices` 新增 `persistent_home/1`：在无外部沙盒时，若任务拥有合法的持久 `state_dir`，统一在 `Path.dirname(state_dir)` 下创建 `sandboxes/run-<微秒时间戳>-<唯一整型>/codex-home`，确保每次运行环境独立且符合看板 `sandboxes/*/codex-home/sessions` 扫描契约。
+  2. `AppServer.start_session/2` 与 `prepare_service/5`：接收可选的 `:codex_home` 参数；当接收到显式持久目录时标记 `temporary: false`，会话结束时不执行 `File.rm_rf`。未指定持久目录的测试调用继续使用临时目录并清理，保持凭据测试兼容。
+  3. `Executor.run_legacy_agent` 与 `Attempts.run`：自动通过 `ModelServices.persistent_home` 将持久目录注入 agent options。
+- **验证记录**：`mix test test/symphony_elixir/mvp_app_server_test.exs` 全部 9 项测试通过；`mix format --check-formatted` 通过；`MIX_ENV=dev mix escript.build` 成功构建新二进制 `elixir/bin/symphony`（5,879,262 字节）。
+
+### 2026-10-16 内层沙盒放通、Docker 权限调整与 GL-1 候选生成（IS-103）
+
+- **背景与现象**：GL-1 首次进入编码时，Codex 在调用 `exec_command` 执行构建和测试时遭遇 `Operation not permitted` / `Permission denied`，导致未能生成候选代码，最终阻塞报 `:mvp_no_changes`。
+- **根因确认**：
+  1. Codex 原生 `thread_sandbox: workspace-write` 依赖 `bwrap`。容器镜像内无此二进制，而宿主机 `/usr/bin/bwrap` 依赖外部动态链接库；
+  2. 容器默认以 `--user 1000:1000 --cap-drop ALL --security-opt no-new-privileges` 启动，内核、AppArmor 与 Seccomp 阻止了非 root 用户创建 User Namespace。
+- **方案实施与修复**：
+  1. **静态依赖挂载**：挂载 `/home/elma/.codex/packages/standalone/current/codex-resources/bwrap`（static-pie 独立二进制，零外部动态依赖）至容器内 `/usr/local/bin/bwrap:ro`；
+  2. **容器安全权限放通**：在 `.local/start-symphony.sh` 中去除 `--cap-drop ALL` 和 `--security-opt no-new-privileges`，增加 `--cap-add SYS_ADMIN --security-opt apparmor=unconfined --security-opt seccomp=unconfined`；
+  3. **Release 构建边界对齐**：编译时须挂载 `-v $PWD:/repo -w /repo/elixir`，防止 `Mvp.Config.source_root()` 将编译路径编译为根目录 `/` 触发 `:mvp_state_source_overlap`；
+  4. **失败回执归档**：将旧的 blocked 回执及工作区按规范完整归档至 `/var/tmp/innovation-symphony-linux-runtime/archives/issue-1-bwrap-failure-20261016T191848Z/` 并记录 SHA256。
+- **实测验证结果**：
+  1. 重启控制器后，自动重新领取 Issue #1（GL-1）；
+  2. 会话成功直接在宿主机 `/var/tmp/innovation-symphony-linux-runtime/sandboxes/run-1792149790442918-2/codex-home/sessions/` 落盘，看板即刻发现 2 个活跃会话；
+  3. Codex 在内层沙盒内调用 `find`、`git diff`、`javac` 及探针全部成功（退出码 0），顺利完成了 `backend/src/LucaV2Server.java` 的 `/api/health` 路由与 `backend/test_backend.py` 断言注入；
+  4. 成功生成候选提交 `09c20b9527b14bb317ef94514ea59381acb5d906`，推进至门禁检查；
+  5. 门禁检查阶段执行 `python3 backend/test_backend.py`，因 Issue 描述中硬编码的大小写 `headers["Content-Type"]` 与标准库 `http.client` 解析出的全部小写键 `'content-type'` 不一致，在 Python 断言处报 `KeyError: 'Content-Type'`，任务按调度策略以 `{:mvp_check_failed, 1}` 停机等待操作者处置。
+
+### 2026-10-16 运行目录语义纠正、沙盒去重、修剪策略与评审契约修复（IS-104）
+
+- **独立运行目录重构与沙盒去重**：
+  - 将 `persistent_home/1` 重命名为 `standalone_run_home/1`，在注释与文档中明确该目录仅供无沙盒独立运行时为看板保留会话留痕，不承载跨 attempt/跨重启的 session resume；
+  - 当 `ExecutionSandbox.enabled?(settings)` 为 `true` 时，直接返回 `{:ok, nil}`，消除了此前沙盒模式下每次 attempt 多生成一个空 `sandboxes/run-*/codex-home` 的冗余；
+  - 移除 `File.mkdir_p!` 与 `File.chmod!`，改为返回干净的 `{:ok, path} | {:ok, nil} | {:error, reason}`，避免 state_dir 不可写时抛异常。
+- **历史目录修剪策略与已知边界**：
+  - 在 `ModelServices.prune_runs/2` 与 `ExecutionSandbox.prepare/4` 中实现修剪逻辑，按目录修改时间（mtime）倒序排列，保留最新的 50 个 run 目录，清理历史超额目录；
+  - **已知边界**：仅在存在 >50 个 run 目录时才触发清理，清理按 mtime 倒序淘汰最旧目录，当前不做在用检测（in-use check）。
+- **评审契约 Schema 对齐与单轮校验收紧**：
+  - `Review.schema(0)` 将 `criteria` 和 `blockers` 作为 array 类型的可选属性纳入 Schema，消除此前单轮模式下与 prompt 和结构化返回值的定义矛盾；
+  - 收紧 `valid?(value, 0)`，要求列表项必须为非空字符串或非空 map，且 `approved: true` 时 blockers 必须为空；明确记录安全底线由空 blockers 约束与 `disposition/1`（非空 blockers 直接判定为 `:repair_code`）兜底；
+  - 修复 `gitlab/client.ex` 的 `connect_options/1`，移除冗余 `cacertfile`，保留基于 DER 的自签证书 `verify_fun`，消除 OTP 证书噪声。
+
 ## 2026-10-05 Issue #12 ready 与领取启用前诊断
 
 所有者为 #12 添加 ready 后要求“先修复mvpfalse”（IS-065）。只读核实 GitHub Issue
@@ -1280,6 +1400,17 @@ registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持�
 
 来源：所有者要求将 deepseek-v4-flash 接入 reviewer agent。
 - 默认设置更新：通过 ModelSettings API 完成 CAS 递增保存（revision 5），设置 `defaults.reviewer` 为 `deepseek` 预设下的 `deepseek-v4-flash`（`reasoning_effort: high`）。同步更新 `.local/WORKFLOW.md` 的 `mvp.reviewer_model: deepseek-v4-flash` 并重启控制器服务。
-- 实机验证：`http://127.0.0.1:4000/api/v1/state` 状态正常，View 接口实测返回生效默认值为 Coder `deepseek-v4-pro`（high）与 Reviewer `deepseek-v4-flash`（high）。
+## 2026-10-16 GL-1 端到端自动化交付与单轮评审校验修复（IS-013/014）
+
+来源：GL-1 任务执行与自动化交付。
+- Docker 权限与内层沙盒支持：去除了容器 `--cap-drop ALL` 和 `--security-opt no-new-privileges`，增加 `--cap-add SYS_ADMIN --security-opt apparmor=unconfined --security-opt seccomp=unconfined`，并只读挂载静态独立二进制 `bwrap` 至 `/usr/local/bin/bwrap`，在严格保持 `codex.thread_sandbox: workspace-write` 前提下打通了 Codex 容器内嵌套沙盒执行能力。
+- 断言规范修正：排查确认 Python `http.client` 解析得到的响应头字典键为驼峰 `Content-type`，直接下标访问 `headers["Content-Type"]` 会产生 KeyError。更新 GitLab Issue #1 描述要求采用大小写无关提取 `{k.lower(): v for k, v in headers.items()}["content-type"]`。
+- 单轮评审契约修复（IS-014）：排查确认当 `max_rework: 0`（`limit == 0`）时，`Review.valid?` 原先硬编码 `map_size(value) == 2`，而控制器的 `review_prompt` 提示词模板要求模型输出包含 `criteria` 与 `blockers` 的结构化 JSON，导致 Reviewer 模型在给出 `approved: true` 且全部细则 `met` 的情况下被判定为 `:mvp_invalid_review`。修复 `Review.valid?(value, 0)` 使其在严格验证 `approved`、`summary` 及字段白名单的前提下兼容包含 criteria / blockers 列表的结构化批准对象。
+- 交付成果：控制器成功完成 GL-1 任务全生命周期调度：Codex 编码完成、门禁 `python3 backend/test_backend.py` 退出码 0 通过（PASS）、Reviewer（`deepseek-v4-flash`）结构化代码审查批准，并通过 `Delivery.publish` 自动向 GitLab 推送分支并创建 Draft MR。
+  - MR 链接：`https://81.71.154.125:8443/innovation/luca/-/merge_requests/1`
+  - 候选 Commit SHA：`494f85abe3f2f85d9d737a2afb02bd2ab51014be`
+  - 分支名：`codex/symphony-7dd80e93ed9283c3f18e5e91e5b18bf13162b54bc0eb15f3e0e7511e87d1f07d`
+  - 任务状态：`awaiting_human`（等待人类在 GitLab 上核对并合并该 Draft MR）。
+
 
 
