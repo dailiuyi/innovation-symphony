@@ -101,6 +101,7 @@ defmodule SymphonyElixir.Mvp.Attempts do
     remaining = remaining_ms(context)
     common = [tools: false, on_message: handler, wall_timeout_ms: remaining]
     options = common ++ role_options(role, context.limit)
+    options = if home = ModelServices.persistent_home(context.settings), do: options ++ [codex_home: home], else: options
 
     result =
       with {:ok, service_options} <- ModelServices.options(context, role) do

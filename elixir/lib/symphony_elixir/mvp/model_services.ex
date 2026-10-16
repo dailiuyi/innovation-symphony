@@ -126,6 +126,23 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec path(map()) :: Path.t()
   def path(settings), do: Path.join(settings.state_dir, "model-services.json")
 
+  @spec persistent_home(map()) :: Path.t() | nil
+  def persistent_home(%{state_dir: state_dir}) when is_binary(state_dir) do
+    if File.dir?(state_dir) do
+      root = Path.dirname(state_dir)
+      sandboxes = Path.join(root, "sandboxes")
+      run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
+      home = Path.join(run, "codex-home")
+      File.mkdir_p!(home)
+      File.chmod!(home, 0o700)
+      home
+    else
+      nil
+    end
+  end
+
+  def persistent_home(_), do: nil
+
   @spec load(Path.t(), map() | nil) :: {:ok, map() | nil} | {:error, term()}
   def load(path, fallback) do
     case File.read(path) do

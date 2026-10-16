@@ -894,3 +894,14 @@ DeepSeek Responses 的完整单 json 围栏仅依据原冻结服务在适配边�
 - 工程选择与原因：沿用持久回执与交付核对协议；GitLab 身份加入实例 API 地址与项目路径，避免不同实例的同名项目串任务；以可信 CA 文件支持自签名实例，不关闭证书校验；任务采用独立工作区保护 luca 的未提交修改。
 - 边界：本次尚未授权真实 Issue 派发、luca 代码发送给外部模型、远端分支推送、MR 创建、合并或部署。测试中的模拟 API 和本地 Git 裸库不属于真实接入验收。
 - 实施与待办见 [GITLAB_INTEGRATION.md](GITLAB_INTEGRATION.md)。运行服务、现有配置与 `mvp.enabled` 保持原状。
+- 后续更新（2026-10-16）：所有者在本机完成配置准备后，用 `daily` 账号创建 Issue #1 并添加 `ready`，控制器实际领取（GL-1），并在建立 Codex 线程时因 `approval_policy` 使用已废弃的 `reject` 结构而阻塞于编码前停点。据此，上文"尚未授权真实 Issue 派发"的边界已由所有者本人的操作取代。**该次阻塞发生在任何模型调用之前（`session_id` 为空、用量为 0、无候选 SHA），因此 luca 私有代码尚未发送给外部模型；远端推送、MR 创建、合并与部署仍未发生、未授权。** 实测证据、`verify_fun` 必需性与门禁配置见 [GITLAB_INTEGRATION.md](GITLAB_INTEGRATION.md)；运维约束（WORKFLOW.md 纯 ASCII、`approval_policy` 格式、重启方式、回执释放）见 [OPERATIONS.md](OPERATIONS.md)。
+
+## IS-102：无沙盒执行模式下的会话留痕与看板持久化契约
+
+- 日期与来源：2026-10-16，所有者核查看板采集状态并发现 `sessions: 0`，确认根因后指示「完成修复 先给我计划。我有一个进程在跑 尽量不要干扰到他」，并在计划出具后明确确认 `Implement the plan`。
+- 根因分析：当 `mvp.sandbox.enabled: false` 时，`AppServer.service_home/3` 走入无沙盒回退分支，将 `CODEX_HOME` 建立在系统临时目录，容器内对应 256MB 内存 tmpfs `/tmp`；更严重的是，该分支将运行时标记为 `temporary: true`，在会话交互结束时触发 `cleanup_service` 执行 `File.rm_rf`，导致转录在宿主机磁盘完全无留痕且在容器内即刻销毁。
+- 决策与改动：
+  1. 应急留痕保全：在当前运行中 GL-1 任务未结束前，以只读流式提取保全了容器内正在写入的 995KB 转录文件至宿主机 `/var/tmp/innovation-symphony-linux-runtime/codex-home/sessions/`，看板即刻采集并成功关联 GL-1（590 万 Token 完整留痕）。
+  2. 契约修复：在 `ModelServices` 新增 `persistent_home/1`，在无外部隔离沙盒时统一在任务运行根目录（`Path.dirname(state_dir)`）下创建 `<runtime_root>/sandboxes/run-<微秒时间戳>-<唯一整型>/codex-home`，通过 options 传入 `AppServer`；`AppServer` 识别显式 `codex_home` 并标记 `temporary: false`，废除自动清理，实现无沙盒执行与沙盒执行一致的会话留痕与看板自动发现契约。
+  3. 测试兼容：直接调用 `ModelServices.run` 且无持久运行根的单元测试继续保留临时清理分支，不破坏既有凭据隔离断言。
+

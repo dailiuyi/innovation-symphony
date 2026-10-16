@@ -2108,6 +2108,7 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     options = [tools: false, on_message: handler]
     options = if role == :reviewer, do: options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: options
+    options = if home = ModelServices.persistent_home(context.settings), do: options ++ [codex_home: home], else: options
 
     result =
       with {:ok, service_options} <- ModelServices.options(context, role) do

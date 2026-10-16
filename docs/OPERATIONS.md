@@ -1,5 +1,94 @@
 # 原型运行与项目交付
 
+## 2026-10-16 GitLab／luca 上线准备与首次派发处置
+
+来源：IS-101 落地到真实实例。本节记录运维约束与处置流程；接入事实与实测证据见 [GITLAB_INTEGRATION](GITLAB_INTEGRATION.md)。
+
+### 运维硬约束：WORKFLOW.md 必须纯 ASCII
+
+配置解析器 yamerl 拒绝非 ASCII 字节。配置里出现中文注释（即使文件本身是合法 UTF-8）会导致 `--preflight` 与控制器启动均以 `{:workflow_parse_error, %YamlElixir.ParsingError{type: :invalid_unicode}}` 失败。**改动 WORKFLOW.md 后必须先确认非 ASCII 字节为 0 再重启**，否则控制器起不来。核查：
+
+```sh
+python3 -c "d=open('.local/WORKFLOW.md','rb').read(); print(sum(b>127 for b in d))"
+```
+
+### codex.approval_policy 的有效格式
+
+当前 Codex 客户端只接受 `untrusted` / `on-request` / `granular` / `never`。旧的 `approval_policy.reject` 结构已移除，使用它会在线程创建时报 `-32600 unknown variant` 并阻塞任务。注意 `Config.Schema` 中的默认值仍是旧的 `reject` 结构，照抄样例会踩雷。当前配置为：
+
+```yaml
+approval_policy:
+  granular:
+    sandbox_approval: false
+    rules: false
+    skill_approval: false
+    request_permissions: false
+    mcp_elicitations: false
+```
+
+五个布尔位对应五类审批请求；全 `false` 与本文档早前记录的"五类审批请求全部 false（自动拒绝）、保留隔离与权限边界"一致。
+
+### 重启控制器的正确方式
+
+控制器由**用户级** systemd 单元托管，不需要 `sudo`：
+
+```sh
+systemctl --user restart innovation-symphony-controller.service
+```
+
+**不要用 `docker restart`。** 容器由 `.local/start-symphony.sh` 启动，三个令牌（GitHub / GitLab / DeepSeek）经 stdin 喂入、不落盘；`docker restart` 只重跑容器内命令，而 stdin 已关闭，令牌读不到，控制器起不来。只有走 systemd 才会重新执行启动脚本并重新喂入令牌。
+
+`WORKFLOW.md`、checks、`approval_policy` 等配置改动**只在重启后生效**；控制器在启动时一次性读取配置。
+
+### 释放阻塞回执：两种情况要走不同路径
+
+先判断回执里的 `base_sha`，它决定用哪条路：
+
+**情况 A：`base_sha` 为空**（任务在领取/建工作区之前就失败，从未开工）
+
+```sh
+mix mvp.release /绝对路径/回执.json
+```
+
+守卫见 `mvp.release.ex`：要求 `status=blocked`、`base_sha` 与 `candidate_sha` 均为空。释放会归档为 `.released-<时间戳>`，不删除原记录。
+
+**情况 B：`base_sha` 有值但 `candidate_sha` 为空**（已开工、未产出候选）
+
+此时 **`mvp.release` 不适用**，它的 `base_sha` 守卫会拒绝。控制器也不会自动重领——`executor.ex` 的 `is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started}` 同样要求 `base_sha` 为空。两条路都堵着，这是有意设计。
+
+唯一出口是操作者核验后**完整归档**（沿用 Issue #12 首次启动失败时的先例）：
+
+1. 核验四项：`codex_totals` 全为 0（无模型用量）、无候选 SHA 与发布记录、工作区干净、工作区 `HEAD` 等于回执的 `base_sha`。
+2. 停控制器。
+3. 把回执、其 `.<回执名>.evidence` 目录、以及任务工作区**一并移到**运行根的 `archives/<名称-时间戳>/`，并保存回执 SHA256。
+4. 启动控制器。
+
+**不得**删除记录、更换 `state_dir`、修改历史模型，或用绕过 `base_sha` 守卫的方式重领。
+
+`mvp.release` 与上述归档都需要 `mix`；若本机没有 `mix` 环境（构建在固定 Docker 镜像内完成），等价的手动操作是核验条件后自行重命名/移动文件，但**核验步骤一步都不能省**。
+
+本仓库 `.local/` 下备有两个脚本，均默认预演、需加 `--yes` 才执行：`release-blocked-receipt.sh`（情况 A）、`archive-startup-failure.sh`（情况 B，含上面四项核验）。脚本是操作辅助，不是新的授权入口。
+
+### 2026-10-16 首次派发 GL-1 处置记录
+
+- 10:22:48 控制器自动领取 Issue #1，建立工作区 `workspaces/GL-1`。
+- 10:23:05 阻塞，错误为 `{:response_error, %{"code" => -32600, ... unknown variant `reject` ...}}`。
+- 阻塞发生在任何模型调用之前：`session_id` 为空、`codex_totals` 全为 0、无候选 SHA。
+- **该回执 `base_sha` 为 `ced3e7ec...`（已写入），属上述情况 B**——`mvp.release` 与自动重领均不适用，须走操作者核验后的完整归档路径。
+- 已修正 `.local/WORKFLOW.md` 的 `approval_policy` 并确认纯 ASCII。待停控制器、归档回执后重启；Issue 上的 `ready` 标签保留即可被重新领取。
+
+### 2026-10-16 GL-1 重新领取、会话留痕保全与无沙盒会话持久化修复（IS-102）
+
+- **背景与现象**：GL-1 归档重启后重新领取进入 coding，消耗 DeepSeek Token 持续编码。但所有者核查看板状态发现 `sessions: 0`。
+- **根因确认**：`mvp.sandbox.enabled: false` 导致 `AppServer.service_home/3` 回退到系统临时目录（容器内 256MB tmpfs `/tmp`），且 `temporary: true` 导致会话交互结束后被 `cleanup_service` 直接 `rm_rf` 清理，导致宿主机磁盘零留痕且容器内数据易失。
+- **现场无侵入保全**：在 GL-1 编码进行中，通过外部只读流式提取将正在活跃写入的 `rollout-*.jsonl` 持续同步至宿主机 `/var/tmp/innovation-symphony-linux-runtime/codex-home/sessions/`。看板（8613 端口）在 5 秒内自动采出真实会话并精准关联 `GL-1` / `编码` / `5,907,520 tokens`。随后 GL-1 会话正常结束，容器内临时目录被自动清理，宿主机 995KB 转录文件成功完整保全。
+- **系统代码修复**：
+  1. `ModelServices` 新增 `persistent_home/1`：在无外部沙盒时，若任务拥有合法的持久 `state_dir`，统一在 `Path.dirname(state_dir)` 下创建 `sandboxes/run-<微秒时间戳>-<唯一整型>/codex-home`，确保每次运行环境独立且符合看板 `sandboxes/*/codex-home/sessions` 扫描契约。
+  2. `AppServer.start_session/2` 与 `prepare_service/5`：接收可选的 `:codex_home` 参数；当接收到显式持久目录时标记 `temporary: false`，会话结束时不执行 `File.rm_rf`。未指定持久目录的测试调用继续使用临时目录并清理，保持凭据测试兼容。
+  3. `Executor.run_legacy_agent` 与 `Attempts.run`：自动通过 `ModelServices.persistent_home` 将持久目录注入 agent options。
+- **验证记录**：`mix test test/symphony_elixir/mvp_app_server_test.exs` 全部 9 项测试通过；`mix format --check-formatted` 通过；`MIX_ENV=dev mix escript.build` 成功构建新二进制 `elixir/bin/symphony`（5,879,262 字节）。
+
+
 ## 2026-10-05 Issue #12 ready 与领取启用前诊断
 
 所有者为 #12 添加 ready 后要求“先修复mvpfalse”（IS-065）。只读核实 GitHub Issue
