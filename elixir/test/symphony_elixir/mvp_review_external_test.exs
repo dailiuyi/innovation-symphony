@@ -94,8 +94,8 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert Review.schema(0)["properties"] == %{
              "approved" => %{"type" => "boolean"},
              "summary" => %{"type" => "string"},
-             "criteria" => %{"type" => "array"},
-             "blockers" => %{"type" => "array"}
+             "criteria" => %{"type" => "array", "items" => schema["properties"]["criteria"]["items"]},
+             "blockers" => %{"type" => "array", "items" => schema["properties"]["blockers"]["items"]}
            }
   end
 
@@ -234,11 +234,13 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     )
   end
 
-  test "schema(0) exposes criteria and blockers properties while keeping required fields minimal" do
+  test "schema(0) exposes criteria and blockers properties with items under strict required fields" do
     schema = Review.schema(0)
-    assert schema["required"] == ["approved", "summary"]
+    assert schema["required"] == ["approved", "summary", "criteria", "blockers"]
     assert Map.has_key?(schema["properties"], "criteria")
     assert Map.has_key?(schema["properties"], "blockers")
+    assert is_map(schema["properties"]["criteria"]["items"])
+    assert is_map(schema["properties"]["blockers"]["items"])
 
     # Valid structured approval with valid criteria is accepted at limit 0
     valid_structured = %{

@@ -43,13 +43,14 @@ defmodule SymphonyElixir.Mvp.Review do
   @spec schema(non_neg_integer()) :: map()
   def schema(0) do
     @legacy
+    |> Map.put("required", ["approved", "summary", "criteria", "blockers"])
     |> put_in(
       ["properties"],
       %{
         "approved" => %{"type" => "boolean"},
         "summary" => %{"type" => "string"},
-        "criteria" => %{"type" => "array"},
-        "blockers" => %{"type" => "array"}
+        "criteria" => %{"type" => "array", "items" => @criterion},
+        "blockers" => %{"type" => "array", "items" => @blocker}
       }
     )
   end
