@@ -1,6 +1,6 @@
 > GH-1 / IS-025：`mvp.max_rework` 默认 0，显式 1..5 开启检查与 Review 共用预算的有限返工；完整日志和外部 formatter 的结构化 ExUnit 报告本地保留，Review 拒绝理由回帖。普通及自定义断言可返工；未知检查错误、环境故障、缺失或矛盾报告、评论不确定或运行中断即停止。`mix mvp.reconcile` 仅只读对账，不恢复执行。`Executor.recheck/3` 仅供可信操作者在明确授权、原回执摘要和完整性核对后复检，执行级互斥与前序终态审计保护历史，已用次数不重置，轮询不会自动恢复 blocked。外部新版 `check_baseline.py` 通过 `--baseline` 显式指定原冻结快照；检查命令可用 `--evidence-root "{evidence}"` 将完整报告保存在本轮证据目录。逐轮证据、Review schema、用量未知值和测试对应见 [REVIEW_REWORK.md](../docs/REVIEW_REWORK.md)。
 
-> 本项目基于官方 Symphony 固定提交扩展，来源见 [UPSTREAM.md](../docs/UPSTREAM.md)。下方保留上游运行说明。`WORKFLOW.github.example.md` 是默认停用的 GitHub MVP 示例，使用前填写仓库、用户/模型允许名单及独立路径；`mix mvp.check /absolute/WORKFLOW.md` 仅本地检查，不启动轮询。新增配置、恢复限制及人工交接见 [IMPLEMENTATION_V0.md](../docs/IMPLEMENTATION_V0.md)。不要使用旧 Linear 示例的自动合并流程。
+> 本项目基于官方 Symphony 固定提交扩展，来源见 [UPSTREAM.md](../docs/UPSTREAM.md)。下方保留上游运行说明。`WORKFLOW.github.example.md` 是默认停用的 GitHub MVP 示例，`WORKFLOW.gitlab.example.md` 是对应的 GitLab 示例（实例、项目路径、token 与可选 CA 均以环境引用填写，见 [GITLAB_INTEGRATION.md](../docs/GITLAB_INTEGRATION.md)）；使用前填写仓库、用户/模型允许名单及独立路径；`mix mvp.check /absolute/WORKFLOW.md` 仅本地检查，不启动轮询。新增配置、恢复限制及人工交接见 [IMPLEMENTATION_V0.md](../docs/IMPLEMENTATION_V0.md)。不要使用旧 Linear 示例的自动合并流程。
 
 GH-3 新增 escript `--preflight`：保留 guardrails acknowledgement 参数，只读校验已启用的 GitHub MVP 配置并查询任务列表，不启动 Symphony 运行监督器，成功输出 JSON 后退出。使用方式及外部超时要求见 [OPERATIONS.md](../docs/OPERATIONS.md#gh-3-只读体检)；完整接棒、自动回退尚未实现。
 

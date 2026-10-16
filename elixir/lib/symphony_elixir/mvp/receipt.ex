@@ -1,10 +1,11 @@
 defmodule SymphonyElixir.Mvp.Receipt do
-  @moduledoc "Durable at-most-once admission receipts for the opt-in GitHub MVP."
+  @moduledoc "Durable at-most-once admission receipts for the opt-in forge MVP."
 
   @spec path(map(), map()) :: Path.t()
   def path(settings, issue) do
     repo = issue.native_ref["repo"]
-    key = :crypto.hash(:sha256, "#{repo}:#{issue.id}") |> Base.encode16(case: :lower)
+    scope = if issue.native_ref["kind"] == "gitlab", do: "gitlab:#{issue.native_ref["api_url"]}:#{repo}", else: repo
+    key = :crypto.hash(:sha256, "#{scope}:#{issue.id}") |> Base.encode16(case: :lower)
     Path.join(settings.state_dir, key <> ".json")
   end
 
@@ -22,6 +23,11 @@ defmodule SymphonyElixir.Mvp.Receipt do
           "schema" => 1,
           "repository" => issue.native_ref["repo"],
           "issue" => issue.id,
+          "tracker_kind" => issue.native_ref["kind"] || "github",
+          "tracker_api_url" => issue.native_ref["api_url"],
+          "issue_identifier" => Map.get(issue, :identifier),
+          "issue_url" => Map.get(issue, :url),
+          "issue_native_ref" => issue.native_ref,
           "status" => "claimed",
           "updated_at" => DateTime.to_iso8601(DateTime.utc_now())
         }

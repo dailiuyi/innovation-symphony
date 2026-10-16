@@ -4,9 +4,9 @@ defmodule Mix.Tasks.Mvp.External do
 
   alias SymphonyElixir.{Config, Tracker, Workflow, WorkflowStore}
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
   alias SymphonyElixir.Mvp.{Executor, ExternalHandoff, Intake, ModelServiceMigration, ModelServices, Recovery}
+  alias SymphonyElixir.Mvp.Forge
 
   @shortdoc "Inspect or resume one external-condition handoff"
   @receipt_statuses ~w(awaiting_external awaiting_human blocked claimed preparing coding checking reviewing recovering publish_pending comment_pending)
@@ -86,6 +86,7 @@ defmodule Mix.Tasks.Mvp.External do
          :ok <- runtime_valid?(app_settings, opts),
          {:ok, settings} <- execution_mvp_settings(workflow, workflow_file),
          {:ok, receipt_file, receipt_raw, receipt} <- read_json_file(receipt_path),
+         :ok <- Forge.receipt_scope(receipt, tracker_settings: app_settings.tracker),
          {:ok, _request_file, request_raw, request} <- read_json_file(request_path),
          {:ok, authorization, expected_digest} <- validate_request(request, request_raw, receipt_raw),
          {:ok, handoff} <- immutable_handoff(receipt_file, receipt),
@@ -336,13 +337,7 @@ defmodule Mix.Tasks.Mvp.External do
   end
 
   defp fetch_frozen_issue(handoff, tracker_settings, opts) do
-    fetch_issue =
-      Keyword.get(opts, :fetch_issue, fn issue_id, tracker, request_fun ->
-        case request_fun do
-          nil -> Client.fetch_issues_by_ids([issue_id], tracker)
-          fun -> Client.fetch_issues_by_ids([issue_id], tracker, fun)
-        end
-      end)
+    fetch_issue = Keyword.get(opts, :fetch_issue, &Forge.fetch_issues_by_ids/3)
 
     scope = handoff["issue_scope"]
     native_ref = handoff["issue_native_ref"]
@@ -369,7 +364,7 @@ defmodule Mix.Tasks.Mvp.External do
       )
 
     cond do
-      issue.state != "open" -> {:error, :issue_not_open}
+      issue.state not in ["open", "opened"] -> {:error, :issue_not_open}
       current_scope != handoff["issue_scope"] -> {:error, :issue_scope_changed}
       not Intake.ready?(issue, ready_label) -> {:error, :issue_not_ready}
       true -> :ok
@@ -705,8 +700,8 @@ defmodule Mix.Tasks.Mvp.External do
     value
     |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, " ")
     |> String.replace(~r/(?i)\bBearer\s+\S+/, "Bearer [redacted]")
-    |> String.replace(~r/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/, "[redacted]")
-    |> String.replace(~r/(?i)\b(?:github|gh|codex|openai)_?(?:token|key)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/, "[redacted]")
+    |> String.replace(~r/\b(?:glpat-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/, "[redacted]")
+    |> String.replace(~r/(?i)\b(?:gitlab|github|gh|codex|openai)_?(?:token|key)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/, "[redacted]")
     |> String.replace(~r/(?i)\b(token|authorization|password|secret|api[_-]?key)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/, "\\1=[redacted]")
     |> String.slice(0, 1_000)
   end

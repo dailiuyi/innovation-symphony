@@ -66,6 +66,7 @@ export function renderDetail() {
     <button class="icon-btn" type="button" id="detail-close" title="关闭">✕</button>
   </div>`;
 
+  const issueRow = story.issueUrl ? `<div class="pr-row"><a class="pr-link" href="${esc(story.issueUrl)}" target="_blank" rel="noopener">查看 Issue ${esc(story.issueLabel)}</a></div>` : '';
   const prRow = story.pr && story.pr.url ? `<div class="pr-row">${prAnchor(story.pr)}</div>` : '';
 
   const rail = beats.map((b, i) => {
@@ -104,7 +105,7 @@ export function renderDetail() {
     ? `<div><div class="section-label">预检</div><p class="muted" style="margin:0">${(story.preflight || []).map(s => `<a href="${esc(contextUrl(s.href))}">预检 ${esc(displayId(s))}</a>`).join(' · ')}</p></div>` : '';
 
   setHTML($('detail-pane'), head + `<div class="detail-body">
-    ${prRow}
+    ${issueRow}${prRow}
     <div><div class="section-label">这条任务怎么走过来</div><div class="rail">${rail}</div>${ending}</div>
     ${curSection}${returnsSection(cur)}${preflight}
   </div>`);

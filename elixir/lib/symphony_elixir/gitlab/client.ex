@@ -15,6 +15,10 @@ defmodule SymphonyElixir.GitLab.Client do
     with {:ok, _settings} <- settings(tracker_settings), do: :ok
   end
 
+  @doc "Resolve the configured project, credential and TLS trust settings for controller use."
+  @spec connection_settings(map()) :: {:ok, map()} | {:error, term()}
+  def connection_settings(tracker_settings), do: settings(tracker_settings)
+
   @spec secret_environment_names(map()) :: [String.t()]
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
@@ -76,7 +80,18 @@ defmodule SymphonyElixir.GitLab.Client do
     fetch_issues_by_ids(ids, tracker_settings, request_fun)
   end
 
-  defp fetch_issues_by_states(states, tracker_settings, request_fun) do
+  @spec fetch_issues_by_states([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(states, tracker_settings, request_fun \\ &perform_request/5) do
+    fetch_state_pages(states, tracker_settings, request_fun, false)
+  end
+
+  @doc "Read issues for preflight, rejecting malformed records."
+  @spec fetch_issues_by_states_strict([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states_strict(states, tracker_settings, request_fun \\ &perform_request/5) do
+    fetch_state_pages(states, tracker_settings, request_fun, true)
+  end
+
+  defp fetch_state_pages(states, tracker_settings, request_fun, strict?) do
     normalized_states = states |> Enum.map(&normalize_state/1) |> MapSet.new()
 
     case gitlab_state_query(normalized_states) do
@@ -85,12 +100,12 @@ defmodule SymphonyElixir.GitLab.Client do
 
       state_query ->
         with {:ok, gitlab_settings} <- settings(tracker_settings) do
-          fetch_issue_pages(gitlab_settings, state_query, normalized_states, 1, request_fun, [])
+          fetch_issue_pages(gitlab_settings, state_query, normalized_states, 1, request_fun, [], strict?)
         end
     end
   end
 
-  defp fetch_issue_pages(settings, state_query, requested_states, page, request_fun, pages) do
+  defp fetch_issue_pages(settings, state_query, requested_states, page, request_fun, pages, strict?) do
     query = %{
       "state" => state_query,
       "per_page" => @page_size,
@@ -109,19 +124,21 @@ defmodule SymphonyElixir.GitLab.Client do
              request_fun,
              false
            ),
-         true <- is_list(payload) or {:error, :gitlab_unknown_payload} do
+         true <- is_list(payload) or {:error, :gitlab_unknown_payload},
+         :ok <- validate_page(payload, settings, strict?) do
       issues = normalize_state_page(payload, settings, requested_states)
       updated_pages = [issues | pages]
 
       if length(payload) < @page_size do
         {:ok, updated_pages |> Enum.reverse() |> List.flatten()}
       else
-        fetch_issue_pages(settings, state_query, requested_states, page + 1, request_fun, updated_pages)
+        fetch_issue_pages(settings, state_query, requested_states, page + 1, request_fun, updated_pages, strict?)
       end
     end
   end
 
-  defp fetch_issues_by_ids(ids, tracker_settings, request_fun) do
+  @spec fetch_issues_by_ids([String.t()], map(), function()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(ids, tracker_settings, request_fun \\ &perform_request/5) do
     case Enum.uniq(ids) do
       [] ->
         {:ok, []}
@@ -166,6 +183,19 @@ defmodule SymphonyElixir.GitLab.Client do
     {:error, :gitlab_unknown_payload}
   end
 
+  defp validate_page(payload, settings, true) do
+    if Enum.any?(payload, &(not valid_preflight_issue?(&1, settings))), do: {:error, :gitlab_unknown_payload}, else: :ok
+  end
+
+  defp validate_page(_, _, false), do: :ok
+
+  defp valid_preflight_issue?(raw, settings) when is_map(raw) do
+    not is_nil(normalize_issue(raw, settings)) and raw["state"] in ["opened", "closed"] and
+      is_list(raw["labels"]) and Enum.all?(raw["labels"], &is_binary/1)
+  end
+
+  defp valid_preflight_issue?(_, _), do: false
+
   defp normalize_state_page(raw_issues, settings, requested_states) do
     issues = Enum.map(raw_issues, &normalize_issue(&1, settings))
     malformed_count = Enum.count(issues, &is_nil/1)
@@ -184,7 +214,7 @@ defmodule SymphonyElixir.GitLab.Client do
     if present_string?(title) and present_string?(state) do
       %Issue{
         id: Integer.to_string(iid),
-        native_ref: native_ref(issue, settings.project_path),
+        native_ref: native_ref(issue, settings),
         identifier: "GL-#{iid}",
         title: title,
         description: blank_to_nil(issue["description"]),
@@ -204,12 +234,16 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp normalize_issue(_issue, _settings), do: nil
 
-  defp native_ref(issue, project_path) do
+  defp native_ref(issue, settings) do
     %{
       "id" => issue["id"],
       "iid" => issue["iid"],
       "project_id" => issue["project_id"],
-      "project_path" => project_path,
+      "project_path" => settings.project_path,
+      "repo" => settings.project_path,
+      "number" => issue["iid"],
+      "kind" => "gitlab",
+      "api_url" => settings.api_url,
       "references" => issue["references"]
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -281,7 +315,9 @@ defmodule SymphonyElixir.GitLab.Client do
         url: settings.api_url <> path,
         headers: gitlab_headers(settings.api_key),
         params: query,
-        connect_options: [timeout: 30_000]
+        retry: false,
+        redirect: request_method == :get,
+        connect_options: connect_options(settings)
       ]
 
       request_opts = if is_nil(body), do: request_opts, else: Keyword.put(request_opts, :json, body)
@@ -293,12 +329,18 @@ defmodule SymphonyElixir.GitLab.Client do
     end
   end
 
+  defp connect_options(%{ca_file: nil}), do: [timeout: 30_000]
+
+  defp connect_options(%{ca_file: path}),
+    do: [timeout: 30_000, transport_opts: [verify: :verify_peer, cacertfile: path]]
+
   defp settings(tracker_settings) when is_map(tracker_settings) do
     provider = provider_settings(tracker_settings)
     api_url = provider["api_url"] || @default_api_url
     project_path = resolve_setting(provider["project_path"], System.get_env("GITLAB_PROJECT_PATH"))
 
     api_key = resolve_setting(provider["api_key"], System.get_env("GITLAB_PAT"))
+    ca_file = resolve_setting(provider["ca_file"], nil)
 
     cond do
       not valid_api_url?(api_url) ->
@@ -310,6 +352,9 @@ defmodule SymphonyElixir.GitLab.Client do
       not valid_project_path?(project_path) ->
         {:error, :invalid_gitlab_project_path}
 
+      not is_nil(provider["ca_file"]) and not valid_ca_file?(ca_file) ->
+        {:error, :invalid_gitlab_ca_file}
+
       not present_string?(api_key) ->
         {:error, :missing_gitlab_api_key}
 
@@ -318,7 +363,8 @@ defmodule SymphonyElixir.GitLab.Client do
          %{
            api_url: String.trim_trailing(api_url, "/"),
            api_key: api_key,
-           project_path: project_path
+           project_path: project_path,
+           ca_file: ca_file
          }}
     end
   end
@@ -328,9 +374,9 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp resolve_setting(nil, fallback), do: normalize_string(fallback)
 
-  defp resolve_setting("$" <> env_name, fallback) do
+  defp resolve_setting("$" <> env_name, _fallback) do
     if valid_env_name?(env_name) do
-      normalize_string(System.get_env(env_name) || fallback)
+      normalize_string(System.get_env(env_name))
     else
       nil
     end
@@ -356,9 +402,20 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp valid_env_name?(name), do: String.match?(name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/)
 
+  defp valid_ca_file?(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, pem} -> Enum.any?(:public_key.pem_decode(pem), &match?({:Certificate, _, _}, &1))
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp valid_ca_file?(_), do: false
+
   defp valid_api_url?(value) when is_binary(value) do
     case URI.parse(value) do
-      %URI{scheme: "https", host: host} when is_binary(host) -> true
+      %URI{scheme: "https", host: host, userinfo: nil, query: nil, fragment: nil} when is_binary(host) and host != "" -> true
       _ -> false
     end
   end
@@ -366,7 +423,8 @@ defmodule SymphonyElixir.GitLab.Client do
   defp valid_api_url?(_value), do: false
 
   defp valid_project_path?(value) when is_binary(value) do
-    not String.contains?(value, [" ", "\t", "\n", "\r", <<0>>])
+    String.match?(value, ~r/\A[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\z/) and
+      Enum.all?(String.split(value, "/"), &(&1 not in [".", ".."]))
   end
 
   defp valid_project_path?(_value), do: false

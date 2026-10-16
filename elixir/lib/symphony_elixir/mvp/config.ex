@@ -1,8 +1,9 @@
 defmodule SymphonyElixir.Mvp.Config do
-  @moduledoc "Configuration for the opt-in GitHub MVP intake path."
+  @moduledoc "Configuration for the opt-in forge MVP intake path."
 
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitLab.Client, as: GitLabClient
   alias SymphonyElixir.Mvp.{ExecutionReadiness, ExecutionSandbox, ModelServices, Recovery}
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workflow
@@ -129,6 +130,7 @@ defmodule SymphonyElixir.Mvp.Config do
          {:ok, sandbox} <- ExecutionSandbox.settings(config["sandbox"]),
          {:ok, readiness} <- ExecutionReadiness.settings(config["execution_readiness"]),
          {:ok, runtime} <- Schema.parse(workflow_config),
+         :ok <- validate_tracker_contract(runtime.tracker),
          {:ok, ready_label} <- label(Map.get(config, "ready_label", "ready")),
          :ok <- required_ready_label(workflow_config, ready_label),
          :ok <- validate_path_boundaries(state_dir, workflow_config),
@@ -138,7 +140,7 @@ defmodule SymphonyElixir.Mvp.Config do
          enabled: enabled,
          model_services: services,
          execution_workspace_root: Path.expand(runtime.workspace.root, workflow_dir),
-         secret_environment_names: GitHubClient.secret_environment_names(runtime.tracker),
+         secret_environment_names: secret_environment_names(runtime.tracker),
          model_command: get_in(workflow_config, ["codex", "command"]) || "codex app-server",
          coder_model: coder_model,
          reviewer_model: reviewer_model,
@@ -155,6 +157,28 @@ defmodule SymphonyElixir.Mvp.Config do
        }}
     end
   end
+
+  defp validate_tracker_contract(%{kind: "gitlab", provider: provider}) do
+    api_url = provider["api_url"] || "https://gitlab.com/api/v4"
+
+    case is_binary(api_url) && URI.parse(api_url) do
+      %URI{scheme: "https", host: host, path: path, userinfo: nil, query: nil, fragment: nil}
+      when is_binary(host) and host != "" and is_binary(path) ->
+        if String.ends_with?(String.trim_trailing(path, "/"), "/api/v4") do
+          :ok
+        else
+          {:error, :mvp_requires_gitlab_api_v4_url}
+        end
+
+      _ ->
+        {:error, :mvp_requires_gitlab_api_v4_url}
+    end
+  end
+
+  defp validate_tracker_contract(_), do: :ok
+
+  defp secret_environment_names(%{kind: "gitlab"} = tracker), do: GitLabClient.secret_environment_names(tracker)
+  defp secret_environment_names(tracker), do: GitHubClient.secret_environment_names(tracker)
 
   defp required_string(config, key) do
     case Map.get(config, key) do

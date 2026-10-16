@@ -39,7 +39,8 @@ defmodule SymphonyElixir.Mvp.ModelSettings do
 
   defp valid_repository?(repo) when is_map(repo) do
     Enum.sort(Map.keys(repo)) == ~w(repository state_dir workflow) and
-      is_binary(repo["repository"]) and Regex.match?(~r/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/, repo["repository"]) and
+      is_binary(repo["repository"]) and
+      Enum.all?(String.split(repo["repository"], "/"), &(&1 not in [".", ".."])) and Regex.match?(~r/\A[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\z/, repo["repository"]) and
       Enum.all?(~w(workflow state_dir), &absolute?(repo[&1]))
   end
 
@@ -61,6 +62,17 @@ defmodule SymphonyElixir.Mvp.ModelSettings do
     else
       _ -> {:error, :model_settings_repository_unavailable}
     end
+  end
+
+  defp repository_matches?(%{"tracker" => %{"kind" => "gitlab", "provider" => provider}}, expected) when is_map(provider) do
+    project =
+      case provider["project_path"] do
+        "$" <> name -> System.get_env(name)
+        nil -> System.get_env("GITLAB_PROJECT_PATH")
+        value -> value
+      end
+
+    is_binary(project) and String.trim(project) == expected
   end
 
   defp repository_matches?(%{"tracker" => %{"provider" => %{"repo" => repository}}}, expected) do

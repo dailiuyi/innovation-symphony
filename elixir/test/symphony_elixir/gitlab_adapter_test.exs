@@ -124,6 +124,10 @@ defmodule SymphonyElixir.GitLab.AdapterTest do
              "iid" => 42,
              "project_id" => 77,
              "project_path" => "group/project",
+             "repo" => "group/project",
+             "number" => 42,
+             "kind" => "gitlab",
+             "api_url" => "https://gitlab.com/api/v4",
              "references" => %{"full" => "group/project#42"}
            }
 

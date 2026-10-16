@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Mvp.ExternalDraft do
   @moduledoc "Journaled Draft PR delivery without claiming final external acceptance."
 
-  alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Mvp.{Commands, Delivery, ExternalHandoff, Intake, Receipt, Review}
+  alias SymphonyElixir.Mvp.Forge
 
   @spec publish(Path.t(), map(), map(), String.t(), String.t(), Path.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -158,14 +158,15 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     data = Receipt.read(receipt)
     existing = data["external_delivery"]
 
-    with :ok <- valid_journal(receipt, existing),
+    with :ok <- Forge.receipt_scope(data, opts),
+         :ok <- valid_journal(receipt, existing),
          :ok <- previous_delivery(existing, repository, branch, sha, workspace),
          {:ok, target} <- target_pull(existing, repository.repo, branch, opts),
          :ok <- ready(issue, opts),
          intent = %{"repository" => repository.repo, "branch" => branch, "base" => repository.base, "candidate_sha" => sha, "mode" => mode, "body" => body, "proof" => proof, "previous_pull" => target},
          {:ok, delivery} <- journal(receipt, intent, data),
          {:ok, pull} <- write_pull(workspace, issue, repository, branch, sha, target, body, {opts, existing}),
-         :ok <- verify_pull(pull, intent) do
+         :ok <- verify_pull(pull, intent, opts) do
       confirm(receipt, delivery, pull)
     else
       {:error, _} = error -> error
@@ -202,18 +203,18 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
 
   defp target_pull(existing, repo, branch, opts) do
     case pulls(repo, branch, opts) do
-      {:ok, pulls} -> select_target(existing, pulls)
+      {:ok, pulls} -> select_target(existing, pulls, opts)
       error -> error
     end
   end
 
-  defp select_target(nil, []), do: {:ok, nil}
+  defp select_target(nil, [], _opts), do: {:ok, nil}
 
-  defp select_target(%{"pull" => old, "intent" => intent}, [pull]) do
-    if verify_pull(pull, intent) == :ok and Map.take(pull, ["number", "html_url"]) == old, do: {:ok, old}, else: {:error, :mvp_pr_identity_mismatch}
+  defp select_target(%{"pull" => old, "intent" => intent}, [pull], opts) do
+    if verify_pull(pull, intent, opts) == :ok and Map.take(pull, ["number", "html_url"]) == old, do: {:ok, old}, else: {:error, :mvp_pr_identity_mismatch}
   end
 
-  defp select_target(_, _), do: {:error, :mvp_no_unique_matching_pr}
+  defp select_target(_, _, _), do: {:error, :mvp_no_unique_matching_pr}
 
   defp journal(receipt, intent, data) do
     root = Path.join(receipt <> ".evidence", "delivery-intents")
@@ -233,10 +234,8 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     with {:ok, env} <- Delivery.git_env(opts),
          {:ok, _} <- Commands.git(["push", "--force-with-lease=refs/heads/#{branch}:", repository.url, "#{sha}:refs/heads/#{branch}"], workspace, env: env),
          {:ok, %{status: 201, body: pull}} <-
-           Client.request(
-             "POST",
-             "/repos/#{repository.repo}/pulls",
-             %{},
+           Forge.create_pull(
+             repository.repo,
              %{"title" => "#{issue.identifier}: #{issue.title}", "body" => body, "head" => branch, "base" => repository.base, "draft" => true},
              opts
            ) do
@@ -249,7 +248,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
   defp write_pull(workspace, _issue, repository, branch, sha, target, body, {opts, %{"intent" => old}}) do
     with :ok <- advance_draft_branch(workspace, repository, branch, sha, old["candidate_sha"], opts),
          :ok <- verify_revision_target(repository, branch, sha, old, target, opts),
-         {:ok, %{status: 200, body: pull}} <- Client.request("PATCH", "/repos/#{repository.repo}/pulls/#{target["number"]}", %{}, %{"body" => body}, opts) do
+         {:ok, %{status: 200, body: pull}} <- Forge.update_pull(repository.repo, target["number"], body, opts) do
       {:ok, pull}
     else
       _ -> {:error, :mvp_publish_uncertain_reconcile_before_retry}
@@ -258,7 +257,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
 
   defp verify_revision_target(repository, branch, sha, old, target, opts) do
     with {:ok, [current]} <- pulls(repository.repo, branch, opts),
-         :ok <- verify_pull(current, Map.put(old, "candidate_sha", sha)),
+         :ok <- verify_pull(current, Map.put(old, "candidate_sha", sha), opts),
          true <- Map.take(current, ["number", "html_url"]) == target do
       :ok
     else
@@ -283,6 +282,14 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
   @spec reconcile(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def reconcile(receipt, opts) do
     data = Receipt.read(receipt)
+
+    case Forge.receipt_scope(data, opts) do
+      :ok -> reconcile_delivery(receipt, data, opts)
+      error -> error
+    end
+  end
+
+  defp reconcile_delivery(receipt, data, opts) do
     delivery = data["external_delivery"]
 
     with %{"intent" => intent} <- delivery,
@@ -291,7 +298,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
          {:ok, review, proof} <- review_proof(data, receipt, data["workspace"]),
          true <- proof == intent["proof"] and review_mode?(review, intent["mode"]),
          {:ok, [pull]} <- pulls(intent["repository"], intent["branch"], opts),
-         :ok <- verify_pull(pull, intent) do
+         :ok <- verify_pull(pull, intent, opts) do
       confirm(receipt, delivery, pull)
     else
       _ -> {:error, :mvp_no_unique_matching_pr}
@@ -344,7 +351,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
   end
 
   defp ready(issue, opts) do
-    with {:ok, %{status: 200, body: body}} <- Client.request("GET", "/repos/#{issue.native_ref["repo"]}/issues/#{issue.id}", %{}, nil, opts),
+    with {:ok, %{status: 200, body: body}} <- Forge.issue(issue, opts),
          true <- Intake.ready?(body, Keyword.fetch!(opts, :ready_label)) do
       :ok
     else
@@ -352,17 +359,15 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp pulls(repo, branch, opts) do
-    owner = repo |> String.split("/") |> hd()
+  defp pulls(repo, branch, opts), do: Forge.pulls(repo, branch, opts)
 
-    case Client.request("GET", "/repos/#{repo}/pulls", %{"head" => "#{owner}:#{branch}", "state" => "all", "per_page" => 100}, nil, opts) do
-      {:ok, %{status: 200, body: pulls}} when is_list(pulls) -> {:ok, pulls}
-      _ -> {:error, :mvp_pull_lookup_failed}
-    end
-  end
-
-  defp verify_pull(pull, intent) do
-    valid = [exact_identity?(pull, intent), open_draft?(pull), pull["body"] == intent["body"], previous_pull?(pull, intent)]
+  defp verify_pull(pull, intent, opts) do
+    valid = [
+      exact_identity?(pull, intent, opts),
+      open_draft?(pull),
+      pull["body"] == intent["body"],
+      previous_pull?(pull, intent)
+    ]
 
     if Enum.all?(valid) do
       :ok
@@ -371,7 +376,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp exact_identity?(pull, intent) do
+  defp exact_identity?(pull, intent, opts) do
     actual = %{
       head_repository: get_in(pull, ["head", "repo", "full_name"]),
       base_repository: get_in(pull, ["base", "repo", "full_name"]),
@@ -387,7 +392,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
       branch: intent["branch"],
       sha: intent["candidate_sha"],
       base: intent["base"],
-      url: "https://github.com/#{intent["repository"]}/pull/#{pull["number"]}"
+      url: Forge.pull_url(intent["repository"], pull["number"], opts)
     }
 
     actual == expected

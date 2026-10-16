@@ -52,12 +52,14 @@ export const contextUrl = href => {
   return '/prototypes/' + h.replace(/^\/+/, '');
 };
 
+const pullKind = pr => pr?.kind === 'merge_request' ? 'MR' : 'PR';
+
 function prLabel(pr) {
   const n = pr.number ? ` #${pr.number}` : '';
-  if (pr.state === 'merged') return `查看已合并的 PR${n}`;
-  if (pr.state === 'closed' || pr.state === 'changes') return `查看打回的 PR${n}`;
-  if (pr.draft) return `处理草稿 PR${n}`;
-  return `处理 PR${n}`;
+  if (pr.state === 'merged') return `查看已合并的 ${pullKind(pr)}${n}`;
+  if (pr.state === 'closed' || pr.state === 'changes') return `查看打回的 ${pullKind(pr)}${n}`;
+  if (pr.draft) return `处理草稿 ${pullKind(pr)}${n}`;
+  return `处理 ${pullKind(pr)}${n}`;
 }
 export function prAnchor(pr) {
   if (!pr || !pr.url) return '';
@@ -74,7 +76,7 @@ export function beatSteps(beat, story, isLast) {
   const steps = (beat.returns || []).map(item => ({ tone: returnTone(item.kind), title: item.title, why: item.why || '', n: item.n || 0 }));
   const pr = beat.pr && beat.pr.state;
   if (pr === 'merged' || beat.status === 'done' || beat.status === 'merged') steps.push({ tone: 'good', title: pr === 'merged' ? '已合并' : '已交付', why: '' });
-  else if (pr === 'open' || (isLast && story.outcomeKind === 'human' && pr !== 'closed' && pr !== 'changes')) steps.push({ tone: 'good', title: '等待处理 PR', why: '打开链接处理这次 PR' });
+  else if (pr === 'open' || (isLast && story.outcomeKind === 'human' && pr !== 'closed' && pr !== 'changes')) steps.push({ tone: 'good', title: `等待处理 ${pullKind(beat.pr)}`, why: `打开链接处理这次 ${pullKind(beat.pr)}` });
   else if (['coding', 'checking', 'review', 'reviewing', 'recovering'].includes(beat.status)) steps.push({ tone: 'run', title: beat.statusLabel || '进行中', why: '' });
   else if (!steps.length) steps.push({ tone: beatTone(beat, story, isLast), title: beatTitle(beat, story, isLast), why: beatSub(beat) });
   return steps;
@@ -83,7 +85,7 @@ function beatTitle(beat, story, isLast) {
   const pr = beat.pr && beat.pr.state;
   if (pr === 'merged') return '已合并';
   if (pr === 'closed' || pr === 'changes') return '人工打回';
-  if (isLast && pr === 'open') return '等待处理 PR';
+  if (isLast && pr === 'open') return `等待处理 ${pullKind(beat.pr)}`;
   const reason = beat.reason || '';
   if (reason.includes('response_timeout')) return '编码超时';
   if (reason.includes('mvp_candidate_or_baseline_changed')) return '检查后作废';
@@ -97,7 +99,7 @@ function beatSub(beat) {
   const pr = beat.pr && beat.pr.state;
   if (pr === 'merged') return '人工已合并';
   if (pr === 'closed' || pr === 'changes') return '人工没有通过，这次要重做';
-  if (pr === 'open') return '打开 PR 做人工处理';
+  if (pr === 'open') return `打开 ${pullKind(beat.pr)} 做人工处理`;
   const reason = beat.reason || '';
   if (reason.includes('response_timeout')) return '这一拍没有留下编码或 Review 会话';
   if (reason.includes('mvp_candidate_or_baseline_changed')) return '检查已经通过，之后候选或基线变了';

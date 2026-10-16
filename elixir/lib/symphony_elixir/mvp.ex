@@ -64,7 +64,7 @@ defmodule SymphonyElixir.Mvp do
   @doc false
   @spec validate_runtime(map()) :: :ok | {:error, term()}
   def validate_runtime(config \\ Config.settings!()) do
-    if config.tracker.kind == "github" and config.agent.max_concurrent_agents == 1 and
+    if config.tracker.kind in ["github", "gitlab"] and config.agent.max_concurrent_agents == 1 and
          config.worker.ssh_hosts == [] and match?({:unix, _}, :os.type()) and
          config.codex.thread_sandbox == "workspace-write" and
          is_nil(config.codex.turn_sandbox_policy) and is_map(config.codex.approval_policy) do
