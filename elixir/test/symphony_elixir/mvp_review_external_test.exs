@@ -58,6 +58,14 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert {:ok, ^old_rework} = Review.parse(Jason.encode!(old_rework), 1)
     assert Review.disposition(old_rework) == :repair_code
     assert Review.external_conditions(old_rework) == []
+
+    structured_approval = %{
+      "approved" => true,
+      "summary" => "Ready",
+      "criteria" => [criterion("A1", true)],
+      "blockers" => []
+    }
+    assert {:ok, %{"approved" => true}} = Review.parse(Jason.encode!(structured_approval), 0)
   end
 
   test "rework schema requires strict blockers while preserving legacy parse compatibility" do

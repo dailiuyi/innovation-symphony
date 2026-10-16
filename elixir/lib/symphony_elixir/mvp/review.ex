@@ -187,7 +187,8 @@ defmodule SymphonyElixir.Mvp.Review do
   end
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
-    map_size(value) == 2 and is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0
+    (map_size(value) == 2 and is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0) or
+      valid?(value, 1)
   end
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
