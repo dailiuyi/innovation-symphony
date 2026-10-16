@@ -956,7 +956,7 @@ GH-16 工作区 `/var/tmp/innovation-symphony-linux-runtime/workspaces/GH-16`，
 
 原 recover 仅接受检查失败／返工耗尽，resume_recovery 要求已有恢复策略，均不覆盖 GH-16 的初轮编码 wall_timeout 且 candidate_sha=null。新增 Executor.resume_initial_coder 在原开放轮接续；严格核验原身份、服务、检查、base／分支、工作区和隔离结果摘要，要求完整导出及清理，并通过受信 owner_idle 回调核实控制器空闲与桥可用。统一 OperatorRecheck 锁前后重验，旧回执和显式授权保留，原模型、凭据、基线与检查不替换；准确授权后采用 IS-082 策略与资源。
 
-源码隔离工作树 `/home/innovation/.codex/worktrees/issue16-timeout-resume/innovation-symphony`，分支 codex/issue16-initial-coder-resume，本地提交 7575b8041c0e764e96e89754a01151746819a3ec。关键恢复回归 50 项通过；全量 791 项运行 7 失败／6 跳过，原因为验证进程读入个人 Codex 配置及使用过长临时目录。隔离 CODEX_HOME、移除 GitHub 凭据、使用 /tmp 后，受影响四模块与恢复两模块共 94 项通过。格式、specs、严格 Credo 均通过；本轮没有全量成功、覆盖率或 Dialyzer 成功的声明。源码提交未推送、未建 PR，主控制器仍为 main 1476432。
+源码隔离工作树 `/home/elma/.codex/worktrees/issue16-timeout-resume/innovation-symphony`，分支 codex/issue16-initial-coder-resume，本地提交 7575b8041c0e764e96e89754a01151746819a3ec。关键恢复回归 50 项通过；全量 791 项运行 7 失败／6 跳过，原因为验证进程读入个人 Codex 配置及使用过长临时目录。隔离 CODEX_HOME、移除 GitHub 凭据、使用 /tmp 后，受影响四模块与恢复两模块共 94 项通过。格式、specs、严格 Credo 均通过；本轮没有全量成功、覆盖率或 Dialyzer 成功的声明。源码提交未推送、未建 PR，主控制器仍为 main 1476432。
 
 `.local/issue16-resume-20261008/` 保存原回执、已导出 tracked patch、未跟踪文件 tar、原基线复核、授权、空闲执行者核实、事件与启动验证。用户服务 innovation-symphony-issue16-resume.service 以原 Elixir Executor 执行，不新增调度器；无自动重启、RuntimeMaxSec=21600，12:31:55 新会话 01a119c8-1aad-7cc0-a102-eef6001274f9 实际开始并发出工具事件。回执 status=coding，operation=issue16-initial-timeout-20261008，模型服务快照和原 coder 用量槽位与旧回执相等；原未知 reviewer 用量槽位保守计入历史模型次数，adopted_agent_attempts=2，当前新编码 attempt=3、stage_attempt=2。恢复累计时间使用原隔离 started_at=2026-10-08T03:33:50Z。
 
@@ -1079,7 +1079,7 @@ PR 描述逐字保留原不可变待验收意图，以便原审计链继续；�
 
 所有者要求“拉取main分支最新代码 处理diff”。开发工作区从 `169ff8e` 快进至远端
 `6230f40`（PR #17 的合并），原始 34 份 tracked 修改及 3 份 untracked 文件先保存到
-源码树外 `/home/innovation/.codex/workspace-backups/innovation-symphony-main-20261008T184620Z/`，
+源码树外 `/home/elma/.codex/workspace-backups/innovation-symphony-main-20261008T184620Z/`，
 包括二进制补丁、原 HEAD／状态清单及 untracked 压缩包；另保留 stash
 `2c4fb5d191984e026cd61913fb1bd2cc0ceb2f14`。未删除备份或运行数据。
 
@@ -1267,3 +1267,19 @@ registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持�
 实机资格以既有干净HEAD6230f40为候选，固定新rootless执行链依次通过环境探针、候选完整门禁、冻结基线与View；候选815测试/100%覆盖率/Dialyzer/构建通过，冻结基线815测试通过。四阶段memory/PID资源事件均0，export/cleanup/host_cleanup完整。先前未启用init的候选145失败、pids.max=157不得记为通过，后续重跑结果取代该失败的环境资格。最终新启动包空闲只读预检2.02秒通过，GitHub只读查询issue_count1。
 
 这些分别证明当前源码门禁和实机执行环境资格，不是某个新Issue精确候选的模型、真实账号/内网、Review及PR交付验收。`required_acceptances=[]`保持，没有虚构验收profile。固定启动包以6230f40加本地源码覆盖生成，未提交；文件摘要、完整日志、状态和原启动器/WORKFLOW备份保存在 `.local/execution-readiness-20261009/`。受信回滚备份：`/opt/innovation-symphony-rootless-bridge/readiness-backup-20261009T092747999741Z` 与 `reaper-backup-20261009T095554534683Z`。
+
+## 2026-10-16 沿用 cc-switch 接入 DeepSeek 模型（GH-16/MVP）
+
+来源：所有者要求直接沿用本机 cc-switch 的 DeepSeek 配置接入 Symphony。
+- 凭据复用：从 `~/.cc-switch/cc-switch.db` 提取 DeepSeek 渠道凭据写入受控私有文件 `.local/deepseek-token`（权限 0600，未在日志或交互中复述明文），并在 `.local/start-symphony.sh` 与 `.local/start-model-settings.py` 中经 stdin 管道导出为容器环境变量 `DEEPSEEK_API_KEY`。
+- 服务端点与模型白名单：沿用 cc-switch 的 `https://api.deepseek.com`（`responses` 协议），实测 API 返回 `deepseek-flash` 与 `deepseek-v4-pro`。在 `.local/WORKFLOW.md` 的 `mvp.allowed_models` 中追加 `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`。
+- 注册表与能力签发：在 `/var/tmp/innovation-symphony-linux-runtime/state/model-services.json` 中登记 `deepseek` 预设（`provider: deepseek`, `adapter: deepseek_responses`, `credential_ref: env:DEEPSEEK_API_KEY`）及上述模型在 `none/low/high/max` 的完整目录，为 coder 与 reviewer 签发双角色能力验证记录。
+- 实机验证：`innovation-symphony-controller.service` 与 `innovation-symphony-model-settings.service` 重启运行正常；通过 View `/api/model-settings/repositories/luca` 代理验证 12 项 DeepSeek 选项状态均为 `available`，并成功完成 CAS 递增保存。
+
+## 2026-10-16 切换 Reviewer 默认模型为 deepseek-v4-flash
+
+来源：所有者要求将 deepseek-v4-flash 接入 reviewer agent。
+- 默认设置更新：通过 ModelSettings API 完成 CAS 递增保存（revision 5），设置 `defaults.reviewer` 为 `deepseek` 预设下的 `deepseek-v4-flash`（`reasoning_effort: high`）。同步更新 `.local/WORKFLOW.md` 的 `mvp.reviewer_model: deepseek-v4-flash` 并重启控制器服务。
+- 实机验证：`http://127.0.0.1:4000/api/v1/state` 状态正常，View 接口实测返回生效默认值为 Coder `deepseek-v4-pro`（high）与 Reviewer `deepseek-v4-flash`（high）。
+
+
