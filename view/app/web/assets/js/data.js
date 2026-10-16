@@ -191,7 +191,10 @@ export function ensureSelection() {
 
 function normalizeFilters() {
   const all = [...state.stories, ...state.sessions];
-  if (filters.repo !== 'all' && !all.some(s => s.repo === filters.repo)) filters.repo = 'all';
+  const configured = (state.boot && state.boot.repos ? state.boot.repos : [])
+    .filter(r => r.enabled !== false)
+    .map(r => r.alias || r.name);
+  if (filters.repo !== 'all' && !all.some(s => s.repo === filters.repo) && !configured.includes(filters.repo)) filters.repo = 'all';
   const pool = all.filter(s => filters.repo === 'all' || s.repo === filters.repo);
   if (filters.runtime !== 'all' && !pool.some(s => s.runtime === filters.runtime)) filters.runtime = 'all';
 }

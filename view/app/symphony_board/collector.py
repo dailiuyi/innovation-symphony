@@ -27,10 +27,10 @@ LOG_RE = re.compile(r"^(\S+) (debug|info|warning|error): (.*)$")
 
 def display_title(prompt):
     text = prompt or ""
-    matched = re.search(r"issue:\s*GH-\d+\s+(.*)", text)
+    matched = re.search(r"issue:\s*(?:GH|GL)-\d+\s+(.*)", text)
     if matched:
         return matched.group(1).splitlines()[0].strip()
-    matched = re.search(r"Independently review\s+GH-\d+:\s*(.*)", text)
+    matched = re.search(r"Independently review\s+(?:GH|GL)-\d+:\s*(.*)", text)
     if matched:
         return matched.group(1).splitlines()[0].strip()
     return text.splitlines()[0].strip()[:180] if text else ""

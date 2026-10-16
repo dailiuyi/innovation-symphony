@@ -45,7 +45,11 @@ export function renderChrome(activeView) {
 }
 
 function repoNames() {
-  return [...new Set([...state.stories, ...state.sessions].map(s => s.repo).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const configured = (state.boot && state.boot.repos ? state.boot.repos : [])
+    .filter(r => r.enabled !== false)
+    .map(r => r.alias || r.name);
+  const fromData = [...state.stories, ...state.sessions].map(s => s.repo).filter(Boolean);
+  return [...new Set([...configured, ...fromData])].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 }
 
 function renderRepoList(repos) {

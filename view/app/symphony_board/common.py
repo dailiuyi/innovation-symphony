@@ -91,9 +91,16 @@ def listed_runtimes(snapshot):
     return rows
 
 
+def repo_raw(receipt):
+    receipt = receipt or {}
+    native = receipt.get("issue_native_ref") or {}
+    if not isinstance(native, dict):
+        native = {}
+    return str(receipt.get("repository") or native.get("project_path") or native.get("repo") or "").strip()
+
+
 def repo_of(receipt):
-    text = str((receipt or {}).get("repository") or "").strip()
-    name = text or UNKNOWN_REPO
+    name = repo_raw(receipt) or UNKNOWN_REPO
     return REPO_ALIASES.get(name, name)
 
 
@@ -107,20 +114,37 @@ def task_repo(task):
     return text or UNKNOWN_REPO
 
 
+def receipt_issue_identifier(receipt):
+    identifier = receipt.get("issue_identifier")
+    if isinstance(identifier, str) and re.fullmatch(r"(?:GH|GL)-\d+", identifier):
+        return identifier
+    native = receipt.get("issue_native_ref") or {}
+    if not isinstance(native, dict):
+        native = {}
+    number = receipt.get("issue")
+    if number is None:
+        number = native.get("iid")
+    if number is None:
+        return None
+    kind = receipt.get("tracker_kind")
+    prefix = "GL" if kind == "gitlab" or (not kind and native.get("project_path")) else "GH"
+    return f"{prefix}-{number}"
+
+
 def issue_from_cwd(cwd):
-    found = re.findall(r"/(GH-\d+)(?:/|$)", cwd or "")
+    found = re.findall(r"/((?:GH|GL)-\d+)(?:/|$)", cwd or "")
     return found[-1] if found else None
 
 
 def issue_from_prompt(prompt):
     """沙箱化后 Codex 的 cwd 指向沙箱自身，issue 只能从任务指令里提取。
 
-    编码/Review/诊断的指令开头都带 GH-x；预检指令不带。
+    编码/Review/诊断的指令开头都带 GH-x 或 GL-x；预检指令不带。
     """
     text = prompt or ""
-    matched = (re.search(r"issue:\s*(GH-\d+)", text)
-               or re.search(r"Independently review\s+(GH-\d+)", text)
-               or re.search(r"technical failures\s+for\s+(GH-\d+)", text))
+    matched = (re.search(r"issue:\s*((?:GH|GL)-\d+)", text)
+               or re.search(r"Independently review\s+((?:GH|GL)-\d+)", text)
+               or re.search(r"technical failures\s+for\s+((?:GH|GL)-\d+)", text))
     return matched.group(1) if matched else None
 
 
