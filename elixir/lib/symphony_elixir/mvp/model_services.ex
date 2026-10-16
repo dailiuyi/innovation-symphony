@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   alias SymphonyElixir.Config, as: RuntimeConfig
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Mvp.Config
-  alias SymphonyElixir.Mvp.{LegacyModelService, ModelCatalog}
+  alias SymphonyElixir.Mvp.{ExecutionSandbox, LegacyModelService, ModelCatalog}
   alias SymphonyElixir.{PathSafety, Workflow}
 
   @roles ~w(coder reviewer)
@@ -126,22 +126,84 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @spec path(map()) :: Path.t()
   def path(settings), do: Path.join(settings.state_dir, "model-services.json")
 
-  @spec persistent_home(map()) :: Path.t() | nil
-  def persistent_home(%{state_dir: state_dir}) when is_binary(state_dir) do
-    if File.dir?(state_dir) do
-      root = Path.dirname(state_dir)
-      sandboxes = Path.join(root, "sandboxes")
-      run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
-      home = Path.join(run, "codex-home")
-      File.mkdir_p!(home)
-      File.chmod!(home, 0o700)
-      home
+  @doc """
+  Prepares a dedicated codex home directory for an unsandboxed run so that session artifacts
+  remain available for operator inspection and dashboard auditing.
+
+  Does NOT support resuming across attempts or controller restarts (a fresh directory is allocated).
+  When sandbox execution is enabled, returns {:ok, nil} to avoid leaving unused directories.
+  """
+  @spec standalone_run_home(map()) :: {:ok, Path.t() | nil} | {:error, term()}
+  def standalone_run_home(settings) when is_map(settings) do
+    if ExecutionSandbox.enabled?(settings) do
+      {:ok, nil}
     else
-      nil
+      case Map.get(settings, :state_dir) do
+        state_dir when is_binary(state_dir) ->
+          if File.dir?(state_dir) do
+            root = Path.dirname(state_dir)
+            sandboxes = Path.join(root, "sandboxes")
+            run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
+            home = Path.join(run, "codex-home")
+
+            with :ok <- File.mkdir_p(home),
+                 :ok <- File.chmod(home, 0o700) do
+              prune_runs(sandboxes, 50)
+              {:ok, home}
+            else
+              {:error, reason} -> {:error, {:standalone_run_home_failed, reason}}
+            end
+          else
+            {:ok, nil}
+          end
+
+        _ ->
+          {:ok, nil}
+      end
     end
   end
 
-  def persistent_home(_), do: nil
+  def standalone_run_home(_), do: {:ok, nil}
+
+  @doc """
+  Prunes historical sandbox runs in reverse modification order, retaining at most keep_count directories.
+
+  Known boundary: 仅在存在 >keep_count（默认 50）个 run 目录时才触发清理，清理按 mtime 倒序淘汰最旧目录，
+  当前不做在用检测（in-use check）。
+  """
+  @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
+  def prune_runs(sandboxes_dir, keep_count \\ 50) do
+    if File.dir?(sandboxes_dir) do
+      case File.ls(sandboxes_dir) do
+        {:ok, entries} ->
+          entries
+          |> Enum.filter(&String.starts_with?(&1, "run-"))
+          |> Enum.map(&Path.join(sandboxes_dir, &1))
+          |> Enum.filter(&File.dir?/1)
+          |> Enum.map(fn dir ->
+            mtime =
+              case File.stat(dir, time: :posix) do
+                {:ok, %{mtime: mtime}} -> mtime
+                _ -> 0
+              end
+
+            {dir, mtime}
+          end)
+          |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
+          |> Enum.drop(keep_count)
+          |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
+
+          :ok
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
 
   @spec load(Path.t(), map() | nil) :: {:ok, map() | nil} | {:error, term()}
   def load(path, fallback) do

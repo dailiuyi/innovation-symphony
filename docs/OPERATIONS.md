@@ -106,6 +106,19 @@ mix mvp.release /绝对路径/回执.json
   4. 成功生成候选提交 `09c20b9527b14bb317ef94514ea59381acb5d906`，推进至门禁检查；
   5. 门禁检查阶段执行 `python3 backend/test_backend.py`，因 Issue 描述中硬编码的大小写 `headers["Content-Type"]` 与标准库 `http.client` 解析出的全部小写键 `'content-type'` 不一致，在 Python 断言处报 `KeyError: 'Content-Type'`，任务按调度策略以 `{:mvp_check_failed, 1}` 停机等待操作者处置。
 
+### 2026-10-16 运行目录语义纠正、沙盒去重、修剪策略与评审契约修复（IS-104）
+
+- **独立运行目录重构与沙盒去重**：
+  - 将 `persistent_home/1` 重命名为 `standalone_run_home/1`，在注释与文档中明确该目录仅供无沙盒独立运行时为看板保留会话留痕，不承载跨 attempt/跨重启的 session resume；
+  - 当 `ExecutionSandbox.enabled?(settings)` 为 `true` 时，直接返回 `{:ok, nil}`，消除了此前沙盒模式下每次 attempt 多生成一个空 `sandboxes/run-*/codex-home` 的冗余；
+  - 移除 `File.mkdir_p!` 与 `File.chmod!`，改为返回干净的 `{:ok, path} | {:ok, nil} | {:error, reason}`，避免 state_dir 不可写时抛异常。
+- **历史目录修剪策略与已知边界**：
+  - 在 `ModelServices.prune_runs/2` 与 `ExecutionSandbox.prepare/4` 中实现修剪逻辑，按目录修改时间（mtime）倒序排列，保留最新的 50 个 run 目录，清理历史超额目录；
+  - **已知边界**：仅在存在 >50 个 run 目录时才触发清理，清理按 mtime 倒序淘汰最旧目录，当前不做在用检测（in-use check）。
+- **评审契约 Schema 对齐与单轮校验收紧**：
+  - `Review.schema(0)` 将 `criteria` 和 `blockers` 作为 array 类型的可选属性纳入 Schema，消除此前单轮模式下与 prompt 和结构化返回值的定义矛盾；
+  - 收紧 `valid?(value, 0)`，要求列表项必须为非空字符串或非空 map，且 `approved: true` 时 blockers 必须为空；明确记录安全底线由空 blockers 约束与 `disposition/1`（非空 blockers 直接判定为 `:repair_code`）兜底；
+  - 修复 `gitlab/client.ex` 的 `connect_options/1`，移除冗余 `cacertfile`，保留基于 DER 的自签证书 `verify_fun`，消除 OTP 证书噪声。
 
 ## 2026-10-05 Issue #12 ready 与领取启用前诊断
 

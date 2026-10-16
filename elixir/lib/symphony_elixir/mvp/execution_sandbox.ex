@@ -203,6 +203,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     with :ok <- validate_paths(config, context) do
       run = Path.join(root, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
+      ModelServices.prune_runs(root, 50)
       if config["backend"] == "rootless", do: File.chmod!(root, 0o711)
       :ok = File.mkdir(run)
       :ok = File.chmod(run, if(config["backend"] == "rootless", do: 0o711, else: 0o700))

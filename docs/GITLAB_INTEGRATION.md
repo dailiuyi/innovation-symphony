@@ -50,7 +50,7 @@
 | D | `verify_none` | 成功（59ms） |
 | E | A + 关闭 SNI | 失败，同 A |
 
-OTP 即使证书已在该信任库内，也会对自签名对端返回 `selfsigned_peer`。**因此 main 上曾提交的简化实现（仅传 `cacertfile`）无法连接该实例；从 main 重新构建会静默失去私有 CA 能力。** 已把 release 快照中那段 `verify_fun` 补回源码；该修改在本轮结束时**仍未提交**，重建前必须确认。
+OTP 即使证书已在该信任库内，也会对自签名对端返回 `selfsigned_peer`。**因此 main 上曾提交的简化实现（仅传 `cacertfile`）无法连接该实例；从 main 重新构建会静默失去私有 CA 能力。** 该段 `verify_fun` 与自签证书比对已在提交 `5aab130` 正式纳入源码，并已移除冗余的 `cacertfile` 选项以消除 OTP "cacertfile ignored, cacerts is set" 噪声。
 
 ### `WORKFLOW.md` 必须保持纯 ASCII
 

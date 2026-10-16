@@ -76,7 +76,9 @@ defmodule SymphonyElixir.GitLab.ClientTransportTest do
     assert options.retry == false
     assert options.redirect == false
     assert options.connect_options[:transport_opts][:verify] == :verify_peer
-    assert options.connect_options[:transport_opts][:cacertfile] == "/etc/ssl/certs/ca-certificates.crt"
+    assert is_list(options.connect_options[:transport_opts][:cacerts])
+    assert is_nil(options.connect_options[:transport_opts][:cacertfile])
+    assert is_tuple(options.connect_options[:transport_opts][:verify_fun])
     refute_received {:transport, _}
   end
 end

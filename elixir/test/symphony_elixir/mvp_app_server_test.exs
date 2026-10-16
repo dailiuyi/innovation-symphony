@@ -322,7 +322,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
     assert File.exists?(Path.join(custom_home, "config.toml"))
   end
 
-  test "ModelServices.persistent_home generates runtime sandboxes codex-home" do
+  test "ModelServices.standalone_run_home generates runtime sandboxes codex-home when sandbox disabled" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -333,13 +333,20 @@ defmodule SymphonyElixir.MVPAppServerTest do
     File.mkdir_p!(state_dir)
     on_exit(fn -> File.rm_rf(test_root) end)
 
-    home = SymphonyElixir.Mvp.ModelServices.persistent_home(%{state_dir: state_dir})
+    assert {:ok, home} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: state_dir})
     assert is_binary(home)
     assert String.starts_with?(home, Path.join(test_root, "sandboxes"))
     assert String.ends_with?(home, "codex-home")
     assert File.dir?(home)
 
-    assert is_nil(SymphonyElixir.Mvp.ModelServices.persistent_home(%{state_dir: "/nonexistent/state/dir"}))
-    assert is_nil(SymphonyElixir.Mvp.ModelServices.persistent_home(%{}))
+    # When sandbox is enabled, must return {:ok, nil} and not allocate a home
+    assert {:ok, nil} =
+             SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{
+               state_dir: state_dir,
+               sandbox: %{enabled: true}
+             })
+
+    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
+    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{})
   end
 end

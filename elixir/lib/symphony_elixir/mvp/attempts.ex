@@ -100,11 +100,12 @@ defmodule SymphonyElixir.Mvp.Attempts do
 
     remaining = remaining_ms(context)
     common = [tools: false, on_message: handler, wall_timeout_ms: remaining]
-    options = common ++ role_options(role, context.limit)
-    options = if home = ModelServices.persistent_home(context.settings), do: options ++ [codex_home: home], else: options
+    base_options = common ++ role_options(role, context.limit)
 
     result =
-      with {:ok, service_options} <- ModelServices.options(context, role) do
+      with {:ok, home} <- ModelServices.standalone_run_home(context.settings),
+           options = if(home, do: base_options ++ [codex_home: home], else: base_options),
+           {:ok, service_options} <- ModelServices.options(context, role) do
         Usage.request(context.receipt, usage_key, service_options[:model_service])
         result = invoke_with_budget(context, prompt, service_options ++ options, remaining)
         result = normalize_result(role, result, service_options[:model_service])

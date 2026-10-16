@@ -2106,12 +2106,13 @@ defmodule SymphonyElixir.Mvp.Executor do
       on_message(context).(message)
     end
 
-    options = [tools: false, on_message: handler]
-    options = if role == :reviewer, do: options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: options
-    options = if home = ModelServices.persistent_home(context.settings), do: options ++ [codex_home: home], else: options
+    base_options = [tools: false, on_message: handler]
+    base_options = if role == :reviewer, do: base_options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: base_options
 
     result =
-      with {:ok, service_options} <- ModelServices.options(context, role) do
+      with {:ok, home} <- ModelServices.standalone_run_home(context.settings),
+           options = if(home, do: base_options ++ [codex_home: home], else: base_options),
+           {:ok, service_options} <- ModelServices.options(context, role) do
         if usage_recorded?(context) do
           Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service])
         end

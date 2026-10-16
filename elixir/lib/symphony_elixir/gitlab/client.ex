@@ -359,11 +359,14 @@ defmodule SymphonyElixir.GitLab.Client do
            {:fail, reason}
        end, []}
 
+    # Note: verify_fun directly compares raw DER against trusted_ders for :selfsigned_peer.
+    # Independent leaf certificates issued by an intermediate CA and extension events ({:extension, _})
+    # are not currently handled here as this instance uses self-signed peer certificates.
+    # Only cacerts is passed here to avoid OTP warning "cacertfile ignored, cacerts is set".
     [
       timeout: 30_000,
       transport_opts: [
         verify: :verify_peer,
-        cacertfile: path,
         cacerts: trusted_ders,
         verify_fun: verify_fun
       ]
