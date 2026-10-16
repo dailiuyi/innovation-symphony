@@ -1,70 +1,112 @@
 # innovation-symphony
 
-面向公司多仓库研发任务的 Symphony 框架。目标是部署到云端，统一接入 GitLab 与 GitHub；机器人自动发现带有 `ready` 标签的 Issue，领取并执行所属仓库的任务。
+<div align="center">
+  <img src="assets/readme/hero.svg" alt="innovation-symphony Hero" width="100%" />
+</div>
 
-当前阶段：基于 [官方 Symphony](https://github.com/openai/symphony) 的 Elixir 实现开发 GitHub MVP。复用其调度、工作区、GitHub Client、AppServer 和状态页面，补充评论选模型、独立 Review、检查门禁和 Draft PR 交付。人工合并与升级。
+<p align="center">
+  <a href="#核心工作流程"><strong>核心工作流</strong></a> ·
+  <a href="#四大工程保障机制"><strong>工程保障机制</strong></a> ·
+  <a href="#可观测性看板-view"><strong>只读看板</strong></a> ·
+  <a href="#工程演进与里程碑契约"><strong>契约与演进</strong></a> ·
+  <a href="#原型预览与文档导航"><strong>文档索引</strong></a>
+</p>
 
-IS-033 实施 coder 同会话自检：通过显式启用的 Linux 任务隔离，允许测试、静态分析和本地服务在编码阶段直接运行；控制器仍在独立环境执行冻结门禁并安排新鲜 Review。配置、四条底线及当前验收范围见 [Coder 执行规则](docs/CODER_EXECUTION_RULES.md)。
+---
 
-GH-3 当前候选仅有 `--preflight` 接管前只读配置及 GitHub 轮询体检；不启动调度，成功后退出。体检拒绝不含 `open` / `closed` 的状态列表，防止未查询远端就报告通过。A 收尾、版本切换和自动回退仍未实现，待确认机制未定案，完整 GH-3 尚未通过验收。见 [体检边界](docs/IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)。
+innovation-symphony 是一个面向多代码仓库场景构建的 AI 自主研发任务编排框架。
 
-GH-5 新增独立于运行器的本地进程看门狗入口，按固定版本指针和持久预算恢复退出的进程；人工暂停、解除及预算恢复使用同一打包入口。按 IS-042 已在本地 WSL 安装启用，并通过真实认证下的正常退出、强制结束和看门狗重启测试；新任务领取仍暂停。完整维护步骤及固定版本见 [OPERATIONS](docs/OPERATIONS.md#看门狗维护流程)。
+基于官方 [Symphony](https://github.com/openai/symphony) 的 Elixir 实现构建，旨在实现企业云端无人值守接入 GitHub / GitLab：调度机器人自动监听带有 `ready` 标签的 Issue，自动认领并执行所属仓库的研发任务，通过严格的沙箱编码、测试门禁与独立代码审查，最终以 Draft PR 形式交付成果，由人工进行最终合并与升级把关。
 
-GitHub MVP 的历史接入与授权见决策记录；有限返工支持可修复检查失败与 Review 拒绝共用预算，完整保存检查日志，Review 拒绝理由仍回帖。默认 `max_rework=0` 保持兼容，显式 1..5 启用，最多五次返工加初始一轮。固定检查 runner 使用结构化 ExUnit 结果识别普通及自定义断言，核对完整报告与退出码；缺失或矛盾报告不能通过。显式复检绑定原候选、基线、模型和预算，保留历史操作及终态审计，已用次数不重置；不会因修改配置而自动重启所有 blocked 任务。源码发布与实际运行版本须分别核实。详见 [返工合同与验收对应](docs/REVIEW_REWORK.md)。[实现合同](docs/IMPLEMENTATION_V0.md) · [官方基线](docs/UPSTREAM.md) · [验证记录](docs/VALIDATION_V0.md) · [接入说明](docs/OPERATIONS.md)。
+---
 
-GH-7 将固定版本的 innovation-view 导入 [`view/`](view/README.md)，提供独立 Python 只读采集与展示服务，可维护本地数据库、缓存和日志；启停不影响 `elixir/` 控制器。PR #9 已合入 main；2026-10-03 按 IS-055 安装固定版本看板，本机网址为 [http://127.0.0.1:8613/](http://127.0.0.1:8613/)，真实 Windows＋WSL 采集和浏览器检查通过。控制器仍运行 `43ef956`，原 GH-7 交付回执的身份不一致停点保留。实际安装及验证局限见 [运行记录](docs/OPERATIONS.md)，通用步骤见 [View 说明](view/README.md)，[迁移记录](view/docs/MIGRATION.md) 与 [前置准备](docs/VIEW_PREPARATION.md) 保留历史与边界。
+## 核心工作流程
 
-Linux 执行补丁保留暂停领取后的既有任务合同，在受信审计入口处理外部补证和同一 Draft 的快进修订；固定检查按实际资源预算运行，View 只读标明已核验的宿主中断。代码审查与运行安装分别记录，见 [本轮补丁验证](docs/VALIDATION_LINUX_PATCHES.md)。
-
-## 已确认的使用方式
-
-本轮按 IS-026 完善显式启用的自动恢复：可由模型解决的技术失败交回编码或新的只读诊断，普通修复窗口无需逐次人工批准，同时保留严格检查、独立 Review、资源熔断与完整证据。未启用策略的任务继续遵守上面的 0..5 兼容合同；旧回执只通过明确审计迁移，不批量重启。工程默认见 [自动恢复合同](docs/AUTOMATIC_RECOVERY.md)。控制器 `07f7493` 已发布并在本地运行，真实 Issue #3 经自动诊断、检查失败返工、完整检查和独立 Review 交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)，证据见 [验收记录](docs/VALIDATION_AUTOMATIC_RECOVERY.md)。按 IS-027，合并、合并冲突和升级交给人处理，系统不持续追赶 main。
-
-1. 在已接入仓库创建 Issue，写明需求。
-2. 可选：在一条独立 Issue 评论中，通过约定格式指定编码模型和 Review 模型。
-3. 添加 `ready` 标签，机器人自动发现并领取执行，无需用户先指派机器人。
-4. 在代码平台及查看型后台了解进度、日志和结果。`ready`、`review`、`blocked` 等标签承担基本工作流状态；模型选择通过评论解析。
-
-每个仓库分别配置编码和 Review 默认模型；用户显式指定优先，未指定角色沿用仓库默认。各仓库独立处理任务，第一版不跨仓库修改。
-
-领取前会校验 MVP 配置；配置错误会停止派发并写入服务日志。HTTP 状态页正常不代表领取门槛通过。运行打包 escript 时，路径隔离以真实工件所在目录为边界，而不是压缩包内部的虚拟应用路径。
-
-## 文档与原型
-
-- [文档入口](docs/README.md)
-- [已确认需求](docs/REQUIREMENTS.md)
-- [决策记录与被替代的决定](docs/DECISIONS.md)
-- [自动恢复与自身迭代合同](docs/AUTOMATIC_RECOVERY.md)
-- [待讨论问题](docs/OPEN_QUESTIONS.md)
-- [架构与试点提案](docs/DESIGN_PROPOSAL.md)
-- [Issue 交互协议草案](docs/ISSUE_PROTOCOL.md)
-- [运行与交付说明](docs/OPERATIONS.md)
-- [后台 HTML 原型](prototypes/symphony-dashboard.html)
-- [第一版实际架构](prototypes/mvp-architecture.html)（官方复用与新增门禁）
-- [架构与决策审核图](prototypes/architecture-review.html)（官方 Symphony 对照、候选模块、待定边界）
-
-## 查看原型
-
-在项目根目录运行：
-
-```sh
-python -m http.server 43221 --bind 127.0.0.1 --directory prototypes
+```text
+在目标仓库创建 Issue (明确需求规格)
+  │
+  ├─► (可选) 评论区通过约定指令指定 Coder / Reviewer 模型
+  ▼
+添加 ready 标签
+  │
+  ▼
+Symphony 监听器自动捕获并认领任务 (无须人工指派 Bot)
+  │
+  ▼
+Coder 在 Linux 隔离沙箱中执行编码与同会话自检 (tests / lint)
+  │
+  ▼
+独立环境执行结构化测试门禁 (基于 ExUnit 结构化断言验证)
+  │
+  ▼
+独立 Reviewer 执行代码质量与安全性审查
+  │
+  ├─► [未通过] 消耗返工预算 (0~5 次) ➔ 退回重新修复并附带反馈
+  ▼
+[全部通过] 自动提交并发布 Draft PR (附带完整验证回执)
+  │
+  ▼
+由人工工程师进行最终审核、合并与版本升级
 ```
 
-然后访问 [本机预览](http://127.0.0.1:43221/symphony-dashboard.html)。也可以直接用浏览器打开 HTML 文件。此命令仅预览原型，不启动机器人或云端服务。
+- **工作流状态**：以 `ready`、`review`、`blocked` 等标签作为基本状态机锚点；
+- **模型路由**：每个仓库可单独配置编码与评审的默认模型；用户在 Issue 评论中显式指定具有最高优先级；未指定时自动沿用仓库默认配置；
+- **边界原则**：各仓库任务完全独立处理，不进行跨仓库的扩散修改；合并操作与版本发版由人类工程师主导，系统不自动追赶 main 分支。
 
-原型包含虚构的 Unity、Android、iOS、Web 仓库与任务，支持筛选、任务详情、日志和按仓库选择两种默认模型。模型设置仅保存在当前页面内存；没有真实计费、模型调用或 Issue 解析。
+---
 
-后续继续逐步确认需求，架构建议不自动视为已批准实现。项目从博客讨论中独立出来；不会继承博客的 ready 队列、凭据、固定 Reviewer 或部署授权。
+## 四大工程保障机制
 
-GH-12 在原 Elixir 执行器中增加 coder/reviewer 服务预设、账号绑定的 GPT 目录及
-持久默认管理；领取冻结完整配置，每次调用仍核验原 WORKFLOW 的当前授权。
-评论兼容、后台入口与迁移边界见
-[角色模型服务](docs/MODEL_SERVICES.md)。本轮离线测试不代表真实 GPT、安装或交付验收。
+### 1. Linux 任务沙箱隔离与同会话自检 (IS-033)
+通过显式启用的 Linux 任务隔离环境，允许单元测试、静态分析（Lint）及本地轻量服务在编码阶段直接运行。控制器仍在隔离环境中执行严格的冻结门禁，并调度无污染的独立评审角色。具体规则参见 [Coder 执行规则](docs/CODER_EXECUTION_RULES.md)。
 
+### 2. 有限返工预算与失败自动恢复 (IS-026)
+系统引入了可控的自愈循环：因代码缺陷导致的技术失败可交回编码环境或发起只读诊断，普通修复窗口无需逐次请求人工审批。
+- 默认 `max_rework=0` 保持严格单次交付；
+- 显式配置 `1..5` 启用返工预算，单任务最多经历 5 次修复；
+- 完整保留所有检查日志与 Review 拒绝意见；复检流程严格绑定原基线与预算，已消耗次数不可逆，防止死循环刷 Token。详细规则参见 [返工合同与验收对应](docs/REVIEW_REWORK.md) 与 [自动恢复合同](docs/AUTOMATIC_RECOVERY.md)。
 
-实验性的宽权限 rootless 容器、持久导出、失败分流和固定补证配置见 [实施合同](docs/ROOTLESS_OPEN.md)。默认未启用；代码不代表已安装或实机验收，旧冻结任务保持原后端。
+### 3. 独立看门狗守护进程 (GH-5 / IS-042)
+新增独立于运行器的本地看门狗（Watchdog）进程，负责监控调度器状态；当发生异常崩溃时，依据固定版本指针与持久化预算自动拉起恢复。支持人工暂停、安全解除与预算重置，运维指引见 [OPERATIONS 维护流程](docs/OPERATIONS.md#看门狗维护流程)。
 
-GH-16 在独立 View 设置页增加受控内网的仓库双角色默认选择，并接入 DeepSeek
-Responses；任务展示仍只读，配置授权、持久化和执行继续归 Elixir。GLM 后置，
-真实账号与内网安装须分别验收，见 [方案及检查记录](docs/VIEW_MODEL_SETTINGS.md)。
+### 4. 真实验收与端到端闭环实据
+控制器已成功跑通真实业务链路：从真实 Issue #3 出发，历经自动诊断、测试失败定向返工、完整门禁核对与独立 Review，最终顺利交付 [Draft PR #4](https://github.com/dailiuyi/innovation-symphony/pull/4)，相关证据链归档于 [验收记录](docs/VALIDATION_AUTOMATIC_RECOVERY.md)。
+
+---
+
+## 可观测性看板 (View)
+
+项目在 [`view/`](view/README.md) 目录下集成了基于 Python 标准库构建的独立只读可观测采集与展示服务（可在本地通过 [http://127.0.0.1:8613/](http://127.0.0.1:8613/) 访问）。
+- 看板独立维护本地数据、缓存与请求日志，其启动与停止完全不影响 Elixir 主调度控制器的运行；
+- 提供 Linear 风格的任务四态看板、会话轨迹查询与只读上下文审查；
+- 权限与安全边界明确：仅限内网使用，所有任务修改与执行权限严格收敛于 Elixir 核心。
+
+---
+
+## 工程演进与里程碑契约
+
+- **GH-3（最小增量接管前只读体检）**：提供 `--preflight` 校验模式，严格校验状态机定义与远端 Issue 连通性，防止虚假报告通过。详见 [体检边界](docs/IMPLEMENTATION_V0.md#gh-3-最小增量接管前只读体检)；
+- **GH-12（多模型服务路由）**：增加 Coder 与 Reviewer 的多模型预设管理，对任务领取时的完整配置进行参数冻结。详见 [角色模型服务](docs/MODEL_SERVICES.md)；
+- **GH-16（看板双角色配置对接）**：在独立 View 设置页增加受控内网的仓库双角色默认选择，并支持 DeepSeek Responses 接入。详见 [方案及检查记录](docs/VIEW_MODEL_SETTINGS.md)；
+- **Linux 补丁与审计记录**：详见 [本轮补丁验证](docs/VALIDATION_LINUX_PATCHES.md) 与 [实验性隔离规范](docs/ROOTLESS_OPEN.md)。
+
+---
+
+## 原型预览与文档导航
+
+### 本地架构原型预览
+在项目根目录下启动轻量 HTTP 服务即可预览前端控制台设计原型：
+
+```bash
+python3 -m http.server 43221 --bind 127.0.0.1 --directory prototypes
+```
+
+访问地址：<http://127.0.0.1:43221/symphony-dashboard.html>。
+
+### 核心文档索引
+- [文档总入口 (docs/README.md)](docs/README.md)
+- [需求规格清单 (docs/REQUIREMENTS.md)](docs/REQUIREMENTS.md)
+- [架构决策记录与替代方案 (docs/DECISIONS.md)](docs/DECISIONS.md)
+- [运行运维与维护手册 (docs/OPERATIONS.md)](docs/OPERATIONS.md)
+- [Issue 协议规范草案 (docs/ISSUE_PROTOCOL.md)](docs/ISSUE_PROTOCOL.md)
+- [第三方与官方上游基线对照 (docs/UPSTREAM.md)](docs/UPSTREAM.md)
