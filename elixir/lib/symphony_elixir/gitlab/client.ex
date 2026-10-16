@@ -331,8 +331,44 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp connect_options(%{ca_file: nil}), do: [timeout: 30_000]
 
-  defp connect_options(%{ca_file: path}),
-    do: [timeout: 30_000, transport_opts: [verify: :verify_peer, cacertfile: path]]
+  defp connect_options(%{ca_file: path}) do
+    trusted_ders =
+      case File.read(path) do
+        {:ok, pem} -> for {:Certificate, der, _} <- :public_key.pem_decode(pem), do: der
+        _ -> []
+      end
+
+    verify_fun =
+      {fn
+         _cert, :valid, state ->
+           {:valid, state}
+
+         _cert, :valid_peer, state ->
+           {:valid, state}
+
+         cert, {:bad_cert, :selfsigned_peer}, state ->
+           raw_der = :public_key.pkix_encode(:OTPCertificate, cert, :otp)
+
+           if raw_der in trusted_ders do
+             {:valid, state}
+           else
+             {:fail, :selfsigned_peer}
+           end
+
+         _cert, {:bad_cert, reason}, _state ->
+           {:fail, reason}
+       end, []}
+
+    [
+      timeout: 30_000,
+      transport_opts: [
+        verify: :verify_peer,
+        cacertfile: path,
+        cacerts: trusted_ders,
+        verify_fun: verify_fun
+      ]
+    ]
+  end
 
   defp settings(tracker_settings) when is_map(tracker_settings) do
     provider = provider_settings(tracker_settings)
