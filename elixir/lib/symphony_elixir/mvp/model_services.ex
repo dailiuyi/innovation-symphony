@@ -166,12 +166,16 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   def standalone_run_home(_), do: {:ok, nil}
 
   @doc """
-  Prunes historical sandbox runs in reverse modification order, retaining at most keep_count directories.
+  Prunes historical sandbox runs, retaining at most keep_count directories.
 
-  Uses the most-recent mtime across the entire subtree of each run directory so that
-  long-running tasks whose session files are written into subdirectories are never evicted
-  based on a stale top-level mtime. Only directories whose entire subtree has gone quiet
-  (i.e. the keep_count oldest by subtree-mtime) are removed.
+  Candidates are ranked by subtree mtime (most-recent descendant write wins) so that
+  long-running tasks whose session files are written into subdirectories are sorted
+  correctly. For each directory that would be evicted, `sandbox_active?/1` is consulted
+  first: any directory whose sandbox is still running or whose cleanup is not yet complete
+  is skipped unconditionally, regardless of its rank or age.
+
+  This ensures that active tasks and directories still referenced for recovery are never
+  removed based solely on time ordering.
   """
   @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
   def prune_runs(sandboxes_dir, keep_count \\ 50) do
@@ -185,6 +189,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
           |> Enum.map(fn dir -> {dir, subtree_mtime(dir)} end)
           |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
           |> Enum.drop(keep_count)
+          |> Enum.reject(fn {dir, _mtime} -> sandbox_active?(dir) end)
           |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
 
           :ok
@@ -197,6 +202,35 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     end
   rescue
     _ -> :ok
+  end
+
+  # A run directory is considered active (and must not be pruned) when:
+  #   1. sandbox/result.json does not exist — the sandbox launcher is still running.
+  #   2. sandbox/result.json exists but cleanup_complete is not true — the launcher
+  #      is still in its export/cleanup phase.
+  #
+  # Directories allocated by standalone_run_home (which have no sandbox/ subdirectory)
+  # always return false here and are subject to normal mtime-rank eviction.
+  @spec sandbox_active?(Path.t()) :: boolean()
+  defp sandbox_active?(dir) do
+    result_path = Path.join([dir, "sandbox", "result.json"])
+
+    case File.read(result_path) do
+      {:error, :enoent} ->
+        # sandbox/ subdirectory exists but result.json is absent: launcher is still running.
+        File.dir?(Path.join(dir, "sandbox"))
+
+      {:ok, raw} ->
+        # result.json present but cleanup not confirmed: launcher is still finishing.
+        case Jason.decode(raw) do
+          {:ok, %{"cleanup_complete" => true}} -> false
+          _ -> true
+        end
+
+      _ ->
+        # Unreadable result: treat conservatively as active.
+        true
+    end
   end
 
   # Returns the most-recent posix mtime found anywhere in the directory tree rooted at `dir`.
