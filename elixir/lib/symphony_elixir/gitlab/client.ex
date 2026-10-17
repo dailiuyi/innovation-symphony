@@ -359,8 +359,9 @@ defmodule SymphonyElixir.GitLab.Client do
            {:fail, reason}
 
          _cert, {:extension, _}, state ->
-           # Non-critical extensions are informational; accept and continue validation.
-           {:valid, state}
+           # Delegate extension handling to OTP: non-critical extensions are accepted,
+           # unknown critical extensions are rejected, as required by RFC 5280.
+           {:unknown, state}
        end, []}
 
     # Note: verify_fun directly compares raw DER against trusted_ders for :selfsigned_peer.

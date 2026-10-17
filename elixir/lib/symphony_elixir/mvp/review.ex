@@ -204,30 +204,31 @@ defmodule SymphonyElixir.Mvp.Review do
   # 1. When approved is true, blockers must be empty ([]).
   # 2. When approved is true and criteria is a structured list, every criterion must be adequate=true.
   # 3. disposition/1 routes any non-empty blocker list directly to :repair_code.
+  # Type checks (is_boolean/is_binary) are evaluated before any boolean logic on their values
+  # to prevent ArgumentError when approved is not a boolean.
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
     criteria = Map.get(value, "criteria")
-
-    # When approved and criteria is a structured list, all entries must be adequate.
-    criteria_consistent =
-      not approved or
-        case criteria do
-          list when is_list(list) ->
-            Enum.all?(list, fn
-              item when is_map(item) -> item["adequate"] == true
-              _ -> true
-            end)
-
-          _ ->
-            true
-        end
 
     is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0 and
       Map.keys(value) -- ["approved", "summary", "criteria", "blockers"] == [] and
       valid_single_turn_list?(criteria) and
       valid_single_turn_list?(value["blockers"]) and
       (not approved or Map.get(value, "blockers", []) == []) and
-      criteria_consistent
+      (not approved or criteria_adequate?(criteria))
   end
+
+  # When approved is true and criteria contains structured map entries, all must have adequate=true.
+  # String-summary entries are not checked (they carry no adequate field).
+  defp criteria_adequate?(nil), do: true
+
+  defp criteria_adequate?(list) when is_list(list) do
+    Enum.all?(list, fn
+      item when is_map(item) -> item["adequate"] == true
+      _ -> true
+    end)
+  end
+
+  defp criteria_adequate?(_), do: true
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
     is_boolean(approved) and nonempty?(summary) and valid_fields?(value)

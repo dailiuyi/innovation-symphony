@@ -168,35 +168,23 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @doc """
   Prunes historical sandbox runs in reverse modification order, retaining at most keep_count directories.
 
-  Directories modified within the last 2 hours are always retained regardless of keep_count,
-  to protect active tasks and directories still referenced for recovery.
+  Uses the most-recent mtime across the entire subtree of each run directory so that
+  long-running tasks whose session files are written into subdirectories are never evicted
+  based on a stale top-level mtime. Only directories whose entire subtree has gone quiet
+  (i.e. the keep_count oldest by subtree-mtime) are removed.
   """
   @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
   def prune_runs(sandboxes_dir, keep_count \\ 50) do
     if File.dir?(sandboxes_dir) do
       case File.ls(sandboxes_dir) do
         {:ok, entries} ->
-          now = System.os_time(:second)
-          # Directories modified within 2 hours are never pruned, protecting active
-          # and recovery-pending runs regardless of directory count.
-          active_cutoff = now - 2 * 3600
-
           entries
           |> Enum.filter(&String.starts_with?(&1, "run-"))
           |> Enum.map(&Path.join(sandboxes_dir, &1))
           |> Enum.filter(&File.dir?/1)
-          |> Enum.map(fn dir ->
-            mtime =
-              case File.stat(dir, time: :posix) do
-                {:ok, %{mtime: mtime}} -> mtime
-                _ -> 0
-              end
-
-            {dir, mtime}
-          end)
+          |> Enum.map(fn dir -> {dir, subtree_mtime(dir)} end)
           |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
           |> Enum.drop(keep_count)
-          |> Enum.reject(fn {_dir, mtime} -> mtime >= active_cutoff end)
           |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
 
           :ok
@@ -209,6 +197,47 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     end
   rescue
     _ -> :ok
+  end
+
+  # Returns the most-recent posix mtime found anywhere in the directory tree rooted at `dir`.
+  # Falls back to the top-level directory mtime when no descendant files are accessible.
+  # Depth is capped at 6 levels to bound the scan time for large session trees.
+  @spec subtree_mtime(Path.t()) :: integer()
+  defp subtree_mtime(dir), do: subtree_mtime(dir, 0, top_mtime(dir))
+
+  defp subtree_mtime(_dir, depth, acc) when depth >= 6, do: acc
+
+  defp subtree_mtime(dir, depth, acc) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        Enum.reduce(entries, acc, fn name, best ->
+          path = Path.join(dir, name)
+
+          case File.stat(path, time: :posix) do
+            {:ok, %{mtime: mtime} = stat} ->
+              updated = max(best, mtime)
+
+              if stat.type == :directory do
+                subtree_mtime(path, depth + 1, updated)
+              else
+                updated
+              end
+
+            _ ->
+              best
+          end
+        end)
+
+      _ ->
+        acc
+    end
+  end
+
+  defp top_mtime(dir) do
+    case File.stat(dir, time: :posix) do
+      {:ok, %{mtime: mtime}} -> mtime
+      _ -> 0
+    end
   end
 
   @spec load(Path.t(), map() | nil) :: {:ok, map() | nil} | {:error, term()}
