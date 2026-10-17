@@ -102,5 +102,18 @@
    - 模型设置服务（`127.0.0.1:8765/`）：HTTP 401（未带 token，鉴权拦截生效）。
    - 真实链路预检：容器内执行 `--preflight` 返回 `{"status":"passed","mode":"preflight","issue_count":1}`，GitLab 自动发现链路正常。
 
+## 2026-10-17 17:52 前端独立热重载与 GitLab MR 状态真实拉取验证
 
+来源：用户要求部署 main 分支最新前端更改，且后端任务不中断。
+依据：`view/` 服务独立运行，具备自身采集与缓存，启停不影响控制器（`AGENTS.md`）。
 
+1. **改动同步与发布**：
+   - 同步 `view/app` 核心改动：`derive.py`（增加 `fetch_gitlab_mr` 真实查询 GitLab MR 状态、安全重定向与 CA 支持）、`rounds.js`（修复单轮控制器任务会话关联）与 `wslpull.py`。
+   - 保留运行中发布目录 `.local/releases/a8ef726-20261017T172900/view/` 下的 `build/` 数据库与缓存，仅同步前端代码。
+   - 仅重启前端服务：`systemctl --user restart innovation-symphony-view.service`，后端控制器服务 `innovation-symphony-controller.service` 持续运行未受任何干扰。
+
+2. **在线就绪实测**：
+   - 后端任务零中断：后端控制器持续运行，GL-2 全生命周期成功推进完毕，Reviewer 审查通过并已成功在 GitLab 创建 Draft MR #2，状态转为 `awaiting_human`。
+   - 前端接口（8613 端口）：`/api/bootstrap` 返回 HTTP 200，`/api/snapshot` 实测成功拉取并关联 GitLab 真实 MR 状态：
+     - GL-1 MR #1：准确解析为 `state: "merged"`、`draft: false`、完整标题。
+     - GL-2 MR #2：准确解析为 `state: "open"`、`draft: true`、标题 `'Draft: GL-2: feat: add public /api/version endpoint, method rejection and update API.md'`。
