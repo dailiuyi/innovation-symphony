@@ -56,4 +56,51 @@
 3. **Issue 标识支持**：恢复并同步 `common.py` 与 `collector.py` 中对 GitLab `GL-\d+` Issue 编号与提取逻辑的适配。
 4. **服务同步验证**：将 `.local/launch-view.py` 指向 `e72d4e3-20261016T105358`，重启 `innovation-symphony-view.service`，实测 `/api/bootstrap` 正常返回两仓库且 `collection.status` 为 `ok`。
 
+## 2026-10-16 20:55 最新 main 分支（caf9d0f）全量上线与验证
+
+来源：用户要求「部署当前最新的main分支的代码 确保前后端都是在线的 能直接领取issue跑完全流程的那种」，并在方案确认后执行「Implement the plan」。
+
+1. **版本与构建**：
+   - 源码快照来自 `main` 分支最新提交 `caf9d0f`（包含无沙盒会话持久化、沙盒去重与修剪策略、Review schema 容错以及 GitLab 自签 CA 验证增强）。
+   - 快照目录：`.local/releases/caf9d0f-20261016T205328/`。
+   - 在 `innovation-symphony-controller:worker-tools` 镜像内离线构建 `MIX_ENV=dev mix escript.build`，产出 `elixir/bin/symphony`（SHA256: `e9eb1cf548d49f5b752a999301f51ba41b15870e5a65437440d734aefc12dd8f`）。
+   - 门禁回归：`mix format --check-formatted` 通过；`mix test` 22 项单元测试 0 失败。
+
+2. **启动引用与服务切换**：
+   - `.local/start-symphony.sh` 指向新 release 的 `elixir/bin`。
+   - `.local/launch-view.py` 指向新 release 的 `view/app`。
+   - `.local/start-model-settings.py` 指向新 release 的 `elixir/bin`。
+   - `.local/deployment-current-path.txt` 更新为最新路径。
+   - 通过 `systemctl --user restart` 重启控制器、View 看板与模型管理三个服务，令牌经 stdin 正常安全喂入。
+
+3. **在线就绪实测**：
+   - 控制器（`127.0.0.1:4000/api/v1/state`）：HTTP 200，running/retrying/blocked 均为 0。
+   - 看板（`127.0.0.1:8613/api/bootstrap`、`/api/snapshot`）：HTTP 200，Luca 仓库与 GL-1 全流程已正常关联展示。
+   - 模型设置服务（`127.0.0.1:8765/`）：HTTP 401（未带 token，鉴权机制生效）。
+   - 真实链路预检：容器内执行 `--preflight` 返回 `{"status":"passed","mode":"preflight","issue_count":0}`，GitLab 轮询就绪。
+
+## 2026-10-17 17:21 Review.schema(0) 严格模式修复与全量热重载（8037ec3）
+
+来源：解决单轮审查 `limit == 0` 时调用大模型报错 `Invalid json schema: missing field items` 导致的阻断。
+依据：OpenAI Strict Structured Outputs 规范要求数组字段必须包含 `items`，且所有顶层 properties 必须纳入 `required`。
+
+1. **代码与契约修复**：
+   - 修改 `Review.schema(0)`：为 `criteria` 补全 `@criterion`，为 `blockers` 补全 `@blocker`，并将 `["criteria", "blockers"]` 纳入 `required`。
+   - 同步更新 `mvp_review_external_test.exs`、`mvp_executor_test.exs` 与 `mvp_rework_contract_test.exs` 单元测试。
+   - 门禁回归：`mix format --check-formatted` 通过；针对性审查与执行器回归用例 108 tests 全部通过。
+   - 本地提交：分支 `fix-review-schema-items`，Commit `8037ec3`。
+
+2. **构建与服务切换**：
+   - 快照目录：`.local/releases/8037ec3-20261016T213700/`。
+   - 容器离线构建：`MIX_ENV=dev mix escript.build`，产出 `elixir/bin/symphony`（SHA256: `7d070edf8961e82c1f2bd3ee6ff0cbfc0e21ae5210c9dcaab4e6ab6e35474bfb`）。
+   - 启动引用切换：`.local/start-symphony.sh`、`.local/launch-view.py`、`.local/start-model-settings.py` 及 `.local/deployment-current-path.txt` 全部切到新目录。
+   - 通过 `systemctl --user restart` 重启三项服务。
+
+3. **在线就绪实测**：
+   - 控制器（`127.0.0.1:4000/api/v1/state`）：HTTP 200，running/retrying/blocked 均为 0。
+   - 看板（`127.0.0.1:8613/api/bootstrap`）：HTTP 200，Luca 与 Symphony 两仓库 collection 状态为 `ok`。
+   - 模型设置服务（`127.0.0.1:8765/`）：HTTP 401（未带 token，鉴权拦截生效）。
+   - 真实链路预检：容器内执行 `--preflight` 返回 `{"status":"passed","mode":"preflight","issue_count":1}`，GitLab 自动发现链路正常。
+
+
 
