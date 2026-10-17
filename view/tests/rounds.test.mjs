@@ -148,3 +148,22 @@ test('unlinked sessions match single controller round without explicit attempts'
   assert.equal(rows[0].evidence.length, 1);
   assert.equal(rows[0].title, '编码中');
 });
+
+test('multi-round controller task without explicit attempts does not guess round by session order', () => {
+  const cur = {
+    roundsAuthority: 'controller',
+    rounds: [{ round: 1, status: 'reworking' }, { round: 2, status: 'coding' }],
+    sessions: [
+      { id: 'sess-coder-1', role: '编码', round: null },
+      { id: 'sess-coder-2', role: '编码', round: null },
+      { id: 'sess-reviewer', role: 'Review', round: null },
+    ],
+  };
+  const rows = roundsModel(cur);
+  const nullBucket = rows.find(r => r.n == null);
+  assert.ok(nullBucket);
+  assert.equal(nullBucket.sessions.length, 3);
+  assert.equal(rows.find(r => r.n === 1).sessions.length, 0);
+  assert.equal(rows.find(r => r.n === 2).sessions.length, 0);
+});
+

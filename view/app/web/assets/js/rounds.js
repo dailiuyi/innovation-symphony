@@ -81,17 +81,22 @@ export function roundsModel(cur) {
   const bucketNumber = n => authoritative && !numbers.has(n) ? null : n;
   const buckets = new Map();
   const hasExplicitRound = (cur?.sessions || []).some(s => s.round != null);
-  let ordinalRound = numbers.size === 1 && numbers.has(1) ? 1 : 0;
+  const isSingleControllerRound = authoritative && numbers.size === 1 && !hasExplicitRound;
+  const singleRoundNum = isSingleControllerRound ? [...numbers][0] : null;
+  let legacyN = 0;
   for (const s of cur?.sessions || []) {
     let n;
-    if (authoritative && hasExplicitRound) {
-      n = bucketNumber(s.round);
-    } else {
-      if (s.role === '编码') {
-        ordinalRound = numbers.size === 1 && numbers.has(1) ? 1 : (ordinalRound + 1);
+    if (authoritative) {
+      if (s.round != null) {
+        n = bucketNumber(s.round);
+      } else if (isSingleControllerRound) {
+        n = singleRoundNum;
+      } else {
+        n = null;
       }
-      const candidate = s.round ?? (ordinalRound || null);
-      n = bucketNumber(candidate);
+    } else {
+      if (s.role === '编码') legacyN += 1;
+      n = legacyN || null;
     }
     if (!buckets.has(n)) buckets.set(n, []);
     buckets.get(n).push(s);

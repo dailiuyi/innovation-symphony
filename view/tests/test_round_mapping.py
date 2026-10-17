@@ -283,13 +283,36 @@ class RoundMappingTests(unittest.TestCase):
         }
         view = evidence_view(item)
         self.assertEqual(view["exit"], 0)
-        self.assertTrue(view["approved"])
+        self.assertNotIn("approved", view)
         self.assertIn("检查 passed · 退出码 0", view["summary"])
         receipt = {"rounds": [{"round": 1, "evidence": self.evidence}]}
         attach_evidence_rounds([view], receipt)
         self.assertEqual(view["round"], 1)
         self.assertEqual(view["roundSource"], "controller")
 
+    def test_check_json_evidence_timeout_is_marked_failed(self):
+        raw = json.dumps({
+            "argv": ["python3", "/workspace/backend/test.py"],
+            "category": "failed",
+            "exit_status": None,
+            "error": "timeout",
+            "stage": "check"
+        })
+        item = {
+            "name": "check-1.json",
+            "path": os.path.join(self.evidence, "check-1.json"),
+            "bytes": len(raw),
+            "text": raw,
+        }
+        view = evidence_view(item)
+        self.assertIsNone(view["exit"])
+        self.assertEqual(view["error"], "timeout")
+        self.assertNotIn("approved", view)
+        self.assertIn("timeout", view["summary"])
+        from symphony_board.derive import evidence_failed
+        self.assertTrue(evidence_failed(view))
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -148,16 +148,19 @@ def evidence_view(item):
             exit_code = parsed.get("exit_status")
             if exit_code is None:
                 exit_code = parsed.get("exit")
-            cat = parsed.get("category") or ("passed" if exit_code == 0 else "failed")
+            error = parsed.get("error")
+            cat = parsed.get("category") or ("passed" if (exit_code == 0 and not error) else "failed")
             argv = parsed.get("argv")
             cmd_str = (" ".join(argv) if isinstance(argv, list) else str(argv or "")).strip()
             summary = f"检查 {cat} · 退出码 {exit_code}" if exit_code is not None else f"检查 {cat}"
-            if cmd_str:
+            if error:
+                summary = f"{summary} ({error})"
+            elif cmd_str:
                 summary = f"{summary} ({cmd_str})"
             return {
                 "name": item["name"], "path": item["path"], "bytes": item["bytes"],
-                "exit": exit_code, "summary": summary, "under": [], "body": body, "tail": False,
-                "approved": True if exit_code == 0 else (False if exit_code is not None else None),
+                "exit": exit_code, "error": error, "category": cat, "summary": summary,
+                "under": [], "body": body, "tail": False,
             }
     decoded = decode_check_log(item["text"])
     summary = summarize_check(decoded["body"])
@@ -194,6 +197,8 @@ def sum_tokens(items):
 
 
 def evidence_failed(item):
+    if item.get("error") or (item.get("category") and item.get("category") != "passed"):
+        return True
     if (item.get("exit") is not None and item.get("exit") != 0) or item.get("tail"):
         return True
     return bool(re.search(r"[1-9]\d* 项失败", item.get("summary") or ""))
@@ -1037,26 +1042,62 @@ def fetch_pr(repo, number, url):
     }
 
 
+def is_trusted_gitlab_instance(netloc):
+    target = (netloc or "").strip().lower()
+    if not target:
+        return False
+    configured = os.environ.get("GITLAB_TRUSTED_HOSTS") or os.environ.get("GITLAB_HOST") or os.environ.get("GITLAB_INSTANCE")
+    if configured:
+        allowed = {h.strip().lower() for h in re.split(r"[,;\s]+", configured) if h.strip()}
+        return target in allowed
+    return target in {"81.71.154.125:8443", "81.71.154.125"}
+
+
+class SafeGitLabRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old_netloc = urlsplit(req.full_url).netloc.lower()
+        new_netloc = urlsplit(newurl).netloc.lower()
+        if old_netloc != new_netloc:
+            return None
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            new_req.headers.pop("Private-token", None)
+            new_req.headers.pop("PRIVATE-TOKEN", None)
+        return new_req
+
+
+def open_gitlab_url(req, ctx=None):
+    handlers = [SafeGitLabRedirectHandler()]
+    if ctx:
+        handlers.insert(0, urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=10)
+
+
 def fetch_gitlab_mr(repo, number, url):
     fallback = {"url": url, "number": number, "kind": "merge_request", "repo": repo, "state": "unknown", "title": "", "draft": False}
     if not safe_web_url(url):
         return fallback
-    token = os.environ.get("GITLAB_PAT", "").strip()
-    if not token:
-        token_candidates = [
-            ".local/gitlab-token",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".local", "gitlab-token"),
-            "/home/elma/文档/Code/innovation-symphony/.local/gitlab-token",
-        ]
-        for candidate in token_candidates:
-            if os.path.isfile(candidate):
-                try:
-                    with open(candidate, encoding="utf-8") as f:
-                        token = f.read().strip()
-                    if token:
-                        break
-                except OSError:
-                    pass
+    parsed = urlsplit(url)
+    target_host = parsed.netloc.lower()
+    token = ""
+    if is_trusted_gitlab_instance(target_host):
+        token = os.environ.get("GITLAB_PAT", "").strip()
+        if not token:
+            token_candidates = [
+                ".local/gitlab-token",
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".local", "gitlab-token"),
+                "/home/elma/文档/Code/innovation-symphony/.local/gitlab-token",
+            ]
+            for candidate in token_candidates:
+                if os.path.isfile(candidate):
+                    try:
+                        with open(candidate, encoding="utf-8") as f:
+                            token = f.read().strip()
+                        if token:
+                            break
+                    except OSError:
+                        pass
     ca_file = os.environ.get("GITLAB_CA_FILE", "").strip()
     if not ca_file:
         ca_candidates = [
@@ -1069,7 +1110,6 @@ def fetch_gitlab_mr(repo, number, url):
             if os.path.isfile(candidate):
                 ca_file = candidate
                 break
-    parsed = urlsplit(url)
     api_url = f"{parsed.scheme}://{parsed.netloc}/api/v4"
     project_enc = urllib.parse.quote(repo, safe="")
     target = f"{api_url}/projects/{project_enc}/merge_requests/{number}"
@@ -1077,7 +1117,7 @@ def fetch_gitlab_mr(repo, number, url):
     ctx = ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
     try:
         req = urllib.request.Request(target, headers=headers)
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+        with open_gitlab_url(req, ctx=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         return fallback
@@ -1102,10 +1142,12 @@ def enrich_pulls(tasks):
         if not parsed:
             task["pr"] = None
             continue
-        key = (parsed.get("kind") or "pr", parsed["repo"], parsed["number"])
+        host = urlsplit(parsed.get("url") or "").netloc.lower()
+        key = (parsed.get("kind") or "pr", host, parsed["repo"], parsed["number"])
         if key not in cache:
             if parsed.get("kind") == "merge_request":
                 cache[key] = fetch_gitlab_mr(parsed["repo"], parsed["number"], parsed["url"])
             else:
                 cache[key] = fetch_pr(parsed["repo"], parsed["number"], parsed["url"])
         task["pr"] = cache[key]
+
