@@ -1081,7 +1081,7 @@ def fetch_gitlab_mr(repo, number, url):
     parsed = urlsplit(url)
     target_host = parsed.netloc.lower()
     token = ""
-    if is_trusted_gitlab_instance(target_host):
+    if parsed.scheme.lower() == "https" and is_trusted_gitlab_instance(target_host):
         token = os.environ.get("GITLAB_PAT", "").strip()
         if not token:
             token_candidates = [

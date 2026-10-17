@@ -181,7 +181,7 @@ prototypes/              旧版完整会话 HTML（gitignored）
 
 View 同时识别 `GH-<number>` 与 `GL-<iid>` 的任务指令、工作区和会话关联，按完整标识区分同号的 GitHub/GitLab 任务。新回执读取 `issue_identifier`、`tracker_kind`、`issue_url`，仓库缺省时读取 `issue_native_ref.project_path`（支持子组路径）；缺少这些字段的历史 GitHub 回执保持原标识和深链接。
 
-GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 通过 GitLab REST API 查询 MR 真实状态（`merged`、`opened`、`closed`）。为防止凭据外发，私有 Token 仅限向环境变量 `GITLAB_TRUSTED_HOSTS` / `GITLAB_HOST` / `GITLAB_INSTANCE` 或本地受信任实例（`81.71.154.125:8443` 等）发送，未绑定实例不带 Token，重定向限制跨主机并自动剥离凭据；MR 状态缓存按主机地址隔离。状态为 `merged` 的任务正确推进至“已交付”（Done）列。
+GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 通过 GitLab REST API 查询 MR 真实状态（`merged`、`opened`、`closed`）。为防止凭据外发或明文传输，私有 Token 仅限在协议为 HTTPS 且目标主机属于白名单（环境变量 `GITLAB_TRUSTED_HOSTS` / `GITLAB_HOST` / `GITLAB_INSTANCE` 或本地受信任实例 `81.71.154.125:8443` 等）时发送，未绑定实例或 HTTP 明文请求不带 Token，重定向限制跨主机并自动剥离凭据；MR 状态缓存按主机地址隔离。状态为 `merged` 的任务正确推进至“已交付”（Done）列。
 
 ## 检查证据与 Agent 轮次匹配
 

@@ -149,6 +149,19 @@ class GitLabViewTests(unittest.TestCase):
         self.assertEqual(len(captured_req), 1)
         self.assertEqual(captured_req[0].headers.get('Private-token'), 'secret-token-123')
 
+    def test_trusted_gitlab_instance_over_http_does_not_send_token(self):
+        url = 'http://81.71.154.125:8443/team/luca/-/merge_requests/1'
+        captured_req = []
+        def fake_open(req, ctx=None):
+            captured_req.append(req)
+            return io.BytesIO(json.dumps({'state': 'opened'}).encode('utf-8'))
+        with patch.dict(os.environ, {'GITLAB_PAT': 'secret-token-123'}), \
+             patch('symphony_board.derive.open_gitlab_url', side_effect=fake_open):
+            fetch_gitlab_mr('team/luca', 1, url)
+        self.assertEqual(len(captured_req), 1)
+        self.assertNotIn('Private-token', captured_req[0].headers)
+        self.assertNotIn('PRIVATE-TOKEN', captured_req[0].headers)
+
     def test_safe_redirect_handler_blocks_cross_host_and_strips_token(self):
         from symphony_board.derive import SafeGitLabRedirectHandler
         import urllib.request
