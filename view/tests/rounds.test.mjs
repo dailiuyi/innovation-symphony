@@ -130,3 +130,21 @@ test('GitLab MR links and human review steps preserve native labels and URLs', (
   assert.equal(beatSteps({ pr, status: 'awaiting_review' }, { outcomeKind: 'human' }, true).at(-1).title, '等待处理 MR');
   assert.match(prAnchor({ ...pr, kind: undefined }), /处理 PR #3/);
 });
+
+test('unlinked sessions match single controller round without explicit attempts', () => {
+  const cur = {
+    roundsAuthority: 'controller',
+    rounds: [{ round: 1, status: 'coding' }],
+    sessions: [
+      { id: 'sess-coder', role: '编码', round: null },
+      { id: 'sess-review', role: 'Review', round: null },
+    ],
+    evidence: [{ name: 'check-1.json', round: 1, exit: 0, summary: '检查 passed · 退出码 0' }],
+  };
+  const rows = roundsModel(cur);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].n, 1);
+  assert.equal(rows[0].sessions.length, 2);
+  assert.equal(rows[0].evidence.length, 1);
+  assert.equal(rows[0].title, '编码中');
+});

@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ from symphony_board.collector import display_title, parse_rollout
 from symphony_board.common import issue_from_cwd, issue_from_prompt, receipt_issue_identifier, repo_of
 from symphony_board.config import BoardConfig, RepoCfg
 from symphony_board.context import _safe_workdir
-from symphony_board.derive import build_tasks, build_stories, enrich_pulls, parse_pull_request, safe_web_url
+from symphony_board.derive import build_tasks, build_stories, enrich_pulls, parse_pull_request, safe_web_url, story_outcome
 
 
 class GitLabViewTests(unittest.TestCase):
@@ -98,6 +99,28 @@ class GitLabViewTests(unittest.TestCase):
                         'https://gitlab.example/team/luca/-/merge_requests/nope'):
             self.assertIsNone(parse_pull_request(invalid))
         self.assertFalse(safe_web_url('javascript:alert(1)'))
+
+    def test_gitlab_merge_request_merged_enters_delivered_story(self):
+        url = 'https://gitlab.example/team/luca/-/merge_requests/1'
+        task = {
+            'pullRequest': url,
+            'status': 'awaiting_human',
+            'statusLabel': '待人审',
+            'attempt': 'attempt-1',
+            'issue': '1',
+            'runtime': 'local',
+            'repo': 'team/luca',
+            'title': 'Test Issue',
+            'id': 'task-1',
+        }
+        mock_response = io.BytesIO(json.dumps({'state': 'merged', 'title': 'Add feature', 'web_url': url}).encode('utf-8'))
+        with patch('urllib.request.urlopen', return_value=mock_response):
+            enrich_pulls([task])
+        self.assertEqual(task['pr']['state'], 'merged')
+        outcome, kind, badge, detail = story_outcome(task)
+        self.assertEqual(kind, 'done')
+        self.assertEqual(outcome, '已交付')
+        self.assertIn('人工已合并 MR #1', detail)
 
 
 if __name__ == '__main__':
