@@ -1412,5 +1412,11 @@ registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持�
   - 分支名：`codex/symphony-7dd80e93ed9283c3f18e5e91e5b18bf13162b54bc0eb15f3e0e7511e87d1f07d`
   - 任务状态：`awaiting_human`（等待人类在 GitLab 上核对并合并该 Draft MR）。
 
+## 2026-10-17 GL-2 审查 Schema 阻塞处置与归档重领
 
-
+来源：GL-2 任务在审查阶段因 `Review.schema(0)` 缺少 `items` 报错 `missing field items` 导致 `{:turn_failed, ...}` 阻塞停机。
+- 根因排查与代码修复：OpenAI 严格模式要求数组字段必声明 `items`，且对象属性需全量在 `required` 中声明。在 `Review.schema(0)` 中为 `criteria` 与 `blockers` 补全 `@criterion` 与 `@blocker` 定义，并将二者纳入 `required`，同步修复单元测试并更新 `main` 分支发布部署。
+- 失败回执归档处置：旧回执已生成候选 SHA 并包含完整编码输出，按运维规范严禁手动篡改文件内容。执行停机并完整归档：
+  - 归档路径：`/var/tmp/innovation-symphony-linux-runtime/archives/issue-2-review-schema-failure-20261017T174503Z/`
+  - 归档内容：回执 `1d99b26d00c12449adb5418b909c3ec335c63339b53a7cadb6b78dbf945ee705.json`（SHA256: `db364d589d218bef2160ffdb58ed3c0363661370c1e302b123a977043801741f`）、其 `.evidence` 目录及 `workspaces/GL-2`
+- 自动重领与验证：启动控制器后，控制器于 30 秒轮询内自动发现就绪的 Issue #2（GL-2），成功创建新工作区重新开工调度，状态由 `blocked` 恢复为 `running`。
