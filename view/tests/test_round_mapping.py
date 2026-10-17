@@ -8,7 +8,7 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from symphony_board.derive import build_tasks, execution_summary, result_text, attach_attempts, attach_evidence_rounds, rework_returns
+from symphony_board.derive import build_tasks, execution_summary, result_text, attach_attempts, attach_evidence_rounds, rework_returns, evidence_view
 from symphony_board.wslpull import remote_script
 
 
@@ -268,6 +268,51 @@ class RoundMappingTests(unittest.TestCase):
         self.assertEqual(task["sessions"][0]["roundSource"], "unassigned")
         self.assertEqual(task["sessions"][0]["attemptOutcome"], "unknown")
 
+    def test_check_json_evidence_parses_and_associates_round(self):
+        raw = json.dumps({
+            "argv": ["python3", "/workspace/backend/test.py"],
+            "category": "passed",
+            "exit_status": 0,
+            "stage": "check"
+        })
+        item = {
+            "name": "check-1.json",
+            "path": os.path.join(self.evidence, "check-1.json"),
+            "bytes": len(raw),
+            "text": raw,
+        }
+        view = evidence_view(item)
+        self.assertEqual(view["exit"], 0)
+        self.assertNotIn("approved", view)
+        self.assertIn("检查 passed · 退出码 0", view["summary"])
+        receipt = {"rounds": [{"round": 1, "evidence": self.evidence}]}
+        attach_evidence_rounds([view], receipt)
+        self.assertEqual(view["round"], 1)
+        self.assertEqual(view["roundSource"], "controller")
+
+    def test_check_json_evidence_timeout_is_marked_failed(self):
+        raw = json.dumps({
+            "argv": ["python3", "/workspace/backend/test.py"],
+            "category": "failed",
+            "exit_status": None,
+            "error": "timeout",
+            "stage": "check"
+        })
+        item = {
+            "name": "check-1.json",
+            "path": os.path.join(self.evidence, "check-1.json"),
+            "bytes": len(raw),
+            "text": raw,
+        }
+        view = evidence_view(item)
+        self.assertIsNone(view["exit"])
+        self.assertEqual(view["error"], "timeout")
+        self.assertNotIn("approved", view)
+        self.assertIn("timeout", view["summary"])
+        from symphony_board.derive import evidence_failed
+        self.assertTrue(evidence_failed(view))
+
 
 if __name__ == "__main__":
     unittest.main()
+

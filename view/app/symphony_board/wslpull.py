@@ -324,7 +324,7 @@ for root in roots:
                             continue
                         if not os.path.isfile(fp):
                             continue
-                        if not ((ev.startswith("check-") and ev.endswith(".log")) or ev == "review.json"):
+                        if not ((ev.startswith("check-") and (ev.endswith(".log") or ev.endswith(".json"))) or (ev.endswith(".json") and not ev.startswith("receipt"))):
                             continue
                         if _info(fp).st_size <= 2_000_000:
                             rt["evidence"].append({

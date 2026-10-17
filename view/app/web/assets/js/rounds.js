@@ -80,10 +80,24 @@ export function roundsModel(cur) {
   const numbers = new Set(rows.map(r => r.round).filter(n => Number.isInteger(n) && n > 0));
   const bucketNumber = n => authoritative && !numbers.has(n) ? null : n;
   const buckets = new Map();
+  const hasExplicitRound = (cur?.sessions || []).some(s => s.round != null);
+  const isSingleControllerRound = authoritative && numbers.size === 1 && !hasExplicitRound;
+  const singleRoundNum = isSingleControllerRound ? [...numbers][0] : null;
   let legacyN = 0;
   for (const s of cur?.sessions || []) {
-    if (!authoritative && s.role === '编码') legacyN += 1;
-    const n = authoritative ? bucketNumber(s.round) : (legacyN || null);
+    let n;
+    if (authoritative) {
+      if (s.round != null) {
+        n = bucketNumber(s.round);
+      } else if (isSingleControllerRound) {
+        n = singleRoundNum;
+      } else {
+        n = null;
+      }
+    } else {
+      if (s.role === '编码') legacyN += 1;
+      n = legacyN || null;
+    }
     if (!buckets.has(n)) buckets.set(n, []);
     buckets.get(n).push(s);
   }

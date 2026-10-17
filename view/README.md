@@ -177,8 +177,15 @@ prototypes/              旧版完整会话 HTML（gitignored）
 配置更改后需重启看板。数据库、rollout 缓存、生成页、截图、日志及依赖均为本地数据。
 不自动删除旧数据库或搬移旧配置；保留、切换及回退须按迁移说明操作，不自动切换服务。
 
-## GitLab 任务展示
+## GitLab 任务展示与交付状态
 
 View 同时识别 `GH-<number>` 与 `GL-<iid>` 的任务指令、工作区和会话关联，按完整标识区分同号的 GitHub/GitLab 任务。新回执读取 `issue_identifier`、`tracker_kind`、`issue_url`，仓库缺省时读取 `issue_native_ref.project_path`（支持子组路径）；缺少这些字段的历史 GitHub 回执保持原标识和深链接。
 
-GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 不通过 `gh` 查询 GitLab；MR 当前远端状态显示为未知，链接本身不证明已合并。待办：如后续要求自动追踪 MR 合并状态，需增加受授权的 GitLab 只读采集与真实验收。当前改动只增加本地展示，不启用任务、升级运行服务或授权真实外部调用。
+GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 通过 GitLab REST API 查询 MR 真实状态（`merged`、`opened`、`closed`）。为防止凭据外发或明文传输，私有 Token 仅限在协议为 HTTPS 且目标主机属于白名单（环境变量 `GITLAB_TRUSTED_HOSTS` / `GITLAB_HOST` / `GITLAB_INSTANCE` 或本地受信任实例 `81.71.154.125:8443` 等）时发送，未绑定实例或 HTTP 明文请求不带 Token，重定向限制跨主机并自动剥离凭据；MR 状态缓存按主机地址隔离。状态为 `merged` 的任务正确推进至“已交付”（Done）列。
+
+## 检查证据与 Agent 轮次匹配
+
+- **检查证据**：采集时同时收集 `check-*.log` 与 `check-*.json`，解析退出码、检查类别、错误信息（如超时）与命令输出，支持单轮根目录与子目录 `round-N/` 智能关联。检查结果使用独立字段，不设置 `approved`，避免将检查通过误当作 Review 批准；超时及非通过状态准确判定为失败。
+- **无沙盒 MVP 模式会话对齐**：当控制器回执无显式沙盒 attempt 绑定时，前端 `roundsModel` 仅在单一轮次任务中将编码与 Review Agent 会话归入该轮；多轮任务中缺少显式 round 的会话保持未关联，不按会话出现顺序猜测轮次。
+
+
