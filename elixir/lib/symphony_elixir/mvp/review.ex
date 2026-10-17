@@ -202,13 +202,31 @@ defmodule SymphonyElixir.Mvp.Review do
   # They may be either string summaries or structured criteria/blocker objects.
   # Safety against invalid approval is enforced:
   # 1. When approved is true, blockers must be empty ([]).
-  # 2. disposition/1 routes any non-empty blocker list directly to :repair_code.
+  # 2. When approved is true and criteria is a structured list, every criterion must be adequate=true.
+  # 3. disposition/1 routes any non-empty blocker list directly to :repair_code.
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
+    criteria = Map.get(value, "criteria")
+
+    # When approved and criteria is a structured list, all entries must be adequate.
+    criteria_consistent =
+      not approved or
+        case criteria do
+          list when is_list(list) ->
+            Enum.all?(list, fn
+              item when is_map(item) -> item["adequate"] == true
+              _ -> true
+            end)
+
+          _ ->
+            true
+        end
+
     is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0 and
       Map.keys(value) -- ["approved", "summary", "criteria", "blockers"] == [] and
-      valid_single_turn_list?(value["criteria"]) and
+      valid_single_turn_list?(criteria) and
       valid_single_turn_list?(value["blockers"]) and
-      (not approved or Map.get(value, "blockers", []) == [])
+      (not approved or Map.get(value, "blockers", []) == []) and
+      criteria_consistent
   end
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do

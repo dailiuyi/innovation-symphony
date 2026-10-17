@@ -168,14 +168,19 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @doc """
   Prunes historical sandbox runs in reverse modification order, retaining at most keep_count directories.
 
-  Known boundary: 仅在存在 >keep_count（默认 50）个 run 目录时才触发清理，清理按 mtime 倒序淘汰最旧目录，
-  当前不做在用检测（in-use check）。
+  Directories modified within the last 2 hours are always retained regardless of keep_count,
+  to protect active tasks and directories still referenced for recovery.
   """
   @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
   def prune_runs(sandboxes_dir, keep_count \\ 50) do
     if File.dir?(sandboxes_dir) do
       case File.ls(sandboxes_dir) do
         {:ok, entries} ->
+          now = System.os_time(:second)
+          # Directories modified within 2 hours are never pruned, protecting active
+          # and recovery-pending runs regardless of directory count.
+          active_cutoff = now - 2 * 3600
+
           entries
           |> Enum.filter(&String.starts_with?(&1, "run-"))
           |> Enum.map(&Path.join(sandboxes_dir, &1))
@@ -191,6 +196,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
           end)
           |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
           |> Enum.drop(keep_count)
+          |> Enum.reject(fn {_dir, mtime} -> mtime >= active_cutoff end)
           |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
 
           :ok

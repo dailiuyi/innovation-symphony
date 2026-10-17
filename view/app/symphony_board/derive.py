@@ -3,6 +3,7 @@
 
 Ported from build/symphony-watch.py.
 """
+import http.client
 import json
 import os
 import re
@@ -1118,8 +1119,16 @@ def fetch_gitlab_mr(repo, number, url):
     try:
         req = urllib.request.Request(target, headers=headers)
         with open_gitlab_url(req, ctx=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            raw = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead):
+        return fallback
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return fallback
+    # Guard against truncated or unexpected response shapes (e.g. list instead of object)
+    # that would cause AttributeError when calling .get() downstream.
+    if not isinstance(data, dict):
         return fallback
     raw_state = data.get("state")
     state_map = {"merged": "merged", "opened": "open", "closed": "closed", "locked": "locked"}
