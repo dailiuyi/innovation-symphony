@@ -138,32 +138,35 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     if ExecutionSandbox.enabled?(settings) do
       {:ok, nil}
     else
-      case Map.get(settings, :state_dir) do
-        state_dir when is_binary(state_dir) ->
-          if File.dir?(state_dir) do
-            root = Path.dirname(state_dir)
-            sandboxes = Path.join(root, "sandboxes")
-            run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
-            home = Path.join(run, "codex-home")
-
-            with :ok <- File.mkdir_p(home),
-                 :ok <- File.chmod(home, 0o700) do
-              prune_runs(sandboxes, 50)
-              {:ok, home}
-            else
-              {:error, reason} -> {:error, {:standalone_run_home_failed, reason}}
-            end
-          else
-            {:ok, nil}
-          end
-
-        _ ->
-          {:ok, nil}
-      end
+      allocate_standalone_home(Map.get(settings, :state_dir))
     end
   end
 
   def standalone_run_home(_), do: {:ok, nil}
+
+  defp allocate_standalone_home(state_dir) when is_binary(state_dir) do
+    if File.dir?(state_dir) do
+      do_allocate_standalone_home(state_dir)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp allocate_standalone_home(_), do: {:ok, nil}
+
+  defp do_allocate_standalone_home(state_dir) do
+    sandboxes = Path.join(Path.dirname(state_dir), "sandboxes")
+    run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
+    home = Path.join(run, "codex-home")
+
+    with :ok <- File.mkdir_p(home),
+         :ok <- File.chmod(home, 0o700) do
+      prune_runs(sandboxes, 50)
+      {:ok, home}
+    else
+      {:error, reason} -> {:error, {:standalone_run_home_failed, reason}}
+    end
+  end
 
   @doc """
   Prunes historical sandbox runs, retaining at most keep_count directories.
@@ -175,33 +178,15 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   Before deleting any candidate directory, `run_in_use?/3` verifies that:
   1. No file within the directory is currently open by any active process
      (protecting live sessions in standalone codex-home and running sandboxes).
-  2. The directory is not referenced by any pending recovery journal (.symphony-import/journal.json).
+  2. The directory is not referenced by any pending recovery journal (.symphony-import/journal.json)
+     resolved from configurations, receipts, or workspace roots.
   3. The directory does not contain an active sandbox run or a failed export whose
      candidate source code must be retained for recovery.
   """
   @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
   def prune_runs(sandboxes_dir, keep_count \\ 50) do
     if File.dir?(sandboxes_dir) do
-      case File.ls(sandboxes_dir) do
-        {:ok, entries} ->
-          open_paths = open_paths_under(sandboxes_dir)
-          recovery_exports = recovery_exports(sandboxes_dir)
-
-          entries
-          |> Enum.filter(&String.starts_with?(&1, "run-"))
-          |> Enum.map(&Path.join(sandboxes_dir, &1))
-          |> Enum.filter(&File.dir?/1)
-          |> Enum.map(fn dir -> {dir, subtree_mtime(dir)} end)
-          |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
-          |> Enum.drop(keep_count)
-          |> Enum.reject(fn {dir, _mtime} -> run_in_use?(dir, open_paths, recovery_exports) end)
-          |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
-
-          :ok
-
-        _ ->
-          :ok
-      end
+      do_prune_runs(sandboxes_dir, keep_count)
     else
       :ok
     end
@@ -209,10 +194,50 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     _ -> :ok
   end
 
-  defp run_in_use?(dir, open_paths, recovery_exports) do
+  defp do_prune_runs(sandboxes_dir, keep_count) do
+    case File.ls(sandboxes_dir) do
+      {:ok, entries} ->
+        inspect_result = open_paths_under(sandboxes_dir)
+        recovery_exports = recovery_exports(sandboxes_dir)
+        prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports) do
+    entries
+    |> Enum.filter(&String.starts_with?(&1, "run-"))
+    |> Enum.map(&Path.join(sandboxes_dir, &1))
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.map(&{&1, subtree_mtime(&1)})
+    |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
+    |> Enum.drop(keep_count)
+    |> Enum.reject(&candidate_protected?(&1, inspect_result, recovery_exports))
+    |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
+
+    :ok
+  end
+
+  defp candidate_protected?({dir, _mtime}, inspect_result, recovery_exports) do
+    run_in_use?(dir, inspect_result, recovery_exports)
+  end
+
+  defp run_in_use?(_dir, {:unconfirmed, _paths}, _recovery_exports) do
+    # When active same-UID process open descriptors cannot be read,
+    # usage state cannot be confirmed and deletion must not be authorized.
+    true
+  end
+
+  defp run_in_use?(dir, {:ok, open_paths}, recovery_exports) do
     has_open_file?(dir, open_paths) or
       referenced_by_recovery?(dir, recovery_exports) or
-      sandbox_state(dir) in [:active, :failed_export]
+      sandbox_protected?(dir)
+  end
+
+  defp sandbox_protected?(dir) do
+    sandbox_state(dir) in [:active, :failed_export]
   end
 
   defp has_open_file?(dir, open_paths) do
@@ -237,39 +262,38 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     sandbox_dir = Path.join(dir, "sandbox")
 
     if File.dir?(sandbox_dir) do
-      result_path = Path.join(sandbox_dir, "result.json")
-
-      case File.read(result_path) do
-        {:error, :enoent} ->
-          # sandbox/ exists but result.json is absent: launcher is still running.
-          :active
-
-        {:ok, raw} ->
-          case Jason.decode(raw) do
-            {:ok, report} when is_map(report) ->
-              cond do
-                # Launcher cleanup is incomplete: still finishing.
-                report["cleanup_complete"] != true ->
-                  :active
-
-                # Export failed or incomplete: source code must be preserved.
-                report["export_complete"] != true ->
-                  :failed_export
-
-                true ->
-                  :completed
-              end
-
-            _ ->
-              # Malformed or partial write: treat conservatively as active.
-              :active
-          end
-
-        _ ->
-          :active
-      end
+      inspect_sandbox_result(Path.join(sandbox_dir, "result.json"))
     else
       :no_sandbox
+    end
+  end
+
+  defp inspect_sandbox_result(result_path) do
+    case File.read(result_path) do
+      {:ok, raw} ->
+        parse_sandbox_report(raw)
+
+      {:error, :enoent} ->
+        :active
+
+      _ ->
+        :active
+    end
+  end
+
+  defp parse_sandbox_report(raw) do
+    case Jason.decode(raw) do
+      {:ok, %{"cleanup_complete" => true, "export_complete" => true}} ->
+        :completed
+
+      {:ok, %{"cleanup_complete" => true}} ->
+        :failed_export
+
+      {:ok, %{}} ->
+        :active
+
+      _ ->
+        :active
     end
   end
 
@@ -279,45 +303,93 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
     case File.ls("/proc") do
       {:ok, pids} ->
-        Enum.reduce(pids, MapSet.new(), fn pid, acc ->
-          case Integer.parse(pid) do
-            {_, ""} ->
-              fd_dir = Path.join(["/proc", pid, "fd"])
-
-              case File.ls(fd_dir) do
-                {:ok, fds} ->
-                  Enum.reduce(fds, acc, fn fd, inner_acc ->
-                    link = Path.join(fd_dir, fd)
-
-                    case File.read_link(link) do
-                      {:ok, target} ->
-                        clean_target = String.replace_suffix(target, " (deleted)", "")
-
-                        if clean_target == canonical_root or String.starts_with?(clean_target, prefix) do
-                          MapSet.put(inner_acc, clean_target)
-                        else
-                          inner_acc
-                        end
-
-                      _ ->
-                        inner_acc
-                    end
-                  end)
-
-                _ ->
-                  acc
-              end
-
-            _ ->
-              acc
-          end
-        end)
+        scan_proc_pids(pids, current_process_uid(), canonical_root, prefix)
 
       _ ->
-        lsof_open_paths(canonical_root)
+        {:ok, lsof_open_paths(canonical_root)}
     end
   rescue
-    _ -> MapSet.new()
+    _ -> {:ok, MapSet.new()}
+  end
+
+  defp current_process_uid do
+    case File.stat("/proc/self") do
+      {:ok, %{uid: uid}} -> uid
+      _ -> -1
+    end
+  end
+
+  defp scan_proc_pids(pids, my_uid, canonical_root, prefix) do
+    init = {:ok, MapSet.new()}
+
+    Enum.reduce(pids, init, fn pid_str, acc ->
+      case Integer.parse(pid_str) do
+        {pid, ""} ->
+          inspect_proc_pid(pid, my_uid, canonical_root, prefix, acc)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp inspect_proc_pid(pid, my_uid, canonical_root, prefix, acc) do
+    if proc_belongs_to_user?(pid, my_uid) do
+      read_pid_open_paths(pid, canonical_root, prefix, acc)
+    else
+      acc
+    end
+  end
+
+  defp proc_belongs_to_user?(pid, my_uid) do
+    case File.stat("/proc/#{pid}") do
+      {:ok, %{uid: ^my_uid}} -> true
+      _ -> false
+    end
+  end
+
+  defp read_pid_open_paths(pid, canonical_root, prefix, {status, paths}) do
+    fd_dir = Path.join(["/proc", Integer.to_string(pid), "fd"])
+
+    case File.ls(fd_dir) do
+      {:ok, fds} ->
+        new_paths = collect_fd_targets(fd_dir, fds, canonical_root, prefix, paths)
+        {status, new_paths}
+
+      {:error, reason} when reason in [:eacces, :eperm] ->
+        {:unconfirmed, paths}
+
+      _ ->
+        {status, paths}
+    end
+  end
+
+  defp collect_fd_targets(fd_dir, fds, canonical_root, prefix, acc) do
+    Enum.reduce(fds, acc, &inspect_fd_link(&1, fd_dir, canonical_root, prefix, &2))
+  end
+
+  defp inspect_fd_link(fd, fd_dir, canonical_root, prefix, acc) do
+    case File.read_link(Path.join(fd_dir, fd)) do
+      {:ok, target} ->
+        record_matching_target(target, canonical_root, prefix, acc)
+
+      _ ->
+        acc
+    end
+  end
+
+  defp record_matching_target(target, canonical_root, prefix, acc) do
+    clean_target = String.replace_suffix(target, " (deleted)", "")
+
+    if path_matches_root?(clean_target, canonical_root, prefix) do
+      MapSet.put(acc, clean_target)
+    else
+      acc
+    end
+  end
+
+  defp path_matches_root?(path, canonical_root, prefix) do
+    path == canonical_root or String.starts_with?(path, prefix)
   end
 
   defp lsof_open_paths(canonical_root) do
@@ -326,12 +398,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
         output
         |> String.split("\n")
         |> Enum.drop(1)
-        |> Enum.reduce(MapSet.new(), fn line, acc ->
-          case String.split(line, ~r/\s+/) |> List.last() do
-            nil -> acc
-            path -> MapSet.put(acc, path)
-          end
-        end)
+        |> Enum.reduce(MapSet.new(), &extract_lsof_path_entry/2)
 
       _ ->
         MapSet.new()
@@ -340,38 +407,122 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     _ -> MapSet.new()
   end
 
+  defp extract_lsof_path_entry(line, acc) do
+    case String.split(line, ~r/\s+/) |> List.last() do
+      nil -> acc
+      path -> MapSet.put(acc, path)
+    end
+  end
+
   defp recovery_exports(sandboxes_dir) do
-    parent = Path.dirname(Path.expand(sandboxes_dir))
+    workspace_candidates = candidate_workspaces(sandboxes_dir)
+    journal_paths = find_recovery_journals(workspace_candidates, sandboxes_dir)
 
-    extra =
-      if File.dir?("/workspace"),
-        do: Path.wildcard("/workspace/**/.symphony-import/journal.json", match_dot: true),
-        else: []
-
-    candidates =
-      Path.wildcard(Path.join([parent, "**", ".symphony-import", "journal.json"]), match_dot: true) ++
-        Path.wildcard(Path.join([File.cwd!(), "**", ".symphony-import", "journal.json"]), match_dot: true) ++
-        extra
-
-    candidates
-    |> Enum.uniq()
-    |> Enum.reduce(MapSet.new(), fn journal_path, acc ->
-      case File.read(journal_path) do
-        {:ok, raw} ->
-          case Jason.decode(raw) do
-            {:ok, %{"export" => export}} when is_binary(export) ->
-              MapSet.put(acc, Path.expand(export))
-
-            _ ->
-              acc
-          end
-
-        _ ->
-          acc
-      end
+    Enum.reduce(journal_paths, MapSet.new(), fn journal_path, acc ->
+      extract_journal_export(journal_path, acc)
     end)
   rescue
     _ -> MapSet.new()
+  end
+
+  defp candidate_workspaces(sandboxes_dir) do
+    from_config = config_workspace_roots()
+    from_receipts = receipt_workspaces(sandboxes_dir)
+    from_env = env_workspaces()
+    from_dir = [Path.dirname(Path.expand(sandboxes_dir)), File.cwd!()]
+
+    (from_config ++ from_receipts ++ from_env ++ from_dir)
+    |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
+    |> Enum.uniq()
+  end
+
+  defp config_workspace_roots do
+    case SymphonyElixir.Config.settings() do
+      %{workspace: %{root: root}} when is_binary(root) -> [root]
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp env_workspaces do
+    for var <- ~w(WORKSPACE SYMPHONY_WORKSPACE),
+        val = System.get_env(var),
+        is_binary(val) and val != "",
+        do: val
+  end
+
+  defp candidate_state_dirs(sandboxes_dir) do
+    parent = Path.dirname(Path.expand(sandboxes_dir))
+
+    dirs = [
+      Path.join(parent, "state"),
+      parent,
+      System.get_env("STATE_DIR"),
+      System.get_env("SYMPHONY_STATE_DIR")
+    ]
+
+    dirs
+    |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
+    |> Enum.uniq()
+  end
+
+  defp receipt_workspaces(sandboxes_dir) do
+    candidate_state_dirs(sandboxes_dir)
+    |> Enum.flat_map(&scan_state_dir_receipts/1)
+    |> Enum.uniq()
+  end
+
+  defp scan_state_dir_receipts(dir) do
+    case File.ls(dir) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.ends_with?(&1, ".json"))
+        |> Enum.reject(&(&1 in ["model-services.json", "config.json"]))
+        |> Enum.flat_map(&read_receipt_workspace(Path.join(dir, &1)))
+
+      _ ->
+        []
+    end
+  end
+
+  defp read_receipt_workspace(path) do
+    with {:ok, raw} <- File.read(path),
+         {:ok, %{"workspace" => ws}} <- Jason.decode(raw),
+         true <- is_binary(ws) and File.dir?(ws) do
+      [ws]
+    else
+      _ -> []
+    end
+  end
+
+  defp find_recovery_journals(workspaces, sandboxes_dir) do
+    parent = Path.dirname(Path.expand(sandboxes_dir))
+
+    direct_journals =
+      Enum.map(workspaces, &Path.join(&1, ".symphony-import/journal.json"))
+
+    wildcard_journals =
+      Enum.flat_map(workspaces, fn ws ->
+        Path.wildcard(Path.join([ws, "**", ".symphony-import", "journal.json"]), match_dot: true)
+      end)
+
+    fallback =
+      Path.wildcard(Path.join([parent, "**", ".symphony-import", "journal.json"]), match_dot: true)
+
+    (direct_journals ++ wildcard_journals ++ fallback)
+    |> Enum.uniq()
+    |> Enum.filter(&File.regular?/1)
+  end
+
+  defp extract_journal_export(journal_path, acc) do
+    with {:ok, raw} <- File.read(journal_path),
+         {:ok, %{"export" => export}} <- Jason.decode(raw),
+         true <- is_binary(export) do
+      MapSet.put(acc, Path.expand(export))
+    else
+      _ -> acc
+    end
   end
 
   # Returns the most-recent posix mtime found anywhere in the directory tree rooted at `dir`.
@@ -385,26 +536,25 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp subtree_mtime(dir, depth, acc) do
     case File.ls(dir) do
       {:ok, entries} ->
-        Enum.reduce(entries, acc, fn name, best ->
-          path = Path.join(dir, name)
-
-          case File.stat(path, time: :posix) do
-            {:ok, %{mtime: mtime} = stat} ->
-              updated = max(best, mtime)
-
-              if stat.type == :directory do
-                subtree_mtime(path, depth + 1, updated)
-              else
-                updated
-              end
-
-            _ ->
-              best
-          end
-        end)
+        Enum.reduce(entries, acc, &update_entry_mtime(&1, dir, depth, &2))
 
       _ ->
         acc
+    end
+  end
+
+  defp update_entry_mtime(name, dir, depth, best) do
+    path = Path.join(dir, name)
+
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime, type: :directory}} ->
+        subtree_mtime(path, depth + 1, max(best, mtime))
+
+      {:ok, %{mtime: mtime}} ->
+        max(best, mtime)
+
+      _ ->
+        best
     end
   end
 

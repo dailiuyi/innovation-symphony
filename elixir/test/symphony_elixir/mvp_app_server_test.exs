@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.MVPAppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Mvp.ModelServices
+
   test "MVP session freezes model and enforces read-only tool and output schema options" do
     test_root =
       Path.join(
@@ -301,7 +303,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
     end)
 
     settings = SymphonyElixir.ModelServicesFixture.settings(test_root)
-    {:ok, service} = SymphonyElixir.Mvp.ModelServices.snapshot(settings, "coding", :coder, "fixture")
+    {:ok, service} = ModelServices.snapshot(settings, "coding", :coder, "fixture")
     service = Map.put(service, "command", "#{codex_binary} app-server")
 
     assert {:ok, session} =
@@ -333,7 +335,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
     File.mkdir_p!(state_dir)
     on_exit(fn -> File.rm_rf(test_root) end)
 
-    assert {:ok, home} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: state_dir})
+    assert {:ok, home} = ModelServices.standalone_run_home(%{state_dir: state_dir})
     assert is_binary(home)
     assert String.starts_with?(home, Path.join(test_root, "sandboxes"))
     assert String.ends_with?(home, "codex-home")
@@ -341,13 +343,13 @@ defmodule SymphonyElixir.MVPAppServerTest do
 
     # When sandbox is enabled, must return {:ok, nil} and not allocate a home
     assert {:ok, nil} =
-             SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{
+             ModelServices.standalone_run_home(%{
                state_dir: state_dir,
                sandbox: %{enabled: true}
              })
 
-    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
-    assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{})
+    assert {:ok, nil} = ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
+    assert {:ok, nil} = ModelServices.standalone_run_home(%{})
   end
 
   test "ModelServices.prune_runs retains standalone run directory with open session file descriptor despite 50 newer runs" do
@@ -371,7 +373,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
       File.touch!(dir, System.os_time(:second) + i)
     end
 
-    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+    ModelServices.prune_runs(sandboxes, 50)
 
     # active_run has an open file descriptor, must NOT be pruned
     assert File.dir?(active_run)
@@ -405,7 +407,7 @@ defmodule SymphonyElixir.MVPAppServerTest do
       File.touch!(dir, System.os_time(:second) + i)
     end
 
-    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+    ModelServices.prune_runs(sandboxes, 50)
 
     # failed_run must be preserved for operator inspection
     assert File.dir?(failed_run)
@@ -439,9 +441,113 @@ defmodule SymphonyElixir.MVPAppServerTest do
       File.touch!(dir, System.os_time(:second) + i)
     end
 
-    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+    ModelServices.prune_runs(sandboxes, 50)
 
     # recovered_run must be preserved because recovery journal references it
     assert File.dir?(recovered_run)
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory referenced by recovery journal in disjoint workspace from receipt" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-disjoint-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    state_dir = Path.join(test_root, "state")
+    disjoint_workspace = Path.join(System.tmp_dir!(), "symphony-disjoint-ws-#{System.unique_integer([:positive])}")
+    import_dir = Path.join(disjoint_workspace, ".symphony-import")
+
+    File.mkdir_p!(sandboxes)
+    File.mkdir_p!(state_dir)
+    File.mkdir_p!(import_dir)
+
+    on_exit(fn ->
+      File.rm_rf(test_root)
+      File.rm_rf(disjoint_workspace)
+    end)
+
+    # Create run-0 with completed export in sandboxes
+    recovered_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(recovered_run, "sandbox")
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => 0}))
+
+    # Journal in disjoint workspace references run-0
+    journal = %{"schema" => 2, "export" => export_dir}
+    File.write!(Path.join(import_dir, "journal.json"), Jason.encode!(journal))
+
+    # Receipt in state dir points to disjoint workspace
+    receipt = %{"issue_id" => "mvp-disjoint", "workspace" => disjoint_workspace}
+    File.write!(Path.join(state_dir, "receipt-mvp-disjoint.json"), Jason.encode!(receipt))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    ModelServices.prune_runs(sandboxes, 50)
+
+    # recovered_run must be preserved because recovery journal in receipt workspace references it
+    assert File.dir?(recovered_run)
+  end
+
+  test "ModelServices.prune_runs does not prune runs when peer process file descriptors cannot be confirmed" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-unconfirmed-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0
+    target_run = Path.join(sandboxes, "run-0")
+    File.mkdir_p!(target_run)
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    python = System.find_executable("python3")
+
+    if python != nil and File.exists?("/proc") do
+      script = """
+      import ctypes, sys
+      libc = ctypes.CDLL(None)
+      libc.prctl(4, 0, 0, 0, 0)
+      sys.stdout.write("READY\\n")
+      sys.stdout.flush()
+      sys.stdin.read()
+      """
+
+      port =
+        Port.open({:spawn_executable, python}, [
+          :binary,
+          args: ["-c", script]
+        ])
+
+      receive do
+        {^port, {:data, "READY\n"}} -> :ok
+      after
+        1000 -> :ok
+      end
+
+      try do
+        ModelServices.prune_runs(sandboxes, 50)
+
+        # Under unconfirmed usage state, deletion must not be authorized when /proc/<pid>/fd is eacces
+        case File.stat("/proc/self") do
+          {:ok, %{uid: 0}} ->
+            :ok
+
+          _ ->
+            assert File.dir?(target_run)
+        end
+      after
+        Port.close(port)
+      end
+    else
+      :ok
+    end
   end
 end

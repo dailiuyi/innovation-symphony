@@ -207,14 +207,9 @@ defmodule SymphonyElixir.Mvp.Review do
   # Type checks (is_boolean/is_binary) are evaluated before any boolean logic on their values
   # to prevent ArgumentError when approved is not a boolean.
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
-    criteria = Map.get(value, "criteria")
-
-    is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0 and
-      Map.keys(value) -- ["approved", "summary", "criteria", "blockers"] == [] and
-      valid_single_turn_list?(criteria) and
-      valid_single_turn_list?(value["blockers"]) and
-      (not approved or Map.get(value, "blockers", []) == []) and
-      (not approved or criteria_adequate?(criteria))
+    valid_single_turn_types?(approved, summary) and
+      valid_single_turn_keys?(value) and
+      valid_single_turn_content?(value, approved)
   end
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
@@ -222,6 +217,29 @@ defmodule SymphonyElixir.Mvp.Review do
   end
 
   defp valid?(_, _), do: false
+
+  defp valid_single_turn_types?(approved, summary) do
+    is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0
+  end
+
+  defp valid_single_turn_keys?(value) do
+    Map.keys(value) -- ["approved", "summary", "criteria", "blockers"] == []
+  end
+
+  defp valid_single_turn_content?(value, approved) do
+    criteria = Map.get(value, "criteria")
+    blockers = Map.get(value, "blockers")
+
+    valid_single_turn_list?(criteria) and
+      valid_single_turn_list?(blockers) and
+      valid_single_turn_approval?(approved, criteria, blockers)
+  end
+
+  defp valid_single_turn_approval?(false, _criteria, _blockers), do: true
+
+  defp valid_single_turn_approval?(true, criteria, blockers) do
+    (is_nil(blockers) or blockers == []) and criteria_adequate?(criteria)
+  end
 
   # When approved is true and criteria contains structured map entries, all must have adequate=true.
   # String-summary entries are not checked (they carry no adequate field).
