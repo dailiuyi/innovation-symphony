@@ -349,4 +349,99 @@ defmodule SymphonyElixir.MVPAppServerTest do
     assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
     assert {:ok, nil} = SymphonyElixir.Mvp.ModelServices.standalone_run_home(%{})
   end
+
+  test "ModelServices.prune_runs retains standalone run directory with open session file descriptor despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-test-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 as standalone run (codex-home only)
+    active_run = Path.join(sandboxes, "run-0")
+    sessions_dir = Path.join([active_run, "codex-home", "sessions"])
+    File.mkdir_p!(sessions_dir)
+    transcript = Path.join(sessions_dir, "rollout-active.jsonl")
+    file = File.open!(transcript, [:write])
+    IO.binwrite(file, "initial session content\n")
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+
+    # active_run has an open file descriptor, must NOT be pruned
+    assert File.dir?(active_run)
+    assert File.regular?(transcript)
+
+    # Writing to open file still works and path exists
+    IO.binwrite(file, "subsequent session content\n")
+    File.close(file)
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory when export failed despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-export-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 with failed export
+    failed_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(failed_run, "sandbox")
+    File.mkdir_p!(scratch)
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(export_dir, "candidate.txt"), "failed export code")
+    result_path = Path.join(scratch, "result.json")
+    File.write!(result_path, Jason.encode!(%{"cleanup_complete" => true, "export_complete" => false, "scratch_root" => scratch, "exit_status" => 1}))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+
+    # failed_run must be preserved for operator inspection
+    assert File.dir?(failed_run)
+    assert File.read!(Path.join(export_dir, "candidate.txt")) == "failed export code"
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory referenced by recovery journal despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-recovery-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    workspace = Path.join(test_root, "workspace")
+    import_dir = Path.join(workspace, ".symphony-import")
+    File.mkdir_p!(sandboxes)
+    File.mkdir_p!(import_dir)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 with completed export
+    recovered_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(recovered_run, "sandbox")
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => 0}))
+
+    # Journal in workspace references run-0
+    journal = %{"schema" => 2, "export" => export_dir}
+    File.write!(Path.join(import_dir, "journal.json"), Jason.encode!(journal))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    SymphonyElixir.Mvp.ModelServices.prune_runs(sandboxes, 50)
+
+    # recovered_run must be preserved because recovery journal references it
+    assert File.dir?(recovered_run)
+  end
 end

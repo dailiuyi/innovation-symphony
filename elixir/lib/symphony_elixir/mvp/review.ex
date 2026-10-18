@@ -217,6 +217,12 @@ defmodule SymphonyElixir.Mvp.Review do
       (not approved or criteria_adequate?(criteria))
   end
 
+  defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
+    is_boolean(approved) and nonempty?(summary) and valid_fields?(value)
+  end
+
+  defp valid?(_, _), do: false
+
   # When approved is true and criteria contains structured map entries, all must have adequate=true.
   # String-summary entries are not checked (they carry no adequate field).
   defp criteria_adequate?(nil), do: true
@@ -229,12 +235,6 @@ defmodule SymphonyElixir.Mvp.Review do
   end
 
   defp criteria_adequate?(_), do: true
-
-  defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
-    is_boolean(approved) and nonempty?(summary) and valid_fields?(value)
-  end
-
-  defp valid?(_, _), do: false
 
   defp valid_single_turn_list?(nil), do: true
 

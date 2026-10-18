@@ -170,18 +170,23 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
   Candidates are ranked by subtree mtime (most-recent descendant write wins) so that
   long-running tasks whose session files are written into subdirectories are sorted
-  correctly. For each directory that would be evicted, `sandbox_active?/1` is consulted
-  first: any directory whose sandbox is still running or whose cleanup is not yet complete
-  is skipped unconditionally, regardless of its rank or age.
+  correctly.
 
-  This ensures that active tasks and directories still referenced for recovery are never
-  removed based solely on time ordering.
+  Before deleting any candidate directory, `run_in_use?/3` verifies that:
+  1. No file within the directory is currently open by any active process
+     (protecting live sessions in standalone codex-home and running sandboxes).
+  2. The directory is not referenced by any pending recovery journal (.symphony-import/journal.json).
+  3. The directory does not contain an active sandbox run or a failed export whose
+     candidate source code must be retained for recovery.
   """
   @spec prune_runs(Path.t(), non_neg_integer()) :: :ok
   def prune_runs(sandboxes_dir, keep_count \\ 50) do
     if File.dir?(sandboxes_dir) do
       case File.ls(sandboxes_dir) do
         {:ok, entries} ->
+          open_paths = open_paths_under(sandboxes_dir)
+          recovery_exports = recovery_exports(sandboxes_dir)
+
           entries
           |> Enum.filter(&String.starts_with?(&1, "run-"))
           |> Enum.map(&Path.join(sandboxes_dir, &1))
@@ -189,7 +194,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
           |> Enum.map(fn dir -> {dir, subtree_mtime(dir)} end)
           |> Enum.sort_by(fn {_dir, mtime} -> mtime end, :desc)
           |> Enum.drop(keep_count)
-          |> Enum.reject(fn {dir, _mtime} -> sandbox_active?(dir) end)
+          |> Enum.reject(fn {dir, _mtime} -> run_in_use?(dir, open_paths, recovery_exports) end)
           |> Enum.each(fn {dir, _mtime} -> File.rm_rf(dir) end)
 
           :ok
@@ -204,33 +209,169 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     _ -> :ok
   end
 
-  # A run directory is considered active (and must not be pruned) when:
-  #   1. sandbox/result.json does not exist — the sandbox launcher is still running.
-  #   2. sandbox/result.json exists but cleanup_complete is not true — the launcher
-  #      is still in its export/cleanup phase.
-  #
-  # Directories allocated by standalone_run_home (which have no sandbox/ subdirectory)
-  # always return false here and are subject to normal mtime-rank eviction.
-  @spec sandbox_active?(Path.t()) :: boolean()
-  defp sandbox_active?(dir) do
-    result_path = Path.join([dir, "sandbox", "result.json"])
+  defp run_in_use?(dir, open_paths, recovery_exports) do
+    has_open_file?(dir, open_paths) or
+      referenced_by_recovery?(dir, recovery_exports) or
+      sandbox_state(dir) in [:active, :failed_export]
+  end
 
-    case File.read(result_path) do
-      {:error, :enoent} ->
-        # sandbox/ subdirectory exists but result.json is absent: launcher is still running.
-        File.dir?(Path.join(dir, "sandbox"))
+  defp has_open_file?(dir, open_paths) do
+    canonical_dir = Path.expand(dir)
+    prefix = canonical_dir <> "/"
 
-      {:ok, raw} ->
-        # result.json present but cleanup not confirmed: launcher is still finishing.
-        case Jason.decode(raw) do
-          {:ok, %{"cleanup_complete" => true}} -> false
-          _ -> true
-        end
+    Enum.any?(open_paths, fn path ->
+      path == canonical_dir or String.starts_with?(path, prefix)
+    end)
+  end
+
+  defp referenced_by_recovery?(dir, recovery_exports) do
+    canonical_dir = Path.expand(dir)
+    prefix = canonical_dir <> "/"
+
+    Enum.any?(recovery_exports, fn export ->
+      export == canonical_dir or String.starts_with?(export, prefix)
+    end)
+  end
+
+  defp sandbox_state(dir) do
+    sandbox_dir = Path.join(dir, "sandbox")
+
+    if File.dir?(sandbox_dir) do
+      result_path = Path.join(sandbox_dir, "result.json")
+
+      case File.read(result_path) do
+        {:error, :enoent} ->
+          # sandbox/ exists but result.json is absent: launcher is still running.
+          :active
+
+        {:ok, raw} ->
+          case Jason.decode(raw) do
+            {:ok, report} when is_map(report) ->
+              cond do
+                # Launcher cleanup is incomplete: still finishing.
+                report["cleanup_complete"] != true ->
+                  :active
+
+                # Export failed or incomplete: source code must be preserved.
+                report["export_complete"] != true ->
+                  :failed_export
+
+                true ->
+                  :completed
+              end
+
+            _ ->
+              # Malformed or partial write: treat conservatively as active.
+              :active
+          end
+
+        _ ->
+          :active
+      end
+    else
+      :no_sandbox
+    end
+  end
+
+  defp open_paths_under(root) do
+    canonical_root = Path.expand(root)
+    prefix = canonical_root <> "/"
+
+    case File.ls("/proc") do
+      {:ok, pids} ->
+        Enum.reduce(pids, MapSet.new(), fn pid, acc ->
+          case Integer.parse(pid) do
+            {_, ""} ->
+              fd_dir = Path.join(["/proc", pid, "fd"])
+
+              case File.ls(fd_dir) do
+                {:ok, fds} ->
+                  Enum.reduce(fds, acc, fn fd, inner_acc ->
+                    link = Path.join(fd_dir, fd)
+
+                    case File.read_link(link) do
+                      {:ok, target} ->
+                        clean_target = String.replace_suffix(target, " (deleted)", "")
+
+                        if clean_target == canonical_root or String.starts_with?(clean_target, prefix) do
+                          MapSet.put(inner_acc, clean_target)
+                        else
+                          inner_acc
+                        end
+
+                      _ ->
+                        inner_acc
+                    end
+                  end)
+
+                _ ->
+                  acc
+              end
+
+            _ ->
+              acc
+          end
+        end)
 
       _ ->
-        # Unreadable result: treat conservatively as active.
-        true
+        lsof_open_paths(canonical_root)
     end
+  rescue
+    _ -> MapSet.new()
+  end
+
+  defp lsof_open_paths(canonical_root) do
+    case System.cmd("lsof", ["+D", canonical_root], stderr_to_stdout: true) do
+      {output, _} ->
+        output
+        |> String.split("\n")
+        |> Enum.drop(1)
+        |> Enum.reduce(MapSet.new(), fn line, acc ->
+          case String.split(line, ~r/\s+/) |> List.last() do
+            nil -> acc
+            path -> MapSet.put(acc, path)
+          end
+        end)
+
+      _ ->
+        MapSet.new()
+    end
+  rescue
+    _ -> MapSet.new()
+  end
+
+  defp recovery_exports(sandboxes_dir) do
+    parent = Path.dirname(Path.expand(sandboxes_dir))
+
+    extra =
+      if File.dir?("/workspace"),
+        do: Path.wildcard("/workspace/**/.symphony-import/journal.json", match_dot: true),
+        else: []
+
+    candidates =
+      Path.wildcard(Path.join([parent, "**", ".symphony-import", "journal.json"]), match_dot: true) ++
+        Path.wildcard(Path.join([File.cwd!(), "**", ".symphony-import", "journal.json"]), match_dot: true) ++
+        extra
+
+    candidates
+    |> Enum.uniq()
+    |> Enum.reduce(MapSet.new(), fn journal_path, acc ->
+      case File.read(journal_path) do
+        {:ok, raw} ->
+          case Jason.decode(raw) do
+            {:ok, %{"export" => export}} when is_binary(export) ->
+              MapSet.put(acc, Path.expand(export))
+
+            _ ->
+              acc
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  rescue
+    _ -> MapSet.new()
   end
 
   # Returns the most-recent posix mtime found anywhere in the directory tree rooted at `dir`.
