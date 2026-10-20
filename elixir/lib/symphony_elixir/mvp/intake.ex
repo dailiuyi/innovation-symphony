@@ -37,7 +37,20 @@ defmodule SymphonyElixir.Mvp.Intake do
 
   def resolve_claimed(_issue, _settings, _opts), do: {:error, :invalid_mvp_settings}
 
+  @doc "Revalidate ready authorization without replacing an interrupted task's frozen model selection."
+  @spec authorize_claimed(Issue.t() | map(), map(), keyword()) :: :ok | {:error, term()}
+  def authorize_claimed(issue, settings, opts) do
+    with {:ok, _} <- ready_authorization(issue, settings, opts), do: :ok
+  end
+
   defp resolve_authorized(issue, settings, opts) do
+    with {:ok, reference} <- ready_authorization(issue, settings, opts),
+         {:ok, comments} <- fetch_pages(reference, "comments", opts) do
+      resolve_comments(comments, settings)
+    end
+  end
+
+  defp ready_authorization(issue, settings, opts) do
     with :ok <- validate_settings(settings),
          {:ok, reference} <- issue_reference(issue, opts),
          :ok <- ready_issue(issue, Map.get(settings, :ready_label, "ready")),
@@ -47,9 +60,8 @@ defmodule SymphonyElixir.Mvp.Intake do
              events,
              Map.get(settings, :ready_label, "ready"),
              Map.get(settings, :allowed_actors)
-           ),
-         {:ok, comments} <- fetch_pages(reference, "comments", opts) do
-      resolve_comments(comments, settings)
+           ) do
+      {:ok, reference}
     end
   end
 

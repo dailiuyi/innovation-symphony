@@ -67,6 +67,29 @@ def _closed_host_interruption(receipt, raw, evidence):
         return None
 
 UUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+
+def _restart_stop(path, receipt, raw):
+    journal_path = path + ".restart-blocked.json"
+    if not os.path.lexists(journal_path):
+        return None
+    unknown = {"kind": "restart_recovery_stop", "verified": False,
+               "reason": "自动恢复有停止记录，尚未通过完整性核对。", "receiptStatus": receipt.get("status")}
+    try:
+        if _info(journal_path).st_size > 8_000_000:
+            return unknown
+        journal = json.loads(_read(journal_path))
+        if (not isinstance(journal, dict) or journal.get("schema") != 1
+                or journal.get("status") != "blocked" or journal.get("receipt_before") != raw
+                or journal.get("receipt_sha256") != hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                or not isinstance(journal.get("reason"), str) or not journal["reason"].strip()
+                or not isinstance(journal.get("stopped_at"), str)):
+            return unknown
+        return {"kind": "restart_recovery_stop", "verified": True,
+                "reason": journal["reason"][:2000], "stoppedAt": journal["stopped_at"],
+                "receiptStatus": receipt.get("status")}
+    except (OSError, ValueError, TypeError):
+        return unknown
+
 SID_RE = re.compile(r"^" + UUID + r"(?:-(?:turn-?)?" + UUID + r")?$")
 THREAD_RE = re.compile(r"^" + UUID + r"$")
 MAX_MESSAGES_BYTES = 256_000
@@ -291,7 +314,7 @@ for root in roots:
         for dirpath, dirnames, filenames in _walk(state):
             dirnames[:] = [d for d in dirnames if not d.endswith(".evidence")]
             for name in filenames:
-                if not name.endswith(".json"):
+                if not name.endswith(".json") or name.endswith(".restart-blocked.json"):
                     continue
                 path = os.path.join(dirpath, name)
                 try:
@@ -306,7 +329,7 @@ for root in roots:
                 rec["_path"] = path
                 ev_dir = path + ".evidence"
                 rec.pop("_execution_health", None)
-                interruption = _closed_host_interruption(rec, receipt_raw, ev_dir)
+                interruption = _restart_stop(path, rec, receipt_raw) or _closed_host_interruption(rec, receipt_raw, ev_dir)
                 if interruption:
                     rec["_execution_health"] = interruption
                 rec["_agent_attempts"] = _agent_attempts(rec, ev_dir)

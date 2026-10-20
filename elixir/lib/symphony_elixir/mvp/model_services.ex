@@ -2,12 +2,13 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   @moduledoc "Controlled role services, configuration-bound capability evidence and durable defaults."
 
   import Kernel, except: [binding: 1]
+  require Logger
 
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.Config, as: RuntimeConfig
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Mvp.Config
-  alias SymphonyElixir.Mvp.{ExecutionSandbox, LegacyModelService, ModelCatalog}
+  alias SymphonyElixir.Mvp.{ExecutionReadiness, ExecutionSandbox, LegacyModelService, ModelCatalog}
   alias SymphonyElixir.{PathSafety, Workflow}
 
   @roles ~w(coder reviewer)
@@ -138,30 +139,30 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     if ExecutionSandbox.enabled?(settings) do
       {:ok, nil}
     else
-      allocate_standalone_home(Map.get(settings, :state_dir))
+      allocate_standalone_home(Map.get(settings, :state_dir), ExecutionReadiness.vm?(settings))
     end
   end
 
   def standalone_run_home(_), do: {:ok, nil}
 
-  defp allocate_standalone_home(state_dir) when is_binary(state_dir) do
+  defp allocate_standalone_home(state_dir, preserve_history) when is_binary(state_dir) do
     if File.dir?(state_dir) do
-      do_allocate_standalone_home(state_dir)
+      do_allocate_standalone_home(state_dir, preserve_history)
     else
       {:ok, nil}
     end
   end
 
-  defp allocate_standalone_home(_), do: {:ok, nil}
+  defp allocate_standalone_home(_, _), do: {:ok, nil}
 
-  defp do_allocate_standalone_home(state_dir) do
+  defp do_allocate_standalone_home(state_dir, preserve_history) do
     sandboxes = Path.join(Path.dirname(state_dir), "sandboxes")
     run = Path.join(sandboxes, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
     home = Path.join(run, "codex-home")
 
     with :ok <- File.mkdir_p(home),
          :ok <- File.chmod(home, 0o700) do
-      prune_runs(sandboxes, 50)
+      unless preserve_history, do: prune_runs(sandboxes, 50)
       {:ok, home}
     else
       {:error, reason} -> {:error, {:standalone_run_home_failed, reason}}
@@ -191,7 +192,9 @@ defmodule SymphonyElixir.Mvp.ModelServices do
       :ok
     end
   rescue
-    _ -> :ok
+    exception in File.Error ->
+      Logger.warning("Run retention paused: filesystem evidence unavailable (#{inspect(exception.__struct__)})")
+      :ok
   end
 
   defp do_prune_runs(sandboxes_dir, keep_count) do
@@ -316,22 +319,9 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     canonical_root = Path.expand(root)
     prefix = canonical_root <> "/"
 
-    case File.ls("/proc") do
-      {:ok, pids} ->
-        scan_proc_pids(pids, current_process_uid(), canonical_root, prefix)
-
-      _ ->
-        {:ok, lsof_open_paths(canonical_root)}
-    end
-  rescue
-    _ -> {:ok, MapSet.new()}
-  end
-
-  defp current_process_uid do
-    case File.stat("/proc/self") do
-      {:ok, %{uid: uid}} -> uid
-      _ -> -1
-    end
+    pids = File.ls!("/proc")
+    %{uid: uid} = File.stat!("/proc/self")
+    scan_proc_pids(pids, uid, canonical_root, prefix)
   end
 
   defp scan_proc_pids(pids, my_uid, canonical_root, prefix) do
@@ -368,14 +358,10 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
     case File.ls(fd_dir) do
       {:ok, fds} ->
-        new_paths = collect_fd_targets(fd_dir, fds, canonical_root, prefix, paths)
-        {status, new_paths}
+        collect_fd_targets(fd_dir, fds, canonical_root, prefix, {status, paths})
 
-      {:error, reason} when reason in [:eacces, :eperm] ->
+      {:error, _reason} ->
         {:unconfirmed, paths}
-
-      _ ->
-        {status, paths}
     end
   end
 
@@ -383,14 +369,13 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     Enum.reduce(fds, acc, &inspect_fd_link(&1, fd_dir, canonical_root, prefix, &2))
   end
 
-  defp inspect_fd_link(fd, fd_dir, canonical_root, prefix, acc) do
-    case File.read_link(Path.join(fd_dir, fd)) do
-      {:ok, target} ->
-        record_matching_target(target, canonical_root, prefix, acc)
-
-      _ ->
-        acc
-    end
+  defp inspect_fd_link(fd, fd_dir, canonical_root, prefix, {status, paths}) do
+    target = File.read_link!(Path.join(fd_dir, fd))
+    {status, record_matching_target(target, canonical_root, prefix, paths)}
+  catch
+    # A descriptor closed after enumeration no longer holds a run open.
+    # Other IO failures reach the retention boundary and stop this cleanup.
+    :error, %File.Error{reason: :enoent} -> {status, paths}
   end
 
   defp record_matching_target(target, canonical_root, prefix, acc) do
@@ -407,28 +392,6 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     path == canonical_root or String.starts_with?(path, prefix)
   end
 
-  defp lsof_open_paths(canonical_root) do
-    case System.cmd("lsof", ["+D", canonical_root], stderr_to_stdout: true) do
-      {output, _} ->
-        output
-        |> String.split("\n")
-        |> Enum.drop(1)
-        |> Enum.reduce(MapSet.new(), &extract_lsof_path_entry/2)
-
-      _ ->
-        MapSet.new()
-    end
-  rescue
-    _ -> MapSet.new()
-  end
-
-  defp extract_lsof_path_entry(line, acc) do
-    case String.split(line, ~r/\s+/) |> List.last() do
-      nil -> acc
-      path -> MapSet.put(acc, path)
-    end
-  end
-
   defp recovery_exports(sandboxes_dir) do
     workspace_candidates = candidate_workspaces(sandboxes_dir)
     journal_paths = find_recovery_journals(workspace_candidates, sandboxes_dir)
@@ -436,8 +399,6 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     Enum.reduce(journal_paths, MapSet.new(), fn journal_path, acc ->
       extract_journal_export(journal_path, acc)
     end)
-  rescue
-    _ -> MapSet.new()
   end
 
   defp candidate_workspaces(sandboxes_dir) do
@@ -447,15 +408,13 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     from_dir = [Path.dirname(Path.expand(sandboxes_dir)), File.cwd!()]
 
     (from_config ++ from_receipts ++ from_env ++ from_dir)
-    |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
+    |> Enum.filter(&(is_binary(&1) and match?(%{type: :directory}, existing_stat(&1))))
     |> Enum.uniq()
   end
 
   defp config_workspace_roots do
-    case SymphonyElixir.Config.settings() do
-      {:ok, %{workspace: %{root: root}}} when is_binary(root) -> [root]
-      _ -> []
-    end
+    {:ok, %{workspace: %{root: root}}} = SymphonyElixir.Config.settings()
+    [root]
   end
 
   defp config_state_dirs do
@@ -483,7 +442,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     ]
 
     (config_state_dirs() ++ defaults)
-    |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
+    |> Enum.filter(&(is_binary(&1) and match?(%{type: :directory}, existing_stat(&1))))
     |> Enum.uniq()
   end
 
@@ -494,22 +453,16 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp scan_state_dir_receipts(dir) do
-    case File.ls(dir) do
-      {:ok, files} ->
-        files
-        |> Enum.filter(&String.ends_with?(&1, ".json"))
-        |> Enum.reject(&(&1 in ["model-services.json", "config.json"]))
-        |> Enum.flat_map(&read_receipt_workspace(Path.join(dir, &1)))
-
-      _ ->
-        []
-    end
+    dir
+    |> File.ls!()
+    |> Enum.filter(&String.ends_with?(&1, ".json"))
+    |> Enum.reject(&(&1 in ["model-services.json", "config.json"]))
+    |> Enum.flat_map(&read_receipt_workspace(Path.join(dir, &1)))
   end
 
   defp read_receipt_workspace(path) do
-    with {:ok, raw} <- File.read(path),
-         {:ok, %{"workspace" => ws}} <- Jason.decode(raw),
-         true <- is_binary(ws) and File.dir?(ws) do
+    with {:ok, %{"workspace" => ws}} <- Jason.decode(File.read!(path)),
+         true <- is_binary(ws) do
       [ws]
     else
       _ -> []
@@ -517,27 +470,44 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   end
 
   defp find_recovery_journals(workspaces, sandboxes_dir) do
-    parent = Path.dirname(Path.expand(sandboxes_dir))
+    roots = Enum.uniq(workspaces ++ [Path.dirname(Path.expand(sandboxes_dir))])
+    {journals, _seen} = Enum.reduce(roots, {[], MapSet.new()}, &scan_recovery_journals/2)
+    Enum.uniq(journals)
+  end
 
-    direct_journals =
-      Enum.map(workspaces, &Path.join(&1, ".symphony-import/journal.json"))
+  # Wildcards hide inaccessible directories. Inspect every reachable directory;
+  # device/inode identity prevents symlink cycles and duplicate traversal.
+  defp scan_recovery_journals(path, {journals, seen} = acc) do
+    case existing_stat(path) do
+      %{type: :directory, major_device: device, inode: inode} ->
+        journal = Path.join(path, ".symphony-import/journal.json")
+        journals = if match?(%{type: :regular}, existing_stat(journal)), do: [journal | journals], else: journals
+        identity = {device, inode}
 
-    wildcard_journals =
-      Enum.flat_map(workspaces, fn ws ->
-        Path.wildcard(Path.join([ws, "**", ".symphony-import", "journal.json"]), match_dot: true)
-      end)
+        if MapSet.member?(seen, identity) do
+          {journals, seen}
+        else
+          path
+          |> File.ls!()
+          |> Enum.map(&Path.join(path, &1))
+          |> Enum.reduce({journals, MapSet.put(seen, identity)}, &scan_recovery_journals/2)
+        end
 
-    fallback =
-      Path.wildcard(Path.join([parent, "**", ".symphony-import", "journal.json"]), match_dot: true)
+      _ ->
+        acc
+    end
+  end
 
-    (direct_journals ++ wildcard_journals ++ fallback)
-    |> Enum.uniq()
-    |> Enum.filter(&File.regular?/1)
+  defp existing_stat(path) do
+    case File.stat(path) do
+      {:ok, stat} -> stat
+      {:error, :enoent} -> nil
+      {:error, reason} -> raise File.Error, reason: reason, action: "read file information", path: path
+    end
   end
 
   defp extract_journal_export(journal_path, acc) do
-    with {:ok, raw} <- File.read(journal_path),
-         {:ok, %{"export" => export}} <- Jason.decode(raw),
+    with {:ok, %{"export" => export}} <- Jason.decode(File.read!(journal_path)),
          true <- is_binary(export) do
       MapSet.put(acc, Path.expand(export))
     else
@@ -554,13 +524,9 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp subtree_mtime(_dir, depth, acc) when depth >= 6, do: acc
 
   defp subtree_mtime(dir, depth, acc) do
-    case File.ls(dir) do
-      {:ok, entries} ->
-        Enum.reduce(entries, acc, &update_entry_mtime(&1, dir, depth, &2))
-
-      _ ->
-        acc
-    end
+    dir
+    |> File.ls!()
+    |> Enum.reduce(acc, &update_entry_mtime(&1, dir, depth, &2))
   end
 
   defp update_entry_mtime(name, dir, depth, best) do
@@ -578,12 +544,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     end
   end
 
-  defp top_mtime(dir) do
-    case File.stat(dir, time: :posix) do
-      {:ok, %{mtime: mtime}} -> mtime
-      _ -> 0
-    end
-  end
+  defp top_mtime(dir), do: File.stat!(dir, time: :posix).mtime
 
   @spec load(Path.t(), map() | nil) :: {:ok, map() | nil} | {:error, term()}
   def load(path, fallback) do

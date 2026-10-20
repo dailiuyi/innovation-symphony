@@ -26,7 +26,7 @@ defmodule SymphonyElixir.Mvp.LifecycleTest do
     assert Mvp.available?(issue)
 
     assert {:ok, _receipt} = Receipt.claim(settings, issue)
-    assert :ok = Mvp.dispatch_readiness(issue)
+    assert {:error, :mvp_receipt_exists} = Mvp.dispatch_readiness(issue)
     refute Mvp.available?(issue)
   end
 

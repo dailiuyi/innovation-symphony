@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Mvp.Config, as: MvpConfig
-  alias SymphonyElixir.Mvp.Intake
+  alias SymphonyElixir.Mvp.{Intake, ModelServices}
   alias SymphonyElixir.Tracker.Issue
 
   test "MVP settings default to disabled" do
@@ -759,7 +759,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       write_journal!(workspace_root, ctx.export)
       configure!(ctx.workflow_dir, workspace_root, Path.join(ctx.workflow_dir, "runtime/state-#{System.unique_integer([:positive])}"))
 
-      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      ModelServices.prune_runs(ctx.sandboxes, 50)
       assert File.dir?(ctx.run)
     end
 
@@ -767,7 +767,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       File.write!(Path.join(ctx.run, ".recovery-pin"), "pending")
       configure!(ctx.workflow_dir, Path.join(ctx.root, "new-workspaces"), Path.join(ctx.workflow_dir, "runtime/other-state"))
 
-      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      ModelServices.prune_runs(ctx.sandboxes, 50)
       assert File.dir?(ctx.run)
     end
 
@@ -775,13 +775,13 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       workspace_root = Path.join(ctx.root, "legacy-workspaces")
       write_journal!(workspace_root, ctx.export)
       configure!(ctx.workflow_dir, workspace_root, Path.join(ctx.workflow_dir, "runtime/legacy-state"))
-      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 1_000)
+      ModelServices.prune_runs(ctx.sandboxes, 1_000)
       assert File.exists?(Path.join(ctx.run, ".recovery-pin"))
 
       configure!(ctx.workflow_dir, Path.join(ctx.root, "switched-workspaces"), Path.join(ctx.workflow_dir, "runtime/switched-state"))
       File.rm_rf!(Path.join(workspace_root, ".symphony-import"))
       File.rm_rf!(workspace_root)
-      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      ModelServices.prune_runs(ctx.sandboxes, 50)
       assert File.dir?(ctx.run)
     end
 
@@ -793,7 +793,7 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       write_journal!(old_workspace, ctx.export)
       configure!(ctx.workflow_dir, Path.join(ctx.root, "new-workspaces"), state_dir)
 
-      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      ModelServices.prune_runs(ctx.sandboxes, 50)
       assert File.dir?(ctx.run)
     end
   end

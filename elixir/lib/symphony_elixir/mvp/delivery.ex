@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.Delivery do
   @moduledoc "Controller-owned GitHub draft PR delivery and read-only reconciliation."
 
-  alias SymphonyElixir.Mvp.{Commands, ExternalDraft, Feedback, Intake, Receipt}
+  alias SymphonyElixir.Mvp.{CheckEvidence, Commands, ExternalDraft, Feedback, Intake, Receipt}
   alias SymphonyElixir.Mvp.Forge
 
   @spec repository(map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -10,10 +10,12 @@ defmodule SymphonyElixir.Mvp.Delivery do
   @spec publish(Path.t(), map(), map(), String.t(), String.t(), Path.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def publish(workspace, issue, repository, branch, sha, receipt, opts) do
-    if is_map(Receipt.read(receipt)["external_delivery"]) do
-      ExternalDraft.approve(workspace, issue, repository, branch, sha, receipt, opts)
-    else
-      publish_new(workspace, issue, repository, branch, sha, receipt, opts)
+    with {:ok, _proof} <- CheckEvidence.delivery_proof(receipt, workspace, sha) do
+      if is_map(Receipt.read(receipt)["external_delivery"]) do
+        ExternalDraft.approve(workspace, issue, repository, branch, sha, receipt, opts)
+      else
+        publish_new(workspace, issue, repository, branch, sha, receipt, opts)
+      end
     end
   end
 

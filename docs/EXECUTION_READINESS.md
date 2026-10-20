@@ -1,5 +1,13 @@
 # 领取前执行环境就绪检查
 
+## 2026-10-20：独立 VM 执行后端
+
+所有者已批准整套 Symphony 进入独立 VM、VM 内完全放权。新配置通过 `required_backend: vm`、固定 `vm_uuid` 和管理员 argv `capability_probes` 显式启用；`sandbox.enabled: false` 在此配置下表示使用外层 VM，而非 rootless 沙箱故障后的宿主回退。实际 systemd 虚拟化身份、DMI UUID、sudo、Docker、项目工具、角色服务及持久磁盘空间均须核验。准备报告仍不是候选正式验收。
+
+本地维护通过 `<state_dir>/intake-paused` 仅暂停新领取，不改 `mvp.enabled`，不撤销在途任务权限；文件不可读取或归属不明时保留暂停。VM 执行、源码门禁和真实交付状态分别见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。下文 rootless 合同保留，不能将旧冻结任务自动转换为 VM 任务。
+
+备份/关机另使用 `<state_dir>/maintenance.json` 的 nonce 维护围栏，同时阻止新领取与尚未启动的重启接续，不中止已运行任务。`GET /api/v1/state` 的 `maintenance` 字段由 Orchestrator 串行快照产生，绑定 nonce、BEAM OS PID 和 boot ID；只有 running/retrying 为空且轮询未在进行，才返回 drained。运维工具必须取得同 nonce、同服务进程与启动周期的排空确认后才停服务，不能把一次普通空闲快照当成维护锁。
+
 来源：2026-10-09 所有者选择“让实际任务使用已批准的执行环境，并在领取前确认编码、正式检查和真实验收所需条件都已准备好”，要求“补齐这个措施”（IS-100）。
 
 ## 执行合同

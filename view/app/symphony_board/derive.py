@@ -893,6 +893,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
             flow, gap = workflow_of(publics, evidence, STATUS_LABEL.get(status, status), reason)
             health = receipt.get("_execution_health") or {}
             stopped = health.get("kind") == "closed_host_interruption"
+            restart_stopped = health.get("kind") == "restart_recovery_stop"
+            if restart_stopped:
+                status = "blocked"
+                reason = health["reason"]
             if stopped:
                 gap = "宿主关机中断已核验并闭合；回执保留历史编码状态，等待受审计接续。"
             session_ids = [(s.get("meta") or {}).get("session_id") or "" for s in matched]
@@ -922,10 +926,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "title": title,
                 "meta": meta,
                 "status": status,
-                "statusLabel": "宿主中断 · 历史编码状态" if stopped else STATUS_LABEL.get(status, status),
+                "statusLabel": ("自动恢复已停止" if health.get("verified") else "恢复停止记录待核对") if restart_stopped else ("宿主中断 · 历史编码状态" if stopped else STATUS_LABEL.get(status, status)),
                 "badge": badge_class("blocked" if stopped else status),
                 "stage": [1, None] if stopped else list(stage_of(status, cand, reason)),
-                **({"executionHealth": health} if stopped else {}),
+                **({"executionHealth": health} if stopped or restart_stopped else {}),
                 "duration": duration,
                 "coder": models.get("coder", "—"),
                 "reviewer": models.get("reviewer", "—"),

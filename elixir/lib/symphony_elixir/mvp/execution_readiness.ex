@@ -1,7 +1,14 @@
 defmodule SymphonyElixir.Mvp.ExecutionReadiness do
   @moduledoc "Read-only admission before a durable claim; readiness never asserts candidate acceptance."
 
-  alias SymphonyElixir.Mvp.{AutomaticAcceptance, Commands, ExecutionSandbox, Intake, ModelServices, Recovery}
+  alias SymphonyElixir.Mvp.AutomaticAcceptance
+  alias SymphonyElixir.Mvp.Commands
+  alias SymphonyElixir.Mvp.ExecutionSandbox
+  alias SymphonyElixir.Mvp.Intake
+  alias SymphonyElixir.Mvp.ModelCatalog
+  alias SymphonyElixir.Mvp.ModelServices
+  alias SymphonyElixir.Mvp.Recovery
+  alias SymphonyElixir.Mvp.VmReadiness
 
   @sandbox_keys ~w(root toolchain codex dependencies trusted_root image worker profile network memory_mb disk_mb pids cpus environment_recipe)
 
@@ -19,16 +26,41 @@ defmodule SymphonyElixir.Mvp.ExecutionReadiness do
     end
   end
 
+  def settings(%{"enabled" => true, "required_backend" => "vm"} = value), do: VmReadiness.settings(value)
+
   def settings(_), do: {:error, :invalid_execution_readiness}
 
   @spec enabled?(map()) :: boolean()
   def enabled?(settings), do: get_in(settings, [:execution_readiness, :enabled]) == true
 
+  @spec vm?(map()) :: boolean()
+  def vm?(settings), do: enabled?(settings) and get_in(settings, [:execution_readiness, :required_backend]) == "vm"
+
+  @doc "Create/remove this marker to pause only new claims; checks of frozen tasks ignore it."
+  @spec intake_pause_path(map()) :: Path.t()
+  def intake_pause_path(settings), do: Path.join(settings.state_dir, "intake-paused")
+
+  @spec intake_open(map()) :: :ok | {:error, term()}
+  def intake_open(settings) do
+    case File.lstat(intake_pause_path(settings)) do
+      {:error, :enoent} -> :ok
+      {:ok, _} -> {:error, :mvp_intake_paused}
+      {:error, reason} -> {:error, {:mvp_intake_pause_unreadable, reason}}
+    end
+  end
+
   @spec backend_ready?(map()) :: boolean()
   def backend_ready?(settings) do
-    not enabled?(settings) or
-      (get_in(settings, [:sandbox, :enabled]) == true and
-         get_in(settings, [:sandbox, "backend"]) == settings.execution_readiness.required_backend)
+    cond do
+      not enabled?(settings) -> true
+      vm?(settings) -> get_in(settings, [:sandbox, :enabled]) == false
+      true -> sandbox_backend_ready?(settings)
+    end
+  end
+
+  defp sandbox_backend_ready?(settings) do
+    get_in(settings, [:sandbox, :enabled]) == true and
+      get_in(settings, [:sandbox, "backend"]) == settings.execution_readiness.required_backend
   end
 
   @spec prepare(map(), map(), keyword()) :: {:ok, map() | nil} | {:error, term()}
@@ -69,6 +101,18 @@ defmodule SymphonyElixir.Mvp.ExecutionReadiness do
       evidence: settings.state_dir
     }
 
+    if vm?(settings), do: check_vm(context, opts), else: check_rootless(context, opts)
+  end
+
+  defp check_vm(context, opts) do
+    with :ok <- require_backend(context.settings),
+         {:ok, report} <- VmReadiness.check(context.settings, opts),
+         :ok <- roles(context, opts) do
+      {:ok, Map.put(report, "services_sha256", digest(Jason.encode!(context.services)))}
+    end
+  end
+
+  defp check_rootless(%{settings: settings, models: models} = context, opts) do
     with :ok <- require_backend(settings),
          :ok <- roles(context, opts),
          :ok <- acceptances(context),
@@ -93,16 +137,40 @@ defmodule SymphonyElixir.Mvp.ExecutionReadiness do
            service when is_map(service) <- options[:model_service],
            command when is_binary(command) <- service["command"],
            [binary, "app-server" | _] <- OptionParser.split(command),
-           true <- binary == context.settings.sandbox["codex"],
+           :ok <- native_client(context.settings, binary, command, opts),
            :ok <- ModelServices.identity_matches(service),
            {:ok, _} <- ModelServices.credential(service["credential_ref"]),
-           :ok <- ModelServices.connection_ready(service) do
+           :ok <- ModelServices.connection_ready(service),
+           :ok <- verified_vm_role(context.settings, service) do
         {:cont, :ok}
       else
         {:error, reason} -> {:halt, {:error, {:execution_readiness_role, role, reason}}}
         _ -> {:halt, {:error, {:execution_readiness_role, role, :native_client_mismatch}}}
       end
     end)
+  end
+
+  defp verified_vm_role(settings, service) do
+    if vm?(settings) do
+      case Map.get(settings, :model_services) do
+        registry when is_map(registry) -> ModelCatalog.available(registry, service)
+        _ -> {:error, :model_services_not_configured}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp native_client(settings, binary, command, opts) do
+    if vm?(settings) do
+      if command == settings.model_command do
+        VmReadiness.native_client(settings, binary, opts)
+      else
+        {:error, :native_client_mismatch}
+      end
+    else
+      if binary == settings.sandbox["codex"], do: :ok, else: {:error, :native_client_mismatch}
+    end
   end
 
   defp acceptances(context) do

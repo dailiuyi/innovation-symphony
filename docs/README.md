@@ -2,6 +2,7 @@
 
 | 内容 | 文档 |
 | --- | --- |
+| 整套 VM 部署、迁移、恢复及真实闭环验收 | [VM_DEPLOYMENT.md](VM_DEPLOYMENT.md) |
 | GitLab 与 luca 接入、验证和待办 | [GITLAB_INTEGRATION.md](GITLAB_INTEGRATION.md) |
 | 领取前执行环境就绪检查与激活边界 | [EXECUTION_READINESS.md](EXECUTION_READINESS.md) |
 | 三项 rootless 审查问题修复及回归 | [ROOTLESS_REVIEW_FIXES.md](ROOTLESS_REVIEW_FIXES.md) |

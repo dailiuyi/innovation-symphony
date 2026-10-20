@@ -252,8 +252,6 @@ defmodule SymphonyElixir.Mvp.Review do
     end)
   end
 
-  defp criteria_adequate?(_), do: true
-
   defp valid_single_turn_list?(nil), do: true
 
   defp valid_single_turn_list?(list) when is_list(list) do
