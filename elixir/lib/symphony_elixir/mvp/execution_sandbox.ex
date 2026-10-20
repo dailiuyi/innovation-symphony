@@ -474,6 +474,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     result =
       invoke(fn ->
         File.mkdir!(transaction)
+        pin_recovery!(export, transaction)
 
         journal = %{
           schema: 2,
@@ -501,10 +502,21 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
         :ok
       end)
 
-    finish_import(result, transaction, workspace, original, replacement)
+    finish_import(result, export, transaction, workspace, original, replacement)
   end
 
   defp encoded_manifest(files), do: files
+
+  # The pin lives in the run directory under sandbox.root, which outlives workspace/state_dir
+  # configuration changes, so pruning keeps the export until the journal is resolved.
+  @recovery_pin ".recovery-pin"
+
+  defp pin_path(export), do: Path.join(export |> Path.dirname() |> Path.dirname(), @recovery_pin)
+
+  defp pin_recovery!(export, transaction) do
+    File.write!(pin_path(export), transaction, [:sync])
+    sync_tree(Path.dirname(pin_path(export)))
+  end
 
   defp write_import_journal(transaction, journal) do
     pending = Path.join(transaction, "journal.pending")
@@ -546,6 +558,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
           File.rename!(transaction, Path.join(operation.directory, "import-transaction"))
           sync_tree(operation.directory)
           sync_tree(workspace)
+          File.rm(pin_path(journal["export"]))
           :ok
         end)
 
@@ -622,13 +635,14 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp import_file(:copy, source, target), do: File.cp(source, target)
   defp import_file(:rename, source, target), do: File.rename(source, target)
 
-  defp finish_import(:ok, transaction, _workspace, _original, _replacement) do
+  defp finish_import(:ok, export, transaction, _workspace, _original, _replacement) do
     File.rm_rf(transaction)
+    File.rm(pin_path(export))
     sync_tree(Path.dirname(transaction))
     :ok
   end
 
-  defp finish_import(error, transaction, workspace, original, replacement) do
+  defp finish_import(error, _export, transaction, workspace, original, replacement) do
     # Preserve the journal, staged files and any backup that cannot be restored.
     # Rollback uses real filesystem operations, independent of an injected failure.
     rollback =

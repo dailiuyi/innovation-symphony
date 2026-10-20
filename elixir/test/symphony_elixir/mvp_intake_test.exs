@@ -763,6 +763,14 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       assert File.dir?(ctx.run)
     end
 
+    test "recovery pin in the run directory protects it when no current config references the journal", ctx do
+      File.write!(Path.join(ctx.run, ".recovery-pin"), "pending")
+      configure!(ctx.workflow_dir, Path.join(ctx.root, "new-workspaces"), Path.join(ctx.workflow_dir, "runtime/other-state"))
+
+      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      assert File.dir?(ctx.run)
+    end
+
     test "receipt in configured custom state_dir leads to an old workspace journal", ctx do
       state_dir = Path.join(ctx.workflow_dir, "runtime/custom-receipts")
       old_workspace = Path.join(ctx.root, "old-workspace")

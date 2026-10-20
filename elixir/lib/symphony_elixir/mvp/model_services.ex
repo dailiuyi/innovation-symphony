@@ -233,6 +233,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp run_in_use?(dir, {:ok, open_paths}, recovery_exports) do
     has_open_file?(dir, open_paths) or
       referenced_by_recovery?(dir, recovery_exports) or
+      File.exists?(Path.join(dir, ".recovery-pin")) or
       sandbox_protected?(dir)
   end
 
