@@ -199,11 +199,25 @@ defmodule SymphonyElixir.Mvp.ModelServices do
       {:ok, entries} ->
         inspect_result = open_paths_under(sandboxes_dir)
         recovery_exports = recovery_exports(sandboxes_dir)
+        pin_recovery_runs(sandboxes_dir, recovery_exports)
         prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports)
 
       _ ->
         :ok
     end
+  end
+
+  # Journals written before run-directory pins existed are only discoverable through the
+  # current configuration; pin their runs now so a later workspace/state_dir switch keeps them.
+  defp pin_recovery_runs(sandboxes_dir, recovery_exports) do
+    prefix = Path.expand(sandboxes_dir) <> "/"
+
+    for export <- recovery_exports, String.starts_with?(export, prefix) do
+      run = Path.join(prefix, export |> String.replace_prefix(prefix, "") |> Path.split() |> hd())
+      if File.dir?(run), do: File.write(Path.join(run, ".recovery-pin"), "journal")
+    end
+
+    :ok
   end
 
   defp prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports) do

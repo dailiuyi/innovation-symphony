@@ -771,6 +771,20 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
       assert File.dir?(ctx.run)
     end
 
+    test "legacy journal without pin is pinned while configuration still finds it, surviving a later switch", ctx do
+      workspace_root = Path.join(ctx.root, "legacy-workspaces")
+      write_journal!(workspace_root, ctx.export)
+      configure!(ctx.workflow_dir, workspace_root, Path.join(ctx.workflow_dir, "runtime/legacy-state"))
+      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 1_000)
+      assert File.exists?(Path.join(ctx.run, ".recovery-pin"))
+
+      configure!(ctx.workflow_dir, Path.join(ctx.root, "switched-workspaces"), Path.join(ctx.workflow_dir, "runtime/switched-state"))
+      File.rm_rf!(Path.join(workspace_root, ".symphony-import"))
+      File.rm_rf!(workspace_root)
+      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      assert File.dir?(ctx.run)
+    end
+
     test "receipt in configured custom state_dir leads to an old workspace journal", ctx do
       state_dir = Path.join(ctx.workflow_dir, "runtime/custom-receipts")
       old_workspace = Path.join(ctx.root, "old-workspace")
