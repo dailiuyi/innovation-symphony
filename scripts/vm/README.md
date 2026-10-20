@@ -164,3 +164,9 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 ```
 
 入口只接受有受控 VM 标记的 QEMU/KVM guest，使用 UID 1000 的 elma、纯净环境、一次性 HOME 及固定 native Codex 运行原有 `make all`。独立 PID namespace 使用现有 Docker 软件包的 `/usr/bin/docker-init` 回收孤儿进程，避免完整套件留下的僵尸进程使 `/proc` 检查永久不确定；这不改变运行服务的清理规则。仅门禁使用 Erlang DNS 解析，避免不可观察的 native DNS helper。覆盖率仍为 100%，没有新增忽略模块或降低断言。此入口不会执行显式 opt-in 的平台 live 套件。
+
+### 原生控制器停止与备份（2026-10-21 实机修订）
+
+现有 CLI 对 Supervisor shutdown 返回退出码 1，正常停止后的 unit 可能显示 failed。备份证明进程已停止的条件为：已知 LoadState、inactive/failed、MainPID=0、整个 cgroup 树的 cgroup.procs 均为空，以及 4000 端口可绑定。任一读取失败、残留进程或端口占用都拒绝。不修改 CLI、不把退出码 1 统一标成成功；每日备份开始前已有 failed 的服务仍拒绝接管。
+
+对应 58 项运维回归已通过；其中新增 7 项覆盖上述边界、stop 后 failed 的完整归档/校验/恢复，以及原有 inactive 行为。真实备份、恢复和安装版本以部署记录为准。

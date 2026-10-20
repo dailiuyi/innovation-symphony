@@ -20,11 +20,11 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：986 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，最终日志为 `.local/vm-deployment-20261020T090218Z/full-gate-native-release-20261021.log`。所有新增忽略和降低门槛的方案均未采用。
 
-scripts 原生完整回归 179 项、20 项显式跳过通过。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
+scripts 原生完整回归 186 项、20 项显式跳过通过（含停止边界修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
-VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 的三项原生服务尚未启动，领取关闭且有暂停和维护标记。旧服务保持运行。新 Issue、真实模型调用与 Draft MR 尚未开始。
+VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。领取关闭且有暂停和维护标记。新 Issue、真实模型调用与 Draft MR 尚未开始。
 
-准备备份的独立恢复已通过，下文记录准确归档与校验。固定 release 安装、最终一致性迁移、原端口切换及真实交付闭环仍待执行。
+准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其恢复、真实交付闭环仍待完成。
 
 ## 接续与运维补充验证（阶段记录）
 
@@ -51,3 +51,18 @@ VM 模式分配新模型会话目录时保留全部历史，不调用旧的“�
 另一次门禁止于 Hex 注册表网络超时；离线尝试明确因注册表缓存不完整而失败，未跳过依赖解析。保留原有联网锁定依赖流程，所有失败日志保留在证据目录。
 
 最终源码的控制进程重启夹具复验通过：检查期间重启后，候选 `af226793b961c65fe5dd06d3374ec77b0cabcb95`、原预算起始 `2026-10-20T17:29:30.976956Z` 均保持，agent_attempts 从 1 增至 2，generation 为 1。仍为合成模型及交付回调，不计作真实模型闭环。
+
+## 固定安装及空闲切换实测（2026-10-21）
+
+本地实现提交 `337f00f0cb55b40345921dca52276ed9fd84f7a7`，未推送。首个固定 native release 为 `/opt/innovation-symphony/releases/337f00f0cb55-20261021`，escript SHA256 `241216c25fa2c4cbe3fbbf68d17dcf26e4d5fa6c550de23cd431ab9e8feb46e2`。安装前核对构建源码与提交，安装清单保存工具链及归档摘要。最初复制 escript 因归档不含 Git 忽略的 bin 目录而失败，补建目录后完成；未覆盖已有 release。
+
+该 release 的真实只读 preflight 返回 passed、issue_count=1。正式模型端点的无凭据网络探针分别返回 405 与 401，仅证明网络可达。三服务均只监听 guest loopback，Docker 无 TCP 管理监听。View 实际采集 3 个历史任务、10 个会话。正常 VM reboot 的最终夹具候选为 `f3278fa5088ec50bc09ede72319f780b1234b733`、原起始时间 `2026-10-20T18:01:40.060253Z` 不变，调用次数 1→2、generation=1；boot ID 变为 `bceb69da-a605-4322-889c-493f79b131d1`，服务和隧道自动恢复，QEMU NRestarts=0。该夹具仍不调用外部模型。
+
+切换前再次确认旧控制器 running/retrying 为 0、ready 只有已有回执的 GL-3。停止旧控制器和模型设置后，最终运行根归档 `/data/symphony-vm/migration-final-runtime-20261021.tar`，SHA256 `bd20e5d123da46617af5ee9ed03717f60e5b7523b77676f96580bdbb02c754c6`。最终复制的回执和证据摘要全部一致，SQLite backup API 生成的快照 integrity_check=ok，3 个任务、97 条状态变化、10 个会话、9 个证据文件记录。另保留旧 `.local/runtime` 与三个旧服务的完整用户 journal 到 guest runtime 的 `archives/host-services-20261021/`，避免遗漏旧启动入口放在运行根之外的日志。
+
+无使用者的引导重复配置已移至 guest `/home/elma/symphony-install/unused-bootstrap-configs-20261021`，保留摘要；活动 WORKFLOW/模型设置/View 配置只使用 `/var/lib/innovation-symphony`。原 4000/8613/8765 端口已转到 production SSH 隧道，旧三服务禁用自启，staging 隧道停用。4000 的 boot ID、8613 的真实采集结果和模型管理认证读取均通过。
+
+首次实际 daily backup 因正常停止后的控制器 unit 标为 failed 而拒绝，0 字节 `.partial` 保留，三服务由 finally 恢复，领取仍关闭。根因是原 CLI 把 Supervisor 的 shutdown 退出映射为 1；不改旧 CLI，也不将任意退出码 1 标为成功。备份边界改为同时核验已停止状态、MainPID=0、整个 cgroup 树无进程及端口空闲；日备份开始前已有 failed 状态仍拒绝。该修复的测试、复审和再次实机备份另行记录。
+
+
+备份停止边界修复已通过 58 项运维回归及独立正确性审查。新增 7 项保留原 inactive 合同，并验证已死亡 failed、活主进程、嵌套进程、IO 错误、端口占用及实际归档恢复。Elixir 源码与先前 100% 完整门禁版本相同，未改旧 CLI。

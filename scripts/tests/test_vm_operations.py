@@ -192,12 +192,105 @@ class VmOperationsTest(unittest.TestCase):
 
     def test_stopped_services_allow_known_absence_but_refuse_unknown_and_busy(self):
         for load, active in (('not-found', 'inactive'), ('loaded', 'inactive')):
-            with patch.object(guest, 'command', return_value=f'LoadState={load}\nActiveState={active}\nControlGroup=\n'), \
+            with patch.object(guest, 'command', return_value=f'LoadState={load}\nActiveState={active}\nMainPID=0\nControlGroup=\n'), \
                  patch.object(guest.socket, 'socket'):
                 guest.require_stopped()
-        for raw in ('LoadState=error\nActiveState=inactive\n', 'LoadState=loaded\nActiveState=active\n'):
+        for raw in ('LoadState=error\nActiveState=inactive\nMainPID=0\n',
+                    'LoadState=loaded\nActiveState=active\nMainPID=0\n',
+                    'LoadState=loaded\nActiveState=inactive\n'):
             with patch.object(guest, 'command', return_value=raw), self.assertRaises(ValueError):
                 guest.require_stopped()
+
+    @contextmanager
+    def temporary_cgroups(self):
+        root = self.base / 'cgroups'
+        for service in guest.SERVICES:
+            directory = root / service
+            for relative in ('.', 'worker', 'worker/nested'):
+                child = directory / relative
+                child.mkdir(parents=True, exist_ok=True)
+                (child / 'cgroup.procs').write_text(' \n')
+        def path(value, *args, **kwargs):
+            return root if value == '/sys/fs/cgroup' else Path(value, *args, **kwargs)
+        with patch.object(guest, 'Path', side_effect=path):
+            yield root
+
+    def test_stopped_failed_mainpid_zero_accepts_only_empty_recursive_cgroups(self):
+        def command(argv):
+            return f'LoadState=loaded\nActiveState=failed\nMainPID=0\nControlGroup=/{argv[2]}\n'
+        with self.temporary_cgroups(), patch.object(guest, 'command', side_effect=command) as show, \
+             patch.object(guest.socket, 'socket') as socket:
+            guest.require_stopped()
+        self.assertEqual([call.args[0] for call in show.call_args_list], [
+            ['systemctl', 'show', service, '--property=LoadState,ActiveState,MainPID,ControlGroup']
+            for service in guest.SERVICES])
+        socket.return_value.__enter__.return_value.bind.assert_called_once_with(('127.0.0.1', 4000))
+
+    def test_stopped_failed_live_or_unknown_mainpid_refuses_even_with_empty_cgroup(self):
+        with self.temporary_cgroups():
+            for service in guest.SERVICES:
+                for pid in ('901', '', 'unknown'):
+                    def command(argv):
+                        mainpid = pid if argv[2] == service else '0'
+                        return f'LoadState=loaded\nActiveState=failed\nMainPID={mainpid}\nControlGroup=/{argv[2]}\n'
+                    with self.subTest(service=service, pid=pid), \
+                         patch.object(guest, 'command', side_effect=command), \
+                         patch.object(guest.socket, 'socket') as socket:
+                        with self.assertRaisesRegex(ValueError, 'known stopped'):
+                            guest.require_stopped()
+                        socket.assert_not_called()
+
+    def test_stopped_mainpid_zero_refuses_live_nested_subgroup(self):
+        with self.temporary_cgroups() as root:
+            for service in guest.SERVICES:
+                nested = root / service / 'worker/nested/cgroup.procs'
+                nested.write_text('4242\n')
+                for active in ('inactive', 'failed'):
+                    def command(argv):
+                        return f'LoadState=loaded\nActiveState={active}\nMainPID=0\nControlGroup=/{argv[2]}\n'
+                    with self.subTest(service=service, active=active), \
+                         patch.object(guest, 'command', side_effect=command), \
+                         patch.object(guest.socket, 'socket') as socket:
+                        with self.assertRaisesRegex(ValueError, 'still has processes'):
+                            guest.require_stopped()
+                        socket.assert_not_called()
+                nested.write_text('')
+
+    def test_stopped_cgroup_read_or_enumeration_error_is_not_empty(self):
+        original_read, original_iterdir = Path.read_text, Path.iterdir
+        def command(argv):
+            return f'LoadState=loaded\nActiveState=failed\nMainPID=0\nControlGroup=/{argv[2]}\n'
+        with self.temporary_cgroups() as root:
+            nested = root / guest.SERVICES[0] / 'worker/nested'
+            def read(path, *args, **kwargs):
+                if path == nested / 'cgroup.procs':
+                    raise PermissionError('unreadable cgroup.procs')
+                return original_read(path, *args, **kwargs)
+            def iterdir(path):
+                if path == nested:
+                    raise PermissionError('unreadable cgroup directory')
+                return original_iterdir(path)
+            for method, replacement in (('read_text', read), ('iterdir', iterdir)):
+                with self.subTest(method=method), patch.object(Path, method, new=replacement), \
+                     patch.object(guest, 'command', side_effect=command), \
+                     patch.object(guest.socket, 'socket') as socket:
+                    with self.assertRaises(PermissionError):
+                        guest.require_stopped()
+                    socket.assert_not_called()
+            (nested / 'cgroup.procs').unlink()
+            with patch.object(guest, 'command', side_effect=command), \
+                 patch.object(guest.socket, 'socket') as socket:
+                with self.assertRaises(FileNotFoundError):
+                    guest.require_stopped()
+                socket.assert_not_called()
+
+    def test_stopped_failed_dead_service_still_requires_controller_port_free(self):
+        with patch.object(guest, 'command', return_value='LoadState=loaded\nActiveState=failed\nMainPID=0\nControlGroup=\n'), \
+             patch.object(guest.socket, 'socket') as socket:
+            socket.return_value.__enter__.return_value.bind.side_effect = OSError('port occupied')
+            with self.assertRaisesRegex(OSError, 'port occupied'):
+                guest.require_stopped()
+            socket.return_value.__enter__.return_value.bind.assert_called_once_with(('127.0.0.1', 4000))
 
     def backup_settings(self, json_workflow=False):
         settings = self.settings()
@@ -291,7 +384,8 @@ class VmOperationsTest(unittest.TestCase):
         def command(argv):
             calls.append(argv)
             if '--property=LoadState,ActiveState' in argv:
-                return 'LoadState=loaded\nActiveState=' + ('inactive' if argv[2] == guest.SERVICES[2] else 'active') + '\n'
+                active = 'inactive' if argv[2] == guest.SERVICES[2] else 'active'
+                return f'LoadState=loaded\nActiveState={active}\nMainPID=' + ('0' if active == 'inactive' else '901') + '\n'
             return ''
         with patch.object(guest, 'command', side_effect=command), patch.object(guest, 'require_idle'), \
              patch.object(guest, 'backup'), patch.object(guest, 'wait_healthy'), \
@@ -302,6 +396,84 @@ class VmOperationsTest(unittest.TestCase):
         self.assertNotIn(guest.SERVICES[2], starts)
         self.assertFalse(guest.pause_path(settings).exists())
         self.assertEqual(original, Path(settings['workflow']).read_bytes())
+
+    def test_daily_initial_failed_dead_service_refuses_before_pause_stop_or_export(self):
+        settings = self.settings()
+        for existing_markers in (False, True):
+            if existing_markers:
+                guest.pause(settings, 'existing operator pause')
+                guest.request_maintenance(settings, 'existing operator maintenance')
+            before = {path: path.read_bytes() for path in self.base.rglob('*') if path.is_file()}
+            for failed_service in guest.SERVICES:
+                def command(argv):
+                    state = 'failed' if argv[2] == failed_service else 'active'
+                    pid = '0' if state == 'failed' else '901'
+                    return f'LoadState=loaded\nActiveState={state}\nMainPID={pid}\nControlGroup=\n'
+                output = io.BytesIO()
+                with self.subTest(service=failed_service, existing_markers=existing_markers), \
+                     patch.object(guest, 'command', side_effect=command) as show, \
+                     patch.object(guest, 'pause') as pause, patch.object(guest, 'request_maintenance') as maintenance, \
+                     patch.object(guest, 'require_idle') as idle, patch.object(guest, 'backup') as backup, \
+                     patch.object(guest, 'wait_healthy') as healthy:
+                    with self.assertRaisesRegex(ValueError, 'state unknown'):
+                        guest.daily_backup(settings, output)
+                    self.assertTrue(show.called)
+                    for call in show.call_args_list:
+                        self.assertEqual(call.args[0][:2], ['systemctl', 'show'])
+                    for action in (pause, maintenance, idle, backup, healthy):
+                        action.assert_not_called()
+                self.assertEqual(output.getvalue(), b'')
+                self.assertEqual({path: path.read_bytes() for path in self.base.rglob('*') if path.is_file()}, before)
+
+    def test_real_daily_backup_accepts_failed_dead_only_after_own_stop(self):
+        settings = self.backup_settings()
+        workflow_before = Path(settings['workflow']).read_bytes()
+        prior_active = list(guest.SERVICES[:2])
+        states = {service: 'active' if service in prior_active else 'inactive' for service in guest.SERVICES}
+        calls, snapshot_states = [], {}
+        def command(argv):
+            calls.append(argv)
+            if argv[:2] == ['systemctl', 'show']:
+                service = argv[2]
+                state = states[service]
+                if argv[-1] == '--property=LoadState,ActiveState,MainPID,ControlGroup':
+                    snapshot_states[service] = state
+                pid = '901' if state == 'active' else '0'
+                return f'LoadState=loaded\nActiveState={state}\nMainPID={pid}\nControlGroup=/{service}\n'
+            self.assertEqual(argv[:3], ['sudo', '-n', 'systemctl'])
+            self.assertIn(argv[3], ('stop', 'start'))
+            for service in argv[4:]:
+                states[service] = 'failed' if argv[3] == 'stop' else 'active'
+            return ''
+        output = io.BytesIO()
+        with self.temporary_cgroups(), patch.object(guest, 'command', side_effect=command), \
+             patch.object(guest, 'boot_identity', return_value='11111111-2222-4333-8444-555555555555'), \
+             patch.object(guest.urllib.request, 'urlopen', side_effect=lambda *a, **k: self.maintenance_http(settings)), \
+             patch.object(guest.socket, 'socket'), patch.object(guest, 'wait_healthy') as healthy, \
+             patch.object(guest.shutil, 'disk_usage', return_value=Mock(free=guest.FLOOR + 1)):
+            # Keep the serial maintenance handshake, stopped check and SQLite/tar
+            # exporter real; only host boundaries and restart health are mocked.
+            guest.daily_backup(settings, output)
+        self.assertEqual(snapshot_states, {service: 'failed' if service in prior_active else 'inactive'
+                                           for service in guest.SERVICES})
+        stops = [argv for argv in calls if argv[:4] == ['sudo', '-n', 'systemctl', 'stop']]
+        self.assertEqual(stops, [['sudo', '-n', 'systemctl', 'stop', *prior_active]])
+        starts = [argv for argv in calls if argv[:4] == ['sudo', '-n', 'systemctl', 'start']]
+        self.assertEqual(starts, [['sudo', '-n', 'systemctl', 'start', service] for service in prior_active])
+        healthy.assert_called_once_with(prior_active)
+        self.assertEqual(states, {service: 'active' if service in prior_active else 'inactive' for service in guest.SERVICES})
+        self.assertFalse(guest.pause_path(settings).exists())
+        self.assertFalse(guest.maintenance_path(settings).exists())
+        self.assertEqual(Path(settings['workflow']).read_bytes(), workflow_before)
+        with tarfile.open(fileobj=io.BytesIO(output.getvalue())) as archive:
+            manifest = guest.read_archive(archive)
+        self.assertIn('view/board.sqlite', manifest['entries'])
+        target = self.base / 'failed-stop-restored'
+        guest.restore(io.BytesIO(output.getvalue()), target, settings)
+        self.assertEqual((target / 'runtime/active-recovery.json').read_bytes(), b'keep candidate recovery')
+        self.assertEqual((target / 'runtime/migration-backups/important.receipt').read_bytes(), b'original migration evidence')
+        with closing(sqlite3.connect(target / 'view/board.sqlite')) as database:
+            self.assertEqual(database.execute('SELECT value FROM evidence').fetchone()[0], 'committed WAL data')
 
     def test_daily_failure_restarts_and_keeps_pause_busy_does_not_stop(self):
         settings = self.settings()

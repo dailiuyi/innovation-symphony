@@ -292,14 +292,19 @@ def check(settings, *, apply=False, host_paused=False):
 
 def require_stopped():
     for service in SERVICES:
-        data = command(['systemctl', 'show', service, '--property=LoadState,ActiveState,ControlGroup'])
+        data = command(['systemctl', 'show', service, '--property=LoadState,ActiveState,MainPID,ControlGroup'])
         state = dict(line.split('=', 1) for line in data.splitlines() if '=' in line)
-        if state.get('LoadState') not in ('loaded', 'not-found') or state.get('ActiveState') != 'inactive':
+        if (state.get('LoadState') not in ('loaded', 'not-found')
+                or state.get('ActiveState') not in ('inactive', 'failed') or state.get('MainPID') != '0'):
             raise ValueError(f'backup requires known stopped/absent guest service: {service}')
         group = state.get('ControlGroup')
         if group:
-            if (Path('/sys/fs/cgroup') / group.lstrip('/') / 'cgroup.procs').read_text().strip():
-                raise ValueError('guest service still has processes; no backup')
+            pending = [Path('/sys/fs/cgroup') / group.lstrip('/')]
+            while pending:
+                directory = pending.pop()
+                if (directory / 'cgroup.procs').read_text().strip():
+                    raise ValueError('guest service still has processes; no backup')
+                pending.extend(path for path in directory.iterdir() if stat.S_ISDIR(path.stat().st_mode))
 
 
     # A manually launched controller outside these units is not a stopped service.
