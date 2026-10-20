@@ -20,7 +20,7 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：986 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，最终日志为 `.local/vm-deployment-20261020T090218Z/full-gate-native-release-20261021.log`。所有新增忽略和降低门槛的方案均未采用。
 
-scripts 原生完整回归 188 项、20 项显式跳过通过（含停止边界及启动缓存修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
+scripts 原生完整回归 189 项、20 项显式跳过通过（含停止边界、启动缓存及 TCP 探针修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
 VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。领取关闭且有暂停和维护标记。新 Issue、真实模型调用与 Draft MR 尚未开始。
 
@@ -71,3 +71,6 @@ VM 模式分配新模型会话目录时保留全部历史，不调用旧的“�
 后续实机备份在写入约 3.2 GiB 后因 Codex 版本探针的外部启动助手链接而拒绝。失败文件 `/data/symphony-vm/daily-backup-diagnostic-20261021.tar.partial` 保留，三服务已恢复。拒绝定位到 `codex-home/tmp/arg0-linux`，目标为固定 Codex 安装；工程修订只排除此可重建启动缓存及受管 run home 中对应目录，其他外部链接规则不变。修订的回归及最终实机结果待记录。
 
 启动缓存排除修订经独立复审，60 项运维回归及 VM 原生 scripts 完整 188 项（20 项跳过）通过。会话/metadata/其余 tmp/项目同名目录的实际归档恢复完整，12 类非指定外部链接仍拒绝。Elixir 源码及 escript 摘要不变。
+
+
+常规入口的后续 0 字节归档失败经精确脚本追踪确认为 `require_stopped` 绑定 4000 返回 errno 98。该次失败没有记录重启前的 TCP 状态；真实内核回归复现了 TIME_WAIT 的同样误判，并验证 SO_REUSEADDR 可处理它，故端口探针增加该选项。活动 listener 的 loopback/wildcard × 复用开关四组合均仍拒绝。其作用是探测活动监听，受管进程退出由 MainPID/完整 cgroup 树证明；不能据此断言不存在非受管的未监听 socket。独立审查及 61 项运维回归通过，VM scripts 完整 189 项、20 项跳过通过。最终常规日备份和恢复仍待实测，不把诊断方式成功导出记为该入口通过。

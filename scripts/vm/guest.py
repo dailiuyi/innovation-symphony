@@ -309,6 +309,7 @@ def require_stopped():
 
     # A manually launched controller outside these units is not a stopped service.
     with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(('127.0.0.1', 4000))
 
 

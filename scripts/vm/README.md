@@ -174,3 +174,7 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 ### Codex 可重建启动缓存
 
 固定 Linux 客户端 0.163.0 的版本探针会在 CODEX_HOME/tmp/arg0-linux 生成指向安装目录的临时启动链接。备份明确排除运行根下 `codex-home/tmp/arg0-linux` 和 `sandboxes/run-*/codex-home/tmp/arg0-linux` 子树，保留原文件；重建固定客户端后由其自行生成。其余 tmp、sessions、工作区和证据均保留。项目工作区内的同名目录不匹配此规则；任意其他外部链接继续导致归档拒绝。
+
+### TCP 端口探针
+
+停服后的绑定探针设置 SO_REUSEADDR，以处理此前 HTTP 连接留下的 TIME_WAIT；不设置 SO_REUSEPORT。受管进程的 MainPID/cgroup 检查不变。61 项运维回归包含真实 TCP TIME_WAIT、loopback/wildcard × 复用开关四种活动 listener 拒绝。绑定成功仅证明该监听探针通过，不排除服务外尚未 listen 的 socket，亦不消除检查后的端口竞争。

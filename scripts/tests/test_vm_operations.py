@@ -1,4 +1,5 @@
-"""VM tooling regressions: temporary files and mocked external operations only."""
+"""VM regressions: temporary files, loopback TCP and mocked service operations."""
+import errno
 import hashlib
 from contextlib import closing, contextmanager
 import io
@@ -7,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import shlex
+import socket
 import subprocess
 import sys
 import tarfile
@@ -291,6 +293,61 @@ class VmOperationsTest(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'port occupied'):
                 guest.require_stopped()
             socket.return_value.__enter__.return_value.bind.assert_called_once_with(('127.0.0.1', 4000))
+
+    def test_stopped_real_tcp_time_wait_allows_reuse_but_live_listener_refuses(self):
+        real_socket = socket.socket
+        with real_socket() as server, real_socket() as client:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.settimeout(3)
+            client.settimeout(3)
+            server.bind(('127.0.0.1', 0))
+            address = server.getsockname()
+            self.assertNotEqual(address[1], 4000)
+            server.listen(1)
+            client.connect(address)
+            accepted, _ = server.accept()
+            # The server must close first: its endpoint, rather than the
+            # client's ephemeral port, then owns TIME_WAIT after the FINs.
+            accepted.close()
+            server.close()
+            self.assertEqual(client.recv(1), b'')
+        with real_socket() as without_reuse:
+            self.assertEqual(without_reuse.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0)
+            with self.assertRaises(OSError) as occupied:
+                without_reuse.bind(address)
+            self.assertEqual(occupied.exception.errno, errno.EADDRINUSE)
+
+        binds = []
+        class PortMappedProbe(real_socket):
+            def bind(probe, requested):
+                self.assertEqual(requested, ('127.0.0.1', 4000))
+                self.assertEqual(probe.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 1)
+                binds.append(requested)
+                return super().bind(address)
+
+        stopped = 'LoadState=loaded\nActiveState=failed\nMainPID=0\nControlGroup=\n'
+        time_wait_port = address[1]
+        listener_cases = [(host, reuse) for host in ('127.0.0.1', '0.0.0.0') for reuse in (0, 1)]
+        # Only translate the probe address. Its options, bind and close still
+        # run against real TCP sockets; systemd queries remain mocked.
+        with patch.object(guest, 'command', return_value=stopped) as show, \
+             patch.object(guest.socket, 'socket', PortMappedProbe):
+            guest.require_stopped()
+            for host, reuse in listener_cases:
+                with self.subTest(host=host, reuse=reuse), real_socket() as listener:
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, reuse)
+                    listener.bind((host, 0))
+                    port = listener.getsockname()[1]
+                    self.assertNotEqual(port, time_wait_port)
+                    self.assertNotEqual(port, 4000)
+                    address = ('127.0.0.1', port)
+                    listener.listen(1)
+                    with self.assertRaises(OSError) as active:
+                        guest.require_stopped()
+                    self.assertEqual(active.exception.errno, errno.EADDRINUSE)
+            attempts = 1 + len(listener_cases)
+            self.assertEqual(show.call_count, attempts * len(guest.SERVICES))
+        self.assertEqual(binds, [('127.0.0.1', 4000)] * attempts)
 
     def backup_settings(self, json_workflow=False):
         settings = self.settings()
