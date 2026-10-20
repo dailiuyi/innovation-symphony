@@ -170,3 +170,7 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 现有 CLI 对 Supervisor shutdown 返回退出码 1，正常停止后的 unit 可能显示 failed。备份证明进程已停止的条件为：已知 LoadState、inactive/failed、MainPID=0、整个 cgroup 树的 cgroup.procs 均为空，以及 4000 端口可绑定。任一读取失败、残留进程或端口占用都拒绝。不修改 CLI、不把退出码 1 统一标成成功；每日备份开始前已有 failed 的服务仍拒绝接管。
 
 对应 58 项运维回归已通过；其中新增 7 项覆盖上述边界、stop 后 failed 的完整归档/校验/恢复，以及原有 inactive 行为。真实备份、恢复和安装版本以部署记录为准。
+
+### Codex 可重建启动缓存
+
+固定 Linux 客户端 0.163.0 的版本探针会在 CODEX_HOME/tmp/arg0-linux 生成指向安装目录的临时启动链接。备份明确排除运行根下 `codex-home/tmp/arg0-linux` 和 `sandboxes/run-*/codex-home/tmp/arg0-linux` 子树，保留原文件；重建固定客户端后由其自行生成。其余 tmp、sessions、工作区和证据均保留。项目工作区内的同名目录不匹配此规则；任意其他外部链接继续导致归档拒绝。

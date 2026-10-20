@@ -410,6 +410,14 @@ def archive_name(path, roots):
 def excluded(path, settings):
     if any(part in ('.ssh', 'auth.json', 'credentials.json', 'secrets.env', 'runtime.env') for part in path.parts):
         return True
+    runtime = Path(settings['runtime_root'])
+    if path.is_relative_to(runtime):
+        parts = path.relative_to(runtime).parts
+        if parts[:3] == ('codex-home', 'tmp', 'arg0-linux'):
+            return True
+        if (len(parts) >= 5 and parts[0] == 'sandboxes' and parts[1].startswith('run-')
+                and parts[2:5] == ('codex-home', 'tmp', 'arg0-linux')):
+            return True
     # Recreate the Python environment from the fixed release requirements.
     return any(path == Path(p) or path.is_relative_to(p) for p in
                settings['auth_paths'] + [settings['view_venv'], settings['environment_file']])

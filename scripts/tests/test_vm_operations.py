@@ -348,6 +348,129 @@ class VmOperationsTest(unittest.TestCase):
             with self.assertRaises((ValueError, FileExistsError)):
                 guest.restore(io.BytesIO(content), existing, settings)
 
+    def test_real_backup_restore_excludes_only_managed_codex_arg0_launchers(self):
+        settings = self.backup_settings()
+        runtime = Path(settings['runtime_root'])
+        # Model the pinned /opt native client outside every backup root without
+        # accessing the installed toolchain or executing any client.
+        native = self.base / 'opt/symphony/codex-0.163.0/bin/codex'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'\x7fELF pinned native fixture')
+        native.chmod(0o755)
+        homes = ('codex-home', 'sandboxes/run-GL-4-coder/codex-home',
+                 'sandboxes/run-GL-4-reviewer/codex-home')
+        expected, excluded_prefixes, launchers = {}, [], []
+        for home in homes:
+            for suffix, payload, mode in (
+                    ('metadata.json', b'{"model":"pinned","history":true}\n', 0o640),
+                    ('sessions/2026/10/21/rollout.jsonl', b'{"event":"preserve session"}\n', 0o600),
+                    ('tmp/other-live-temp/task.data', b'preserve other temporary evidence', 0o600),
+                    ('tmp/arg0-linux-other/task.data', b'preserve similarly named sibling', 0o640)):
+                relative = f'{home}/{suffix}'
+                expected[relative] = (payload, mode)
+            prefix = f'{home}/tmp/arg0-linux'
+            excluded_prefixes.append(prefix)
+            launch = runtime / prefix / 'codex-arg0kSQpZ6'
+            launch.mkdir(parents=True)
+            (launch / '.lock').write_bytes(b'regenerated launcher lock')
+            for name in ('apply_patch', 'applypatch', 'codex-linux-sandbox'):
+                link = launch / name
+                link.symlink_to(native)
+                launchers.append(link)
+        for relative in (
+                'workspaces/repo/codex-home/tmp/arg0-linux/codex-arg0kSQpZ6/evidence.txt',
+                'sandboxes/run-GL-4-coder/workspace/codex-home/tmp/arg0-linux/evidence.txt',
+                'sandboxes/retained-evidence/codex-home/tmp/arg0-linux/evidence.txt'):
+            expected[relative] = (b'workspace evidence must remain intact', 0o640)
+        for relative, (payload, mode) in expected.items():
+            path = runtime / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(mode)
+        workspace = runtime / 'workspaces/repo/codex-home/tmp/arg0-linux/codex-arg0kSQpZ6'
+        (workspace / 'evidence-link').symlink_to('evidence.txt')
+        guest.pause(settings, 'test managed Codex launchers')
+        guest.request_maintenance(settings, 'test managed Codex launchers')
+        workflow_before = Path(settings['workflow']).read_bytes()
+        output = io.BytesIO()
+        with patch.object(guest, 'require_stopped'):
+            guest.backup(settings, output)
+        with tarfile.open(fileobj=io.BytesIO(output.getvalue())) as archive:
+            manifest = guest.read_archive(archive)
+            names = set(archive.getnames())
+            for prefix in excluded_prefixes:
+                archived = 'runtime/' + prefix
+                self.assertFalse(any(name == archived or name.startswith(archived + '/') for name in names), prefix)
+            for relative, (payload, mode) in expected.items():
+                name = 'runtime/' + relative
+                self.assertIn(name, names)
+                entry = manifest['entries'][name]
+                self.assertEqual(entry['sha256'], hashlib.sha256(payload).hexdigest())
+                self.assertEqual(entry['size'], len(payload))
+                self.assertEqual(entry['mode'], mode)
+            self.assertNotIn('runtime/codex-home/auth.json', names)
+            self.assertNotIn('config/runtime.env', names)
+        target = self.base / 'managed-launchers-restored'
+        result = guest.restore(io.BytesIO(output.getvalue()), target, settings)
+        self.assertEqual(result['intake'], 'disabled')
+        self.assertFalse(result['activated'])
+        for relative, (payload, mode) in expected.items():
+            restored = target / 'runtime' / relative
+            self.assertEqual(restored.read_bytes(), payload)
+            self.assertEqual(restored.stat().st_mode & 0o777, mode)
+            self.assertEqual((runtime / relative).read_bytes(), payload)
+        for prefix in excluded_prefixes:
+            self.assertFalse((target / 'runtime' / prefix).exists())
+        restored_link = target / 'runtime' / workspace.relative_to(runtime) / 'evidence-link'
+        self.assertTrue(restored_link.is_symlink())
+        self.assertEqual(restored_link.resolve(), restored_link.parent / 'evidence.txt')
+        self.assertEqual(restored_link.read_bytes(), b'workspace evidence must remain intact')
+        for launcher in launchers:
+            self.assertTrue(launcher.is_symlink())
+            self.assertEqual(launcher.resolve(), native)
+        self.assertEqual(native.read_bytes(), b'\x7fELF pinned native fixture')
+        self.assertEqual(Path(settings['workflow']).read_bytes(), workflow_before)
+        self.assertFalse((target / 'runtime/codex-home/auth.json').exists())
+        self.assertEqual((target / 'runtime/migration-backups/important.receipt').read_bytes(), b'original migration evidence')
+        self.assertEqual((target / 'runtime/active-recovery.json').read_bytes(), b'keep candidate recovery')
+        with closing(sqlite3.connect(target / 'view/board.sqlite')) as database:
+            self.assertEqual(database.execute('SELECT value FROM evidence').fetchone()[0], 'committed WAL data')
+
+    def test_backup_still_refuses_external_links_outside_exact_managed_arg0_prefixes(self):
+        settings = self.settings()
+        guest.pause(settings, 'test unknown external links')
+        guest.request_maintenance(settings, 'test unknown external links')
+        external = self.base / 'external-pinned-native'
+        external.write_bytes(b'external native fixture')
+        cases = (
+            ('runtime_root', 'unknown-external-link'),
+            ('runtime_root', 'codex-home/tmp/other-temp/apply_patch'),
+            ('runtime_root', 'codex-home/tmp/arg0-linux-other/apply_patch'),
+            ('runtime_root', 'codex-home/sessions/external-link'),
+            ('runtime_root', 'workspaces/repo/codex-home/tmp/arg0-linux/launch/apply_patch'),
+            ('runtime_root', 'sandboxes/run-GL-4/workspace/codex-home/tmp/arg0-linux/apply_patch'),
+            ('runtime_root', 'sandboxes/retained-evidence/codex-home/tmp/arg0-linux/apply_patch'),
+            ('runtime_root', 'sandboxes/run-GL-4/codex-home/tmp/arg0-linux-other/apply_patch'),
+            ('runtime_root', 'sandboxes/run-GL-4/codex-home/tmp/other-temp/apply_patch'),
+            ('runtime_root', 'sandboxes/run-GL-4/codex-home/sessions/external-link'),
+            ('config_root', 'codex-home/tmp/arg0-linux/apply_patch'),
+            ('view_root', 'sandboxes/run-GL-4/codex-home/tmp/arg0-linux/apply_patch'))
+        for root_key, relative in cases:
+            with self.subTest(root=root_key, relative=relative):
+                link = Path(settings[root_key]) / relative
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(external)
+                try:
+                    with patch.object(guest, 'require_stopped'), \
+                         self.assertRaisesRegex(ValueError, 'external recovery reference'):
+                        guest.backup(settings, io.BytesIO())
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(link.resolve(), external)
+                    self.assertTrue(guest.pause_path(settings).exists())
+                    self.assertTrue(guest.maintenance_path(settings).exists())
+                finally:
+                    link.unlink()
+
     def test_backup_requires_marker_quiescence_and_reviewed_auth_inventory(self):
         settings = self.settings()
         with self.assertRaisesRegex(ValueError, 'intake-paused'):
