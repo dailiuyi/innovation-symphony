@@ -20,11 +20,11 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：996 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，当前 Git 修订日志为 `.local/vm-deployment-20261020T090218Z/full-gate-git-deadline.log`。所有新增忽略和降低门槛的方案均未采用。
 
-scripts 原生完整回归 189 项、20 项显式跳过通过（含停止边界、启动缓存及 TCP 探针修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
+scripts 原生完整回归 200 项、20 项显式跳过通过（含停止边界、启动缓存及 TCP 探针修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
-VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。领取关闭且有暂停和维护标记。已创建 GL-4 并添加 ready；首次领取在 Git fetch 阶段超时 blocked，尚无模型调用或 Draft MR。
+VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。新领取保持暂停。已创建 GL-4 并添加 ready；首次 Git fetch 超时经原合同审计接续后完成，随后两次模型调用因原生客户端缺失执行组件而未能读取或修改项目，留下诊断 blocked 记录。运行组件现已修复，保留原预算的显式审计接续已启动第 2 轮编码（累计调用 3 次），尚无 Draft MR。
 
-准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其恢复、真实交付闭环仍待完成。
+准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其独立目录恢复已通过，见后文；每日 timer 尚未启用，真实交付闭环仍未通过。
 
 ## 接续与运维补充验证（阶段记录）
 
@@ -89,4 +89,18 @@ VM 模式分配新模型会话目录时保留全部历史，不调用旧的“�
 
 常规日备份已在 `72a66022dc55bddb727e88a55ecaad471637fbc5` 固定版本完成：`/data/symphony-vm/backups/daily-20261020T190632300613Z-90591e7de9cd4f23aa74033661e3fffd.tar`，SHA256 `d49c53e67ad715796d681e4942bfbe313174ed329f5231c185f68e52b1199f3e`。恢复至 guest `/home/elma/symphony-restore-final-20261021` 已验证未激活、WORKFLOW.enabled=false、state_dir 指向恢复副本、暂停标记存在；5 个状态 JSON 摘要与活动源一致，SQLite integrity_check=ok（3 个任务、99 条状态变化、10 个会话、9 个证据记录）。备份服务自动停启和健康恢复通过；本机备份定时器待真实验收任务结束后启用，磁盘定时器已启用。
 
-Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项显式跳过、100% 覆盖率、Dialyzer 零错误。之后仅加强开始时间断言，VM 原生单项 fresh/resumed 测试再次通过，生产代码与全门禁相同。新旧 escript 中 RestartRecovery/Executor/Attempts/Recovery 四个 BEAM 逐字节一致，证明无需改变 GL-4 冻结核心摘要。安装与显式准备重试仍待执行。
+Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项显式跳过、100% 覆盖率、Dialyzer 零错误。之后仅加强开始时间断言，VM 原生单项 fresh/resumed 测试再次通过，生产代码与全门禁相同。新旧 escript 中 RestartRecovery/Executor/Attempts/Recovery 四个 BEAM 逐字节一致，证明无需改变 GL-4 冻结核心摘要。`08f5d9975822` 已安装，准备重试审计通过且完成 Git 抓取；预算及冻结核心绑定保持原值。
+
+## 2026-10-21 原生客户端组件故障与显式接续
+
+当前固定控制器为 `/opt/innovation-symphony/releases/08f5d9975822-20261021`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。VM 初次 Git fetch 使用 30 分钟上限并受任务原剩余墙钟约束；原 120 秒 fetch 失败的完整回执和审计日志保留。此次变更未改变冻结的四个恢复核心模块，原 source SHA256 绑定仍有效。
+
+真实 GL-4 的第 1 次 coder 和第 2 次 diagnosis 均已正常结束并完整记账，但工具启动失败：初次安装的单二进制 Codex 归档缺少同版 `codex-code-mode-host`。此前 `codex --version` 与 AppServer 启动探针不足以证明执行工具可用，不能据此登记编码实测通过。项目工作区未改变，尚未调用独立 Reviewer。
+
+已从宿主实际安装的同版本完整包中，仅复制所需原生 helper 到 VM，与主程序同目录；未复制宿主整个 `.codex`。主程序 SHA256 为 `399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215`，helper 为 `8724d73ec190536233ab4628d24a071bfbcf27e5124f08fe35129f26fe48b916`。Ubuntu 24.04 guest 内安装 `apparmor-profiles`、`apparmor-utils` 并加载系统提供的 bubblewrap userns profile；没有修改宿主或关闭 guest 全局 userns 限制。原生 `codex sandbox -c 'sandbox_mode="read-only"' -- /usr/bin/true` 已返回 0，读取 `/etc/os-release` 成功，写 `/var/tmp` 实测因只读文件系统被拒绝。配置依据：[OpenAI Linux sandbox 文档](https://developers.openai.com/pt-BR/docs/sandboxing)。这些无模型探针不替代真实工具调用验收。
+
+接续必须保存原始 blocked 回执、restart stop、两次调用及其完整用量。原开始时间 `2026-10-20T19:16:52.173839Z`、4 小时截止、30 次返工和 96 次调用上限不变。部署故障修复后的人工审计接续与控制器自动 recovery 分开记录；不能宣称首次 ready 后已经无人干预闭环通过。
+
+运行组件修复的显式接续审计已完成：旧控制器通过维护 nonce/PID/boot 排空确认后停止，MainPID=0、cgroup 为空；原 blocked 回执与 restart stop 原文保存于 `.runtime-repair-retry-1.json`，停止记录归档为 `.restart-blocked.runtime-repair-1.json`。原调用 2 次与完整用量不变，新增第 2 轮消耗一次返工，再交回正常 RestartRecovery。随后实际第 3 次 coder 调用已能读取 luca 源码并执行项目命令，未再发生 helper 启动失败。新领取暂停标记保留，旧 GL-3 不变；当前编码尚未完成，不登记正式检查或 Review 通过。
+
+本次组件修订的完整 scripts 回归：宿主 200 项零失败、22 项跳过；VM 原生 200 项零失败、20 项跳过。独立审查与简化已完成，实机执行新增 bootstrap 只读探针片段通过，完整一次性 bootstrap 未在现有 VM 重跑。曾因 root PATH 缺少 sbin 而找不到 runuser 的失败日志保留，修复后原片段实跑返回 0。重建工件清单 `/data/symphony-vm/verified-artifacts-v2.json` 与 guest `/home/elma/symphony-install/artifacts/verified-guest-artifacts-v2.json` 均实际校验通过；同版 helper 在宿主工件目录保留。

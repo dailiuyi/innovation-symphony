@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Offline pinned guest bootstrap verifier. No downloads."""
+"""Offline pinned guest bootstrap verifier. No downloads.
+
+Codex inputs include the CLI archive plus a required ``code_mode_host`` object
+with version/path/sha256/provenance for the matching native helper. The helper
+comes from the same standalone package release, not an independently resolved
+version. Both checksums are verified before bootstrap performs any writes.
+"""
 import argparse
 import copy
 import hashlib
@@ -21,19 +27,29 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def verify_artifact(artifact, version):
+    if artifact['version'] != version or not artifact.get('provenance'):
+        raise ValueError('exact pinned version and outside-verified provenance are required')
+    source = Path(artifact['path'])
+    if not source.is_absolute() or not source.is_file() or source.is_symlink():
+        raise ValueError('artifact input must be an existing absolute regular file')
+    if not re.fullmatch(r'[a-f0-9]{64}', artifact['sha256']) or digest(source) != artifact['sha256']:
+        raise ValueError('artifact SHA256 mismatch')
+
+
 def verified_manifest(path):
     data = json.loads(Path(path).read_text())
     if set(data) != set(VERSIONS):
         raise ValueError('manifest must supply exactly otp/elixir/node/codex')
     for name, version in VERSIONS.items():
-        artifact = data[name]
-        if artifact['version'] != version or not artifact.get('provenance'):
-            raise ValueError('exact pinned version and outside-verified provenance are required')
-        source = Path(artifact['path'])
-        if not source.is_absolute() or not source.is_file() or source.is_symlink():
-            raise ValueError('artifact input must be an existing absolute regular file')
-        if not re.fullmatch(r'[a-f0-9]{64}', artifact['sha256']) or digest(source) != artifact['sha256']:
-            raise ValueError('artifact SHA256 mismatch')
+        verify_artifact(data[name], version)
+    if 'code_mode_host' not in data['codex']:
+        raise ValueError('codex requires a same-version code_mode_host artifact')
+    helper = data['codex']['code_mode_host']
+    verify_artifact(helper, data['codex']['version'])
+    with Path(helper['path']).open('rb') as stream:
+        if stream.read(4) != b'\x7fELF':
+            raise ValueError('codex code_mode_host must be a native Linux executable')
     entry = PurePosixPath(data['codex']['entry'])
     if entry.is_absolute() or '..' in entry.parts or str(entry) in ('', '.') or str(entry) != data['codex']['entry']:
         raise ValueError('codex entry must name its native executable in the normalized archive')
@@ -114,6 +130,8 @@ def extract(data, name, target):
 def receipt(path):
     result = {name: {'version': VERSIONS[name], 'binary': str(Path(binary).resolve()),
                      'binary_sha256': digest(binary)} for name, binary in BINARIES.items()}
+    helper = Path(result['codex']['binary']).with_name('codex-code-mode-host')
+    result['codex']['code_mode_host'] = {'binary': str(helper), 'binary_sha256': digest(helper)}
     with Path(path).open('x') as stream:
         os.chmod(path, 0o600)
         json.dump(result, stream, indent=2)
@@ -128,9 +146,21 @@ def install_node(source, target):
     target.chmod(0o755)
 
 
+def install_codex_helper(artifact, target):
+    """Leave a failed copy non-executable; never replace an existing helper."""
+    verify_artifact(artifact, VERSIONS['codex'])
+    target = Path(target)
+    with target.open('xb') as output, Path(artifact['path']).open('rb') as source:
+        target.chmod(0o600)
+        shutil.copyfileobj(source, output)
+    if digest(target) != artifact['sha256']:
+        raise ValueError('installed Codex helper SHA256 mismatch')
+    target.chmod(0o755)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('verify', 'extract', 'receipt', 'install-node'))
+    p.add_argument('action', choices=('verify', 'extract', 'receipt', 'install-node', 'install-codex-helper'))
     p.add_argument('path', type=Path)
     p.add_argument('--component', choices=VERSIONS)
     p.add_argument('--target', type=Path)
@@ -147,6 +177,12 @@ def main():
             receipt(a.path)
         return
     data = verified_manifest(a.path)
+    if a.action == 'install-codex-helper':
+        if not a.target:
+            raise ValueError('Codex helper installation requires --target')
+        if a.apply:
+            install_codex_helper(data['codex']['code_mode_host'], a.target)
+        return
     if a.action == 'extract':
         if not a.component or not a.target:
             raise ValueError('extraction needs --component and --target')

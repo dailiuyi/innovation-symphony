@@ -126,13 +126,13 @@ python3 scripts/vm/operations.py --root /data/symphony-vm restore --archive /abs
 
 bootstrap-guest.sh 是另一个一次性、明确 --apply 的 guest-only 入口。必须 root、Ubuntu 24.04 amd64、KVM/QEMU，且 cloud-init 的 /etc/symphony-vm 标记匹配；不会在宿主安装东西。现有工具链目录、符号链接或 receipt 会阻止覆盖。
 
-输入 JSON 必须有 otp、elixir、node、codex 四项；每项包含 version、绝对 path、sha256 和操作者已验证来源的 provenance。精确版本依次 28.5.0.7、1.19.6、24.21.0、0.163.0。Codex 支持实际发行的根目录单文件 tar，例如文件名 codex-x86_64-unknown-linux-musl；此时 entry 就是该文件名，不剥掉文件。带共同目录包装层的归档只去掉那一层，entry 指向规范化后的 native 文件。校验阶段会打开 Codex 归档，确认 entry 对应非空、可执行的普通文件，拒绝缺失、链接和穿过链接的入口，早于 apt 或解包写入。没有 latest、联网拉取源码或 npm 隐式解析版本；SHA 来自 操作者独立验证的官方发行工件。OTP/Elixir 输入是源码 tar，Node 为 linux-x64 发行 tar。
+输入 JSON 必须有 otp、elixir、node、codex 四项；每项包含 version、绝对 path、sha256 和操作者已验证来源的 provenance。精确版本依次 28.5.0.7、1.19.6、24.21.0、0.163.0。Codex 支持实际发行的根目录单文件 tar，例如文件名 codex-x86_64-unknown-linux-musl；此时 entry 就是该文件名，不剥掉文件。带共同目录包装层的归档只去掉那一层，entry 指向规范化后的 native 文件。校验阶段会打开 Codex 归档，确认 entry 对应非空、可执行的普通文件，拒绝缺失、链接和穿过链接的入口，早于 apt 或解包写入。没有 latest、联网拉取源码或 npm 隐式解析版本；SHA 来自 操作者独立验证的官方发行工件。OTP/Elixir 输入是源码 tar，Node 为 linux-x64 发行 tar。 Codex 另须 `code_mode_host` 对象，包含同版 `version`、原生 helper 的绝对 `path`、`sha256` 和已核实来源 `provenance`；从同一版本完整 standalone 包取得 `bin/codex-code-mode-host`。单二进制 CLI 归档不包含此组件，不能只凭 `codex --version` 判定工具可用。helper 安装到实际 CLI 旁，复制后再次比对摘要，已有文件不覆盖。
 
 ```bash
 sudo bash /var/lib/innovation-symphony/vm-tools/bootstrap-guest.sh --apply /absolute/verified-artifacts.json
 ```
 
-脚本先验证所有摘要，再 apt 安装发行版 Docker、JDK21、Python3.12 venv 与编译依赖；OTP/Elixir 从源码构建。工具实际路径为 /opt/symphony/{otp-28.5.0.7,elixir-1.19.6,node-24.21.0,codex-0.163.0}，入口 /usr/local/bin；OTP 包括 erl、erlc 和原生服务 shebang 必需的 escript。/opt/codex 直接链接到 /opt/symphony/codex-0.163.0/bin/codex **文件**，不链接目录；既有 runtime_identity.native_client 的 ELF、执行权限和固定版本检查保持原样。toolchain-receipt.json 记录实际安装目标及 binary_sha256。apt 包来自 Ubuntu 24.04 软件源；操作者 保留 apt 版本记录。Hex/Rebar、项目依赖及正式检查依赖另由操作者使用固定工件准备；脚本不会偷装 latest。
+脚本先验证所有摘要，再 apt 安装发行版 Docker、JDK21、Python3.12 venv、bubblewrap 与编译依赖；加载 Ubuntu 提供的 `bwrap-userns-restrict` AppArmor profile，保留全局 userns 限制。独立且已确认可写的临时文件必须在 Codex 只读沙箱内写入失败，零模型探针通过后才登记工具链；探针置于运行根 `sandboxes/run-bootstrap-probe-*/codex-home`，仅已登记的可重建启动缓存由既有备份规则排除，测试文件及其他证据仍保留。OTP/Elixir 从源码构建。工具实际路径为 /opt/symphony/{otp-28.5.0.7,elixir-1.19.6,node-24.21.0,codex-0.163.0}，入口 /usr/local/bin；OTP 包括 erl、erlc 和原生服务 shebang 必需的 escript。/opt/codex 直接链接到 /opt/symphony/codex-0.163.0/bin/codex **文件**，不链接目录；既有 runtime_identity.native_client 的 ELF、执行权限和固定版本检查保持原样。toolchain-receipt.json 记录实际安装目标及 binary_sha256，并记录真实 CLI 相邻 helper 的路径与摘要；组件缺失时不生成成功回执。apt 包来自 Ubuntu 24.04 软件源；操作者 保留 apt 版本记录。Hex/Rebar、项目依赖及正式检查依赖另由操作者使用固定工件准备；脚本不会偷装 latest。
 
 Node 安装树显式规范根目录为 0755，避免继承解包临时目录的 0700。Node/Codex 的版本检查通过 `runuser -u elma -- env -i ...` 执行，不以 root 能访问证明 elma 可运行。单测用 0700 的模拟解包树验证安装后权限，并在本机 elma 的非 root 身份下运行模拟可执行文件；该单元测试本身不证明真实工具链安装。
 

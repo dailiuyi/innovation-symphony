@@ -46,6 +46,12 @@ class VmOperationsTest(unittest.TestCase):
         (self.root / 'ssh_ed25519.pub').write_text('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIguest comment\n')
         self.info = json.dumps({'format': 'qcow2', 'virtual-size': 50 * vm.GIB}).encode()
 
+    def codex_helper_input(self):
+        source = self.base / 'codex-code-mode-host'
+        source.write_bytes(b'\x7fELF native code-mode-host fixture')
+        return {'version': '0.163.0', 'path': str(source), 'sha256': artifacts.digest(source),
+                'provenance': 'operator verified matching standalone package'}
+
     def settings(self):
         settings = guest.default_settings()
         settings.update(runtime_root=str(self.base / 'runtime'), config_root=str(self.base / 'config'),
@@ -415,7 +421,8 @@ class VmOperationsTest(unittest.TestCase):
         native.write_bytes(b'\x7fELF pinned native fixture')
         native.chmod(0o755)
         homes = ('codex-home', 'sandboxes/run-GL-4-coder/codex-home',
-                 'sandboxes/run-GL-4-reviewer/codex-home')
+                 'sandboxes/run-GL-4-reviewer/codex-home',
+                 'sandboxes/run-bootstrap-probe-fixture/codex-home')
         expected, excluded_prefixes, launchers = {}, [], []
         for home in homes:
             for suffix, payload, mode in (
@@ -780,6 +787,7 @@ class VmOperationsTest(unittest.TestCase):
             info.size, info.mode = 6, 0o755
             archive.addfile(info, io.BytesIO(b'codex!'))
         data['codex']['sha256'] = artifacts.digest(data['codex']['path'])
+        data['codex']['code_mode_host'] = self.codex_helper_input()
         manifest = self.base / 'artifacts.json'
         manifest.write_text(json.dumps(data))
         self.assertEqual(artifacts.verified_manifest(manifest)['otp']['version'], '28.5.0.7')
@@ -1127,6 +1135,7 @@ class VmOperationsTest(unittest.TestCase):
                     inputs[component] = {'path': str(source), 'version': version,
                                          'sha256': artifacts.digest(source), 'provenance': 'verified fixture input'}
                 inputs['codex']['entry'] = entry
+                inputs['codex']['code_mode_host'] = self.codex_helper_input()
                 manifest = self.base / 'single-or-wrapped-manifest.json'
                 manifest.write_text(json.dumps(inputs))
                 verified = artifacts.verified_manifest(manifest)
