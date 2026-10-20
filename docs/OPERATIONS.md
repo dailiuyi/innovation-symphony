@@ -1420,3 +1420,31 @@ registry revision9、双角色gpt-6.1-sol/medium、冻结回执和旧桥保持�
   - 归档路径：`/var/tmp/innovation-symphony-linux-runtime/archives/issue-2-review-schema-failure-20261017T174503Z/`
   - 归档内容：回执 `1d99b26d00c12449adb5418b909c3ec335c63339b53a7cadb6b78dbf945ee705.json`（SHA256: `db364d589d218bef2160ffdb58ed3c0363661370c1e302b123a977043801741f`）、其 `.evidence` 目录及 `workspaces/GL-2`
 - 自动重领与验证：启动控制器后，控制器于 30 秒轮询内自动发现就绪的 Issue #2（GL-2），成功创建新工作区重新开工调度，状态由 `blocked` 恢复为 `running`。
+
+## 2026-10-20 重新验证 GPT 并使其在 View 可选
+
+来源：所有者反馈 View 面板选不到 GPT 模型，要求直接接入、不必继续测试。
+- 根因：10 月 16 日登记的 GPT 渠道目录与能力证据绑定的是当时的 Codex 登录账号身份；当前登录身份已不同，旧证据整体失效，`coding`/`reviewing` 两个预设下的 gpt-6-astra、gpt-6-sol、gpt-6.1-sol 一直是 `pending_validation`／`model_catalog_channel_unverified`。
+- 排查中发现：在本次操作期间，线上注册表 `model-services.json` 的修订号从 5 自行变为 7，`coding`/`reviewing` 两个预设新增了与当前账号身份匹配的渠道目录（`refreshed_at` 2026-10-20T07:01:28Z／07:01:31Z）。未确认是哪个进程写入；没有发现任何容器以写权限挂载该文件来源于本次操作本身的刷新命令（均指向独立试验副本）。保留观察，未进一步重启或干预服务。
+- 执行：在隔离的注册表副本上先验证可行性，发现 gpt-6-sol／gpt-6.1-sol 默认使用 Codex 的 code mode 工具，需要与 `codex` 同目录的 `codex-code-mode-host` 辅助二进制；探测容器此前只挂载了 `codex` 单文件，导致这两个型号探测必然失败。补挂该二进制后问题解决。
+- 确认该修复后，对线上注册表直接执行 12 项真实双角色能力探测（gpt-6-astra/gpt-6-sol/gpt-6.1-sol × coder/reviewer × medium/high），均通过沙箱内真实工具调用与结构化输出校验，经 CAS 原子保存写入（修订号 7→8）。证据 24 小时有效，到期后需重新探测。
+- 验证：保存后只读 `mix mvp.models show` 回读 `availability`，确认 `coding` 预设下三个模型的 `coder` 角色、`reviewing` 预设下三个模型的 `reviewer` 角色均为 `available`；其余角色/预设组合（跨角色）保持 `pending_validation`，符合设计（coding 只服务 coder，reviewing 只服务 reviewer）。
+- 未改动：默认模型仍是 DeepSeek（coder: deepseek-v4-pro，reviewer: deepseek-v4-flash），是否切换默认由所有者另行决定。原始注册表备份于 `.local/backup-20261020/model-services.json.before`。
+
+## 2026-10-20（续）扩展到账号现役全部 GPT 型号
+
+来源：所有者要求把账号现役的全部模型和对应思考深度直接接入，不再逐档位全量测试。
+- 账号在 `coding` 渠道真实发现 8 个可用 GPT 型号（排除协议不兼容的 `codex-auto-review`）：gpt-5.6-luna、gpt-5.6-sol、gpt-5.6-terra、gpt-6-astra、gpt-6-luna、gpt-6.1-sol、gpt-6-sol、gpt-reserve，均支持 low/medium/high/xhigh/max 五档。
+- 范围收窄：不对全部 8×2 角色×5 档（80 项）逐一探测，改为确保每个型号每个角色至少有一档（coder 侧已覆盖的档位不同，reviewer 侧统一用 high）通过真实探测并登记证据；已验证的档位数量不等，View 选择器会按实际登记情况逐档显示可选/待验证，不是整模型级别的开关。
+- 结果：8 个型号在 coder、reviewer 两个角色下均至少有一个思考档位为 `available`，可在 View 直接选中并实际执行；未逐档验证的其余档位仍是 `pending_validation`，选中会被控制器拒绝，待后续按需补验。
+- 过程中一次探测（`gpt-5.6-terra` 的 reviewer 角色、high 档）首次因服务端瞬时不可用失败，重试后通过；其余失败均为探测端 120 秒等待上限过短（已调到 240 秒），不是模型本身的问题。
+- 未改动默认模型（仍是 DeepSeek）；本次未再新增独立测试文件，延用上轮的真实探测脚本。
+
+## 2026-10-20（再续）所有者背书：全部现役 GPT 型号的全部思考档位
+
+来源：所有者声明这些型号在其账号下均可运行，属于迁移的一部分，要求不再测试、直接把所有思考深度写入面板。
+- 做法：使用既有管理员人工背书入口（`ModelCatalog.attest`，等价于 `mix mvp.models attest`），对 `coding`、`reviewing` 两个预设 × coder、reviewer 两个角色 × 8 个型号（gpt-5.6-luna／sol／terra、gpt-6-astra／luna／sol、gpt-6.1-sol、gpt-reserve）× low／medium／high／xhigh／max 五档，共 160 项，写入 tools 与 structured_output 能力证据，CAS 保存（注册表修订号 12 之后再 +1）。
+- 证据性质：`source=manual`，是所有者背书，不是程序实测；`actual_model=null`。此前通过真实沙箱探测的组合（source=manual 的探测结果、24 小时期限）被同一绑定下的新证据覆盖，有效期统一为 1 年（到 2027-10-20），与 2026-10-16 的人工证据一致。
+- 效果：View 回读两个角色各 80 项全部 `available`，无待验证项。`codex-auto-review` 协议不兼容，仍排除。
+- 风险说明：未逐档实测意味着个别型号／档位真实不可用时，会在任务执行阶段才暴露，由既有失败分类（限流、不可用、型号不存在）和重试机制处理。
+- 备份：写入前的注册表保存在 `.local/backup-20261020/model-services.json.before-attest`。默认模型仍为 DeepSeek，未改动。

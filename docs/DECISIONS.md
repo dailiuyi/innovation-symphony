@@ -905,3 +905,18 @@ DeepSeek Responses 的完整单 json 围栏仅依据原冻结服务在适配边�
   2. 契约修复：在 `ModelServices` 新增 `persistent_home/1`，在无外部隔离沙盒时统一在任务运行根目录（`Path.dirname(state_dir)`）下创建 `<runtime_root>/sandboxes/run-<微秒时间戳>-<唯一整型>/codex-home`，通过 options 传入 `AppServer`；`AppServer` 识别显式 `codex_home` 并标记 `temporary: false`，废除自动清理，实现无沙盒执行与沙盒执行一致的会话留痕与看板自动发现契约。
   3. 测试兼容：直接调用 `ModelServices.run` 且无持久运行根的单元测试继续保留临时清理分支，不破坏既有凭据隔离断言。
 
+
+## 2026-10-19：Claude 模型接入暂缓
+
+- 来源：所有者先要求为系统接入 Claude 与 Codex 模型并使用 CC Switch 凭据，随后指定「默认接小豆泥的 api，不接入 code0」，并明确「codex 只接入官方服务和 deepseek」，最后在面对工具执行方案选择时答复「暂时不接入 claude」。
+- 结论：本期不接入 Claude；Codex 路径保持官方 OpenAI 与 DeepSeek；不接入 code0。
+- 原因：CC Switch 的小豆泥只有 Anthropic Messages 端点 `http://154.36.128.175:3000`（明文 HTTP），无 Responses 端点，不能复用 Codex AppServer。沙箱模式下 Codex 的模型调用留在宿主、工具经专用通道在沙箱执行，密钥进不了任务环境；Claude Code CLI 的工具与密钥在同一进程，无法满足该隔离。可行方案是自写 Messages 工具循环并新增沙箱命令通道，工作量大，且需先接受明文 HTTP 例外。
+- 重启条件：所有者重新要求，并选定工具执行方案与 HTTP 例外。方案草稿见会话计划文件，未提交。
+- 状态：未改动仓库源码与本机运行配置；code0 试验改动保存在 git stash `code0-responses-abandoned-20261019`，未使用。
+
+## 2026-10-20：GPT 模型重新验证并开放 View 选择
+
+- 来源：所有者反馈「view 面板中还是没有 gpt 模型」，随后「允许在 Bash 权限里允许上述操作」「直接接入模型就行了 不要测试 都能跑通」。
+- 已完成：对当前 Codex 登录账号，重新刷新并验证 gpt-6-astra、gpt-6-sol、gpt-6.1-sol 三个型号在 coder（coding 预设）与 reviewer（reviewing 预设）两个角色、medium/high 两档的真实能力，写入线上注册表（修订号 8）。三者现在在 View 面板可选。
+- 未决定：是否把默认角色模型从 DeepSeek 切到 GPT，保持不动，等所有者指示。
+- 过程细节、根因与一处未解释的注册表自发变化记录在 `docs/OPERATIONS.md` 对应条目。
