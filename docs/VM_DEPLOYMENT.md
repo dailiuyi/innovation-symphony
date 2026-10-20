@@ -22,9 +22,9 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 scripts 原生完整回归 200 项、20 项显式跳过通过（含停止边界、启动缓存、TCP 探针及 Codex 组件修订）。View 为 Python 57 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
-VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。新领取保持暂停。GL-4 已交付 Reviewer 批准的 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，状态 awaiting_human。候选 `267aa8f24c57d857f4bdc651099c7e5d903a22c3` 的两项正式检查通过，独立 DeepSeek Reviewer 批准全部 20 项验收。原开始时间、4 次模型调用和一次返工完整保留；前段 Git 抓取和缺失原生组件需要两次人工审计接续，因此不登记“首次 ready 后全程无人干预”通过。修复后的编码、检查、Review、推送和 MR 创建自动完成，没有人工补 Docker 证据。
+VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger、VM 与 production 隧道的 systemd 已启用，staging 隧道已停用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。收尾核对 ready 只有已有回执的 GL-3/4 后，已解除本轮临时领取暂停，恢复按可信 ready 自动领取。GL-4 已交付 Reviewer 批准的 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，状态 awaiting_human。候选 `267aa8f24c57d857f4bdc651099c7e5d903a22c3` 的两项正式检查通过，独立 DeepSeek Reviewer 批准全部 20 项验收。原开始时间、4 次模型调用和一次返工完整保留；前段 Git 抓取和缺失原生组件需要两次人工审计接续，因此不登记“首次 ready 后全程无人干预”通过。修复后的编码、检查、Review、推送和 MR 创建自动完成，没有人工补 Docker 证据。
 
-准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其独立目录恢复已通过，见后文；每日 timer 待最后运维收尾启用，真实交付闭环已通过上述候选与 MR 对账。
+准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其独立目录恢复已通过，见后文；每日 timer 已启用，当前下一次为本地 2026-10-22 03:13:48；真实交付闭环已通过上述候选与 MR 对账。
 
 ## 接续与运维补充验证（阶段记录）
 
@@ -93,7 +93,7 @@ Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项�
 
 ## 2026-10-21 原生客户端组件故障与显式接续
 
-当前固定控制器为 `/opt/innovation-symphony/releases/08f5d9975822-20261021`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。VM 初次 Git fetch 使用 30 分钟上限并受任务原剩余墙钟约束；原 120 秒 fetch 失败的完整回执和审计日志保留。此次变更未改变冻结的四个恢复核心模块，原 source SHA256 绑定仍有效。
+本阶段固定控制器为 `/opt/innovation-symphony/releases/08f5d9975822-20261021`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。VM 初次 Git fetch 使用 30 分钟上限并受任务原剩余墙钟约束；原 120 秒 fetch 失败的完整回执和审计日志保留。此次变更未改变冻结的四个恢复核心模块，原 source SHA256 绑定仍有效。
 
 真实 GL-4 的第 1 次 coder 和第 2 次 diagnosis 均已正常结束并完整记账，但工具启动失败：初次安装的单二进制 Codex 归档缺少同版 `codex-code-mode-host`。此前 `codex --version` 与 AppServer 启动探针不足以证明执行工具可用，不能据此登记编码实测通过。项目工作区未改变，尚未调用独立 Reviewer。
 
@@ -110,3 +110,36 @@ Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项�
 [GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4) → [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)。GitLab 只读 API 已核对项目/源项目/目标项目均为 10，目标 main、draft=true、state=opened、merged_at=null；远端分支 HEAD 与 MR SHA 均为 `267aa8f24c57d857f4bdc651099c7e5d903a22c3`。Reviewer approved=true、blockers=[]、20 项 adequate=true。两项控制器正式检查均退出 0，候选、轮次 2、attempt 1 绑定一致。Docker 原始响应在两次请求及同容器重启后均为 commit=267aa8f、version=dev、buildTime=2026-10-20T21:11:21Z；镜像/容器按本 attempt 归属清理。没有运行通用平台 live 套件，没有合并或部署 luca。
 
 View 两份运维审计日志原本因顶层 issue 字段被当作额外任务。采集现在识别同时包含 action 和 receipt_before 的审计记录，保留日志原文，仅从主任务列表排除；local/WSL 两个真实嵌入扫描分支和旧回执名字均回归覆盖。完整 VM View 门禁通过：Python 57、JS 15、本地 Linux 11、浏览器夹具、self_check 与迁移逐值比较。宿主完整命令先暴露旧 8765 端口假设，随后因缺 Playwright 仍未通过；未把这些宿主失败登记为通过，最终使用已固定依赖的 VM 完整入口。503 测试改为持有自己绑定但不监听的随机 loopback 端口，原断言不变，不联系真实服务。
+
+## 最终安装、运行状态与交接（2026-10-21）
+
+最终固定 release 为 `/opt/innovation-symphony/releases/005474a4a67e-20261021`，源码提交 `005474a4a67e9425cd87ae1dc80b0be579bd3237`，源码归档 SHA256 `a36af1c8a34819f443dfa87949c7d5c1cb2b559648df3704441c429a24795f0d`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。Elixir 源码与 996 项全门禁版本相同；组件和 View 修订分别本地提交 `2442618`、`005474a`。View 安装快照同属后者，升级前的三个源文件另行保留，数据库、缓存和历史未删除。原三个宿主服务 disabled，只有 VM 的控制器消费队列。
+
+准确工具链：OTP 28.5.0.7、Elixir 1.19.6、Codex 0.163.0（主程序与同版 helper 摘要见前文）、Node 24.21.0、OpenJDK 21.0.12.1、Python 3.12.3、Docker 29.1.3、Buildx 0.30.1。准确发行版包修订、Git/coreutils/bubblewrap/AppArmor 版本及摘要保存在 guest `/var/lib/innovation-symphony/toolchain-final-005474a.json` 和本机证据目录的同名副本；没有跳过 native client 检查。
+
+后续新任务的管理员能力探针增加 `codex_component`（实际同版执行组件可执行）与 `codex_readonly`（原生只读沙箱启动 `/usr/bin/true`），提前阻止已知缺件/沙箱启动失败。只修改当前工作流的新领取能力配置，原 GL-4 冻结合同不变，不做每轮 Docker 构建或真实模型调用。实际完整准入返回 ready、blockers=[]；这仍不是候选验收。
+
+独立本地能力夹具另外实际调用默认 coder 一次：成功执行 `sudo -n apt-get install jq`（包已存在，本次没有新增包）、构建有唯一归属标签的 scratch Docker 镜像并清理、启动并请求 loopback 随机端口的临时 HTTP 服务，再通过 jq 验证 JSON 并停止服务。原始 argv、退出码、响应和资源身份留在 runtime `workspaces/LOCAL-CAPABILITY-20261021/capability-result.json`；此一次调用与 GL-4 的四次分开报告。最初夹具放在 archives 被工作区路径边界拒绝，未启动模型，该失败也保留。没有为此创建其他平台 Issue。
+
+最终正常 VM reboot 后，boot ID 从 `bceb69da-a605-4322-889c-493f79b131d1` 变为 `5cdac192-689d-469e-95a0-3b407baefc36`。三服务、production 隧道与只读沙箱恢复；宿主 QEMU NRestarts=0。GL-1/2/3 的原回执 SHA256 与切换前一致，GL-4 的回执 SHA256 `dbef03da4ad652b10990f114707bcd0ac637d32f86bc668f465cc57acd3aacf0` 在此次 reboot 前后不变。仅解除本轮拥有且摘要匹配的临时 intake-paused；ready 列表只有已有回执的 GL-3/4，当前 running/retrying=0。恢复正常可信 ready 入口，旧 GL-3 不会重领。
+
+本机 4000 状态 API、8613 View snapshot 和经认证的 8765 设置 API 均已实际读取；默认仍为 coder gpt-6.1-sol/high、reviewer deepseek-v4-flash/high。View 为 4 个真实任务，GL-4 关联 4 次真实会话、两轮、正式检查和批准的 Review。宿主可用空间最后核对约 18.5 GiB，guest 约 26.5 GiB，高于 15/5 GiB 暂停阈值。每日空闲备份 timer enabled，已手动验证的同一日备份入口及独立恢复见前文；首次定时触发尚未发生，现有备份来自 GL-4 之前，不误报为新任务的交付后快照。保留最近三份成功日备份及迁移备份，不删除失败归档。
+
+本轮实际通过的主命令与证据：
+
+| 命令或检查 | 结果 | 本机证据目录下文件 |
+| --- | --- | --- |
+| guest `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source` | make all：996/0/6 skipped，100%，Dialyzer 0 | full-gate-git-deadline.log |
+| guest `python3 -m unittest discover -s scripts/tests` | 200/0/20 skipped | scripts-final-native.log |
+| guest `NODE_PATH=... view-venv/bin/python -B scripts/run_view_checks.py --output ...` | Python 57、JS 15、Linux 11、浏览器/迁移通过 | view-sidecar-native-full.log |
+| 两项准确候选正式检查与 GitLab 只读对账 | 退出 0；MR/远端分支 SHA、Draft、目标 main 一致 | gitlab-final-mr-verified.json、gl4-delivery-current.log |
+| 最终 OS reboot 与当前执行准入 | 健康恢复，原回执不变，ready | final-reboot-result.json、final-readiness.log |
+| `python3 scripts/vm/operations.py --root /data/symphony-vm check` | host/guest disk admitted，未暂停 | final-operations-check.json |
+
+准备、检查、启停、备份、恢复的可重复入口完整列在 `scripts/vm/README.md`，已有 VM 不重跑 prepare/bootstrap。备份位置为 `/data/symphony-vm/backups`，已验证恢复目录为 guest `/home/elma/symphony-restore-final-20261021`，其领取关闭且未激活。运行日志与回执在持久 runtime 根内；原归档与失败证据仍保留在 `/data/symphony-vm` 和本机 `.local/vm-deployment-20261020T090218Z`。
+
+回退顺序：先在 VM 暂停新领取并取得维护排空确认，核对活动执行与 GitLab 远端副作用，再保存包含 GL-4 的最新状态/证据。停止 VM 控制器和 production 隧道，旧宿主工作流先设置 enabled=false，旧服务只以关闭领取状态恢复。GL-4 已发布，禁止用迁移前快照直接覆盖当前状态、清回执重领或盲目重发 MR。也可保持 VM 暂停，切回前一固定 native release排查；不要同时启动两套消费者。旧 release、宿主单元、配置备份与原始数据都还在，未执行自动回退。
+
+尚未实际验证的是宿主“未登录冷启动”及首次 timer 触发；配置已确认 linger=yes、VM/隧道/备份和磁盘 timer enabled。由用户选择时间重启宿主，登录后用 `systemctl --user is-active symphony-vm.service symphony-vm-tunnels-production.service`、`journalctl --user -b -u symphony-vm.service` 核对启动早于登录，再打开三个本机入口。真实页面体验和 MR 合并由用户验收；本代理没有重启宿主、推送 Symphony 分支、合并 MR 或部署 luca。
+
+源码与文档已保存并本地提交，固定运行安装和真实交付分别以上述证据为准；本次首次 ready 后完全无人干预未通过，修复后无需人工 Docker 证据的自动交付段通过。

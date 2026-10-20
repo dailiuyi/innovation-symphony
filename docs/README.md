@@ -1,5 +1,7 @@
 # 文档入口
 
+2026-10-21 当前运行已迁入独立 VM，GL-4 已交付 Reviewer 批准的 Draft MR !3；固定 release、真实门禁、历史人工接续及剩余手动验收统一见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+
 | 内容 | 文档 |
 | --- | --- |
 | 整套 VM 部署、迁移、恢复及真实闭环验收 | [VM_DEPLOYMENT.md](VM_DEPLOYMENT.md) |
