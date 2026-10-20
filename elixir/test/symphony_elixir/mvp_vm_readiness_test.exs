@@ -453,6 +453,70 @@ defmodule SymphonyElixir.Mvp.VmReadinessTest do
     end
   end
 
+  test "fresh and resumed VM preparation bind Git fetch to the original remaining budget", c do
+    c = restart_fixture(c)
+    assert_receive {:restart_model, :coder}
+    {:ok, workflow} = Workflow.load(c.settings.workflow_path)
+    config = put_in(workflow.config, ["mvp", "recovery", "max_elapsed_ms"], 3_600_000)
+    File.write!(c.settings.workflow_path, "---\n#{Jason.encode!(config)}\n---\nVM fetch budget fixture")
+    :ok = WorkflowStore.force_reload()
+    {:ok, settings} = Config.mvp_settings()
+    log = Path.join(c.root, "fetch-timeouts.jsonl")
+    tools = Path.join(c.root, "fetch-tools")
+    File.mkdir!(tools)
+
+    File.write!(Path.join(tools, "timeout"), """
+    #!/usr/bin/python3
+    import json, os, sys
+    with open(#{inspect(log)}, 'a') as output:
+        output.write(json.dumps(sys.argv[1:]) + '\\n')
+    os.execv('/usr/bin/timeout', ['timeout', *sys.argv[1:]])
+    """)
+
+    File.chmod!(Path.join(tools, "timeout"), 0o700)
+    previous_path = System.get_env("PATH")
+    System.put_env("PATH", "#{tools}:#{previous_path}")
+
+    try do
+      for {mode, number} <- [{:fresh, 2}, {:resumed, 3}] do
+        id = "VM-FETCH-#{mode}"
+        issue = %{c.issue | id: id, identifier: "GH-#{number}", native_ref: Map.put(c.issue.native_ref, "number", number)}
+        receipt_path = Receipt.path(settings, issue)
+
+        if mode == :resumed do
+          workspace = Path.join(settings.execution_workspace_root, Workspace.workspace_key(issue))
+          File.mkdir!(workspace)
+          {:ok, ^receipt_path} = Receipt.claim(settings, issue)
+          assert :ok = RestartRecovery.freeze(receipt_path, issue, settings, c.models)
+          data = Receipt.read(receipt_path)
+          started = DateTime.utc_now() |> DateTime.add(-3_540_000, :millisecond) |> DateTime.to_iso8601()
+          frozen = Map.put(data["restart_recovery"], "started_at", started)
+          Receipt.update(receipt_path, "preparing", %{"restart_recovery" => frozen})
+          mark_previous_owner_dead(receipt_path)
+          File.write!(ExecutionReadiness.intake_pause_path(settings), "pause additional intake")
+        end
+
+        original_started = if mode == :resumed, do: Receipt.read(receipt_path)["restart_recovery"]["started_at"]
+        assert :ok = Mvp.run(issue, self(), settings, restart_options(c))
+        assert_receive {:codex_worker_update, ^id, %{event: :turn_input_required, message: message}}
+        assert message =~ "awaiting_human_merge"
+        receipt = Receipt.read(receipt_path)
+        assert receipt["status"] == "awaiting_human"
+        assert receipt["recovery"]["started_at"] == receipt["restart_recovery"]["started_at"]
+        if mode == :resumed, do: assert(receipt["recovery"]["started_at"] == original_started)
+        assert receipt["recovery"]["agent_attempts"] == 2
+      end
+
+      [fresh, resumed] = log |> File.stream!() |> Enum.map(&Jason.decode!/1) |> Enum.filter(&Enum.member?(&1, "fetch"))
+      {fresh_seconds, ""} = fresh |> Enum.at(1) |> String.trim_trailing("s") |> Float.parse()
+      {resumed_seconds, ""} = resumed |> Enum.at(1) |> String.trim_trailing("s") |> Float.parse()
+      assert fresh_seconds > 120 and fresh_seconds <= 1_800
+      assert resumed_seconds > 0 and resumed_seconds <= 60
+    after
+      System.put_env("PATH", previous_path)
+    end
+  end
+
   test "Mvp resumes a frozen completed coder through checking while new intake is paused", c do
     c = restart_fixture(c)
     before = Receipt.read(c.receipt)

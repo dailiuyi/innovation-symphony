@@ -127,3 +127,6 @@ Issue #1（`feat: add public /api/health endpoint and integration test`）由 `d
 全量套件里 8 个失败全部在 `MvpModelRoutingTest`，原因是该容器没有真实 Codex 客户端：断言直接报 `Codex client unavailable: /opt/codex`，另有 `{:port_exit, 127}`（容器内 `command -v codex` 退出码 127）。同一原因使 `SymphonyElixir.Mvp.LegacyModelService` 停在 98.94%（未覆盖行 `command_config(["-c" <> value | rest], ...)` 只在真实 Codex 命令行分支执行），该模块本分支未改动。除它之外 78 个模块全部为 100.00%，包含新增的 `SymphonyElixir.Mvp.Forge` 与本轮改动的 `Mvp.Delivery`、`Mvp.ExternalDraft`、`Mvp.Feedback`、`Mvp.Intake`、`Mvp.Preflight`、`Mvp.Receipt`、`Mvp.Config`、`Mvp.ModelSettings`、`Mix.Tasks.Mvp.External`。
 
 以上都不构成真实接入证据：没有可信 CA/证书、没有受限 token、没有确认推送权限，也没有让模型接触 luca 私有代码。luca 的桌面/手机查看、4DGS 播放与控制体验仍需人工验收。
+
+
+2026-10-21：VM 已切换本机原端口，固定 release 与备份/独立恢复验收见 VM_DEPLOYMENT。只创建替代任务 GL-4；首次领取在 Git fetch 120 秒超时处 blocked，尚无模型调用或候选，不算自动交付闭环通过。原始回执及冻结预算保留，正在修复 VM 传输窗口并准备同合同的显式审计重试。原 GL-3 保持历史状态。

@@ -18,11 +18,11 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 ## 当前状态（2026-10-21）
 
-源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：986 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，最终日志为 `.local/vm-deployment-20261020T090218Z/full-gate-native-release-20261021.log`。所有新增忽略和降低门槛的方案均未采用。
+源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：996 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，当前 Git 修订日志为 `.local/vm-deployment-20261020T090218Z/full-gate-git-deadline.log`。所有新增忽略和降低门槛的方案均未采用。
 
 scripts 原生完整回归 189 项、20 项显式跳过通过（含停止边界、启动缓存及 TCP 探针修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
-VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。领取关闭且有暂停和维护标记。新 Issue、真实模型调用与 Draft MR 尚未开始。
+VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。领取关闭且有暂停和维护标记。已创建 GL-4 并添加 ready；首次领取在 Git fetch 阶段超时 blocked，尚无模型调用或 Draft MR。
 
 准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其恢复、真实交付闭环仍待完成。
 
@@ -74,3 +74,19 @@ VM 模式分配新模型会话目录时保留全部历史，不调用旧的“�
 
 
 常规入口的后续 0 字节归档失败经精确脚本追踪确认为 `require_stopped` 绑定 4000 返回 errno 98。该次失败没有记录重启前的 TCP 状态；真实内核回归复现了 TIME_WAIT 的同样误判，并验证 SO_REUSEADDR 可处理它，故端口探针增加该选项。活动 listener 的 loopback/wildcard × 复用开关四组合均仍拒绝。其作用是探测活动监听，受管进程退出由 MainPID/完整 cgroup 树证明；不能据此断言不存在非受管的未监听 socket。独立审查及 61 项运维回归通过，VM scripts 完整 189 项、20 项跳过通过。最终常规日备份和恢复仍待实测，不把诊断方式成功导出记为该入口通过。
+
+
+## GL-4 真实验收：首次准备失败与传输修复
+
+唯一新 Issue 为 [GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4)，创建前以持久 marker 对账避免重复；原 GL-3 未修改。ready 列表核对为 GL-3 和 GL-4，旧回执阻止 GL-3 再次领取。GL-4 领取后只暂停追加领取，当前合同仍可执行；首次 Git fetch 到固定 120 秒后返回 124，Root 状态为 blocked，模型调用为 0、无候选或远端推送。GitLab statistics 报告 repository_size=394325415 bytes，现场 .git 为约 197 MiB；此数值不等于完整网络传输量，下载与索引耗时未细分。
+
+原回执保存在本机 `gl4-initial-fetch-blocked.json`，SHA256 `a9108134ff15a6ca1a698bc5714274d335e31bd537142a6b71d05382a3a3dc35`；预算原始起点 `2026-10-20T19:16:52.173839Z`，四小时截止点为 `2026-10-20T23:16:52.173839Z`。冻结核心摘要 `109939488f78dafa6f175e0d2351e630c56d264f746d036f4e92ee6f7b45a9c1`、coder/reviewer 与检查/恢复配置不变。修复期间创建独立维护围栏并关闭领取，不把 blocked 纳入通用自动恢复扫描。
+
+工程修订仅在显式 VM restart 合同尚未初始化 Recovery 时，为调用进程内的 Git fetch 设置绝对截止点：冻结 started_at + max_elapsed_ms，单次上限 30 分钟，过期不启动命令。其他 Git 命令、旧路径 120 秒和通用命令取整不变；嵌套和异常退出恢复原作用域。四个冻结执行模块无源码改动，安装前还须对比构建摘要。新任务及准备阶段接续的定向回归通过，含原预算已用 59 分钟、只剩 60 秒时的真实 Git 抓取窗口；完整门禁正在重跑。
+
+同一 GL-4 的准备重试是此次已授权验收中的显式运维动作：保留原 blocked 原文及原因，在确认旧执行者退出、核心摘要一致、未启动模型、工作区绑定和剩余预算后，记录审计再交回原恢复入口。不会替换模型、重置起点或抹掉失败记录；此项尚未执行，须等修复门禁通过。
+
+
+常规日备份已在 `72a66022dc55bddb727e88a55ecaad471637fbc5` 固定版本完成：`/data/symphony-vm/backups/daily-20261020T190632300613Z-90591e7de9cd4f23aa74033661e3fffd.tar`，SHA256 `d49c53e67ad715796d681e4942bfbe313174ed329f5231c185f68e52b1199f3e`。恢复至 guest `/home/elma/symphony-restore-final-20261021` 已验证未激活、WORKFLOW.enabled=false、state_dir 指向恢复副本、暂停标记存在；5 个状态 JSON 摘要与活动源一致，SQLite integrity_check=ok（3 个任务、99 条状态变化、10 个会话、9 个证据记录）。备份服务自动停启和健康恢复通过；本机备份定时器待真实验收任务结束后启用，磁盘定时器已启用。
+
+Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项显式跳过、100% 覆盖率、Dialyzer 零错误。之后仅加强开始时间断言，VM 原生单项 fresh/resumed 测试再次通过，生产代码与全门禁相同。新旧 escript 中 RestartRecovery/Executor/Attempts/Recovery 四个 BEAM 逐字节一致，证明无需改变 GL-4 冻结核心摘要。安装与显式准备重试仍待执行。

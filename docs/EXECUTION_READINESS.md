@@ -60,3 +60,6 @@ Coder 仍可首轮创建任务内配方；允许空声明和安全相对路径�
 rootless runner 的准备及执行容器共用 Podman `--init --init-path=/usr/bin/catatonit`，使用 root-owned、原生 ELF、可执行且父目录受保护的固定宿主 helper。领取前 inventory 同时验证 helper。真实独立 PID namespace 回归在相同双重 fork 场景下复现无 init 的180个孤儿僵尸，并确认加 init 后为0；它证明回收机制，不证明完整门禁的所有失败都由僵尸导致。保持512 PID、6 CPU、6144 MiB内存及16384 MiB工作盘，不放宽断言、覆盖率或超时。
 
 新控制器安装保持 `mvp.enabled=false`，待固定受信补丁安装并重跑真实容器候选、基线及所需任务验收后，才能恢复领取。双角色 registry、冻结回执、既有 OAuth 身份修复和独立 View 入口保留。CLI 的默认命令清理使用这次已加载的 tracker 凭据名称快照，避免未启动 WorkflowStore 的只读进程误读默认 Linear 配置。
+
+
+2026-10-21 实机工程修订：VM 初始 Git fetch 不再固定为 120 秒，而由原冻结总预算约束、单次最多 30 分钟；其他路径不变。版本/连接能力预检不代表大仓库首次传输已通过，GL-4 首次在此阶段超时的记录见 VM_DEPLOYMENT。

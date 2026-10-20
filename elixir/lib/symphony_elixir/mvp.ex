@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Mvp do
 
   require Logger
   alias SymphonyElixir.{Config, Tracker, Workspace}
+  alias SymphonyElixir.Mvp.Commands
   alias SymphonyElixir.Mvp.{ExecutionReadiness, Executor, Intake, Maintenance, ModelServices, Receipt, RestartRecovery}
 
   @preserved_failure_statuses ["publish_pending", "comment_pending", "awaiting_external"]
@@ -190,10 +191,23 @@ defmodule SymphonyElixir.Mvp do
       block(issue, recipient, {:mvp_failed, Exception.message(exception)})
   end
 
-  defp execute_workspace(workspace, issue, settings, models, file, options, true),
+  defp execute_workspace(workspace, issue, settings, models, file, options, resuming) do
+    run = fn -> execute_workspace_mode(workspace, issue, settings, models, file, options, resuming) end
+    data = Receipt.read(file)
+
+    if RestartRecovery.enabled?(settings) and is_nil(data["recovery"]) do
+      {:ok, started, _} = DateTime.from_iso8601(data["restart_recovery"]["started_at"])
+      deadline = DateTime.to_unix(started, :millisecond) + settings.recovery.max_elapsed_ms
+      Commands.with_git_fetch_deadline(deadline, run)
+    else
+      run.()
+    end
+  end
+
+  defp execute_workspace_mode(workspace, issue, settings, models, file, options, true),
     do: RestartRecovery.resume(workspace, issue, settings, models, file, options)
 
-  defp execute_workspace(workspace, issue, settings, models, file, options, false) do
+  defp execute_workspace_mode(workspace, issue, settings, models, file, options, false) do
     with :ok <- Workspace.run_before_run_hook(workspace, issue, nil) do
       Executor.run(workspace, issue, settings, models, file, options)
     end
