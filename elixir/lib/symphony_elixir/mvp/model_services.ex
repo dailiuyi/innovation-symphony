@@ -438,11 +438,16 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
   defp config_workspace_roots do
     case SymphonyElixir.Config.settings() do
-      %{workspace: %{root: root}} when is_binary(root) -> [root]
+      {:ok, %{workspace: %{root: root}}} when is_binary(root) -> [root]
       _ -> []
     end
-  rescue
-    _ -> []
+  end
+
+  defp config_state_dirs do
+    case SymphonyElixir.Config.mvp_settings() do
+      {:ok, %{state_dir: dir}} when is_binary(dir) -> [dir]
+      _ -> []
+    end
   end
 
   defp env_workspaces do
@@ -455,14 +460,14 @@ defmodule SymphonyElixir.Mvp.ModelServices do
   defp candidate_state_dirs(sandboxes_dir) do
     parent = Path.dirname(Path.expand(sandboxes_dir))
 
-    dirs = [
+    defaults = [
       Path.join(parent, "state"),
       parent,
       System.get_env("STATE_DIR"),
       System.get_env("SYMPHONY_STATE_DIR")
     ]
 
-    dirs
+    (config_state_dirs() ++ defaults)
     |> Enum.filter(&(is_binary(&1) and File.dir?(&1)))
     |> Enum.uniq()
   end

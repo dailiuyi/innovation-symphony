@@ -708,6 +708,74 @@ defmodule SymphonyElixir.Mvp.IntakeTest do
     %{provider: %{"repo" => "owner/repo", "token" => "test-token"}}
   end
 
+  describe "prune_runs recovery references resolved from configuration" do
+    setup do
+      workflow_dir = Path.dirname(Workflow.workflow_file_path())
+      root = Path.join(System.tmp_dir!(), "symphony-prune-cfg-#{System.unique_integer([:positive])}")
+      sandboxes = Path.join(root, "sandboxes")
+      File.mkdir_p!(sandboxes)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      run = Path.join(sandboxes, "run-0")
+      scratch = Path.join(run, "sandbox")
+      export = Path.join(scratch, "export")
+      File.mkdir_p!(export)
+      File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => 0}))
+
+      for i <- 1..55 do
+        dir = Path.join(sandboxes, "run-#{i}")
+        File.mkdir_p!(dir)
+        File.touch!(dir, System.os_time(:second) + i)
+      end
+
+      %{workflow_dir: workflow_dir, root: root, sandboxes: sandboxes, run: run, export: export}
+    end
+
+    defp write_journal!(workspace, export) do
+      dir = Path.join(workspace, ".symphony-import")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "journal.json"), Jason.encode!(%{"schema" => 2, "export" => export}))
+    end
+
+    defp configure!(workflow_dir, workspace_root, state_dir) do
+      write_mvp_workflow!(
+        %{
+          "enabled" => true,
+          "coder_model" => "coder-a",
+          "reviewer_model" => "reviewer-a",
+          "allowed_models" => ["coder-a", "reviewer-a"],
+          "allowed_actors" => ["alice"],
+          "checks" => [["true"]],
+          "state_dir" => Path.relative_to(state_dir, workflow_dir)
+        },
+        workspace_root
+      )
+
+      assert {:ok, _} = MvpConfig.settings()
+    end
+
+    test "configured workspace root journal protects the referenced run", ctx do
+      workspace_root = Path.join(ctx.root, "configured-workspaces")
+      write_journal!(workspace_root, ctx.export)
+      configure!(ctx.workflow_dir, workspace_root, Path.join(ctx.workflow_dir, "runtime/state-#{System.unique_integer([:positive])}"))
+
+      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      assert File.dir?(ctx.run)
+    end
+
+    test "receipt in configured custom state_dir leads to an old workspace journal", ctx do
+      state_dir = Path.join(ctx.workflow_dir, "runtime/custom-receipts")
+      old_workspace = Path.join(ctx.root, "old-workspace")
+      File.mkdir_p!(state_dir)
+      File.write!(Path.join(state_dir, "receipt-old.json"), Jason.encode!(%{"issue_id" => "old", "workspace" => old_workspace}))
+      write_journal!(old_workspace, ctx.export)
+      configure!(ctx.workflow_dir, Path.join(ctx.root, "new-workspaces"), state_dir)
+
+      SymphonyElixir.Mvp.ModelServices.prune_runs(ctx.sandboxes, 50)
+      assert File.dir?(ctx.run)
+    end
+  end
+
   defp write_mvp_workflow!(mvp, workspace_root, required_labels \\ ["ready"]) do
     mvp_yaml =
       case mvp do

@@ -141,6 +141,12 @@ defmodule SymphonyElixir.Mvp.ReviewExternalTest do
     assert Review.disposition(contradictory) == :repair_code
   end
 
+  test "single-turn approval rejects explicit null blockers but accepts omitted blockers" do
+    approved = %{"approved" => true, "summary" => "ok"}
+    assert {:ok, _} = Review.parse(Jason.encode!(approved), 0)
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(Map.put(approved, "blockers", nil)), 0)
+  end
+
   test "blockers reject unknown keys, malformed strings, invalid kinds, and empty external handoffs" do
     valid = blocker("A1", "external_condition")
 

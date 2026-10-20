@@ -228,7 +228,7 @@ defmodule SymphonyElixir.Mvp.Review do
 
   defp valid_single_turn_content?(value, approved) do
     criteria = Map.get(value, "criteria")
-    blockers = Map.get(value, "blockers")
+    blockers = Map.get(value, "blockers", [])
 
     valid_single_turn_list?(criteria) and
       valid_single_turn_list?(blockers) and
@@ -238,7 +238,7 @@ defmodule SymphonyElixir.Mvp.Review do
   defp valid_single_turn_approval?(false, _criteria, _blockers), do: true
 
   defp valid_single_turn_approval?(true, criteria, blockers) do
-    (is_nil(blockers) or blockers == []) and criteria_adequate?(criteria)
+    blockers == [] and criteria_adequate?(criteria)
   end
 
   # When approved is true and criteria contains structured map entries, all must have adequate=true.
