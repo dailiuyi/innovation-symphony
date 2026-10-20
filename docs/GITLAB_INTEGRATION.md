@@ -130,3 +130,5 @@ Issue #1（`feat: add public /api/health endpoint and integration test`）由 `d
 
 
 2026-10-21：VM 已切换本机原端口，固定 release 与备份/独立恢复验收见 VM_DEPLOYMENT。只创建替代任务 GL-4；首次 Git fetch 120 秒超时已通过保留原合同的审计接续完成；随后两次实际模型调用因缺失 Codex 原生执行组件均未能读取或修改项目，在诊断阶段 blocked，尚无 Draft MR。原始回执、停止记录及冻结预算保留，已补齐同版 helper 并通过无模型只读沙箱探针，同任务显式审计接续已进入第 2 轮编码，累计调用 3 次，原预算起点不变。这些人工部署修复不记作首次 ready 后无人干预闭环通过。原 GL-3 保持历史状态。
+
+2026-10-21 最终交付：GL-4 已进入 awaiting_human，独立 deepseek-v4-flash/high Reviewer 批准 20 项验收；[Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3) 为 opened/draft、目标 main，远端分支/MR SHA 与候选 267aa8f24c57d857f4bdc651099c7e5d903a22c3 一致。两项正式检查包含真实 Docker，未人工补验收证据。GL-4 累计 4 次模型调用、一次返工、原预算未归零。前段两次部署故障人工审计接续保留，不以最终交付声称首次 ready 后全程无人干预通过。GitLab 代码拒绝返工和 awaiting_external 去重已由回归覆盖；本次实机 Reviewer 首次即批准，未把回归误报为实机拒绝返工。

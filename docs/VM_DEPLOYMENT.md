@@ -20,11 +20,11 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 源码门禁通过。guest 纯净环境执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，完整 `make all` 返回 0：996 项测试零失败、6 项显式跳过，总覆盖率 100%，格式、public spec、严格 Credo 及 Dialyzer 通过。此前失败日志保留，当前 Git 修订日志为 `.local/vm-deployment-20261020T090218Z/full-gate-git-deadline.log`。所有新增忽略和降低门槛的方案均未采用。
 
-scripts 原生完整回归 200 项、20 项显式跳过通过（含停止边界、启动缓存及 TCP 探针修订）。View 为 Python 55 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
+scripts 原生完整回归 200 项、20 项显式跳过通过（含停止边界、启动缓存、TCP 探针及 Codex 组件修订）。View 为 Python 57 项、JavaScript 15 项、本地 Linux 集成 11 项，以及浏览器夹具和迁移等价检查通过。源码经分域独立审查、简化及修改后独立复审；旧清理的真实权限回归 13 项通过。
 
-VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。新领取保持暂停。已创建 GL-4 并添加 ready；首次 Git fetch 超时经原合同审计接续后完成，随后两次模型调用因原生客户端缺失执行组件而未能读取或修改项目，留下诊断 blocked 记录。运行组件现已修复，保留原预算的显式审计接续已启动第 2 轮编码（累计调用 3 次），尚无 Draft MR。
+VM 已实际运行，sudo 安装、临时 loopback HTTP、真实 Docker build/run/按归属清理探针通过；原生 escript preflight 曾通过。固定工具链已安装，Docker Engine 29.1.3，宿主 linger 和 VM/staging 隧道的 systemd 已启用。VM 三项原生服务已安装启用，正常 reboot 后自动恢复。原端口已切换到 VM，旧服务停止并禁用自启；临时隧道已停用。新领取保持暂停。GL-4 已交付 Reviewer 批准的 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，状态 awaiting_human。候选 `267aa8f24c57d857f4bdc651099c7e5d903a22c3` 的两项正式检查通过，独立 DeepSeek Reviewer 批准全部 20 项验收。原开始时间、4 次模型调用和一次返工完整保留；前段 Git 抓取和缺失原生组件需要两次人工审计接续，因此不登记“首次 ready 后全程无人干预”通过。修复后的编码、检查、Review、推送和 MR 创建自动完成，没有人工补 Docker 证据。
 
-准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其独立目录恢复已通过，见后文；每日 timer 尚未启用，真实交付闭环仍未通过。
+准备备份的独立恢复已通过，下文记录准确归档与校验。固定 native release 已安装，最终运行数据已复制并核对；实际每日备份及其独立目录恢复已通过，见后文；每日 timer 待最后运维收尾启用，真实交付闭环已通过上述候选与 MR 对账。
 
 ## 接续与运维补充验证（阶段记录）
 
@@ -104,3 +104,9 @@ Git 传输修订的完整纯净 `make all` 已通过：996 项零失败、6 项�
 运行组件修复的显式接续审计已完成：旧控制器通过维护 nonce/PID/boot 排空确认后停止，MainPID=0、cgroup 为空；原 blocked 回执与 restart stop 原文保存于 `.runtime-repair-retry-1.json`，停止记录归档为 `.restart-blocked.runtime-repair-1.json`。原调用 2 次与完整用量不变，新增第 2 轮消耗一次返工，再交回正常 RestartRecovery。随后实际第 3 次 coder 调用已能读取 luca 源码并执行项目命令，未再发生 helper 启动失败。新领取暂停标记保留，旧 GL-3 不变；当前编码尚未完成，不登记正式检查或 Review 通过。
 
 本次组件修订的完整 scripts 回归：宿主 200 项零失败、22 项跳过；VM 原生 200 项零失败、20 项跳过。独立审查与简化已完成，实机执行新增 bootstrap 只读探针片段通过，完整一次性 bootstrap 未在现有 VM 重跑。曾因 root PATH 缺少 sbin 而找不到 runuser 的失败日志保留，修复后原片段实跑返回 0。重建工件清单 `/data/symphony-vm/verified-artifacts-v2.json` 与 guest `/home/elma/symphony-install/artifacts/verified-guest-artifacts-v2.json` 均实际校验通过；同版 helper 在宿主工件目录保留。
+
+## 2026-10-21 真实交付与最终 View 修订
+
+[GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4) → [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)。GitLab 只读 API 已核对项目/源项目/目标项目均为 10，目标 main、draft=true、state=opened、merged_at=null；远端分支 HEAD 与 MR SHA 均为 `267aa8f24c57d857f4bdc651099c7e5d903a22c3`。Reviewer approved=true、blockers=[]、20 项 adequate=true。两项控制器正式检查均退出 0，候选、轮次 2、attempt 1 绑定一致。Docker 原始响应在两次请求及同容器重启后均为 commit=267aa8f、version=dev、buildTime=2026-10-20T21:11:21Z；镜像/容器按本 attempt 归属清理。没有运行通用平台 live 套件，没有合并或部署 luca。
+
+View 两份运维审计日志原本因顶层 issue 字段被当作额外任务。采集现在识别同时包含 action 和 receipt_before 的审计记录，保留日志原文，仅从主任务列表排除；local/WSL 两个真实嵌入扫描分支和旧回执名字均回归覆盖。完整 VM View 门禁通过：Python 57、JS 15、本地 Linux 11、浏览器夹具、self_check 与迁移逐值比较。宿主完整命令先暴露旧 8765 端口假设，随后因缺 Playwright 仍未通过；未把这些宿主失败登记为通过，最终使用已固定依赖的 VM 完整入口。503 测试改为持有自己绑定但不监听的随机 loopback 端口，原断言不变，不联系真实服务。

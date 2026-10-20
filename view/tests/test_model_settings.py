@@ -1,5 +1,6 @@
 import http.client
 import json
+import socket
 import os
 import sys
 import threading
@@ -55,7 +56,11 @@ class ModelSettingsTests(unittest.TestCase):
                 self.assertEqual(args[2], '/repositories/repo')
                 self.assertEqual(args[3]['Origin'], cfg.model_settings_origin)
                 self.assertEqual(args[4], b'{}')
-            self.assertEqual(request('GET', path, Authorization='Bearer x')[0], 503)
+            # Own a non-listening endpoint instead of contacting a live backend.
+            with socket.socket() as unavailable:
+                unavailable.bind(('127.0.0.1', 0))
+                cfg.model_settings_url = f'http://127.0.0.1:{unavailable.getsockname()[1]}'
+                self.assertEqual(request('GET', path, Authorization='Bearer x')[0], 503)
             self.assertEqual(request('POST', '/api/start-task', '{}')[0], 404)
         finally:
             server.shutdown(); server.server_close(); thread.join()

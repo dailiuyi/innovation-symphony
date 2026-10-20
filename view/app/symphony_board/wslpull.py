@@ -326,6 +326,10 @@ for root in roots:
                     continue
                 if not isinstance(rec, dict) or "issue" not in rec:
                     continue
+                # Operator journals retain issue identity and the prior receipt;
+                # they are audit history, not primary task receipts.
+                if "action" in rec and "receipt_before" in rec:
+                    continue
                 rec["_path"] = path
                 ev_dir = path + ".evidence"
                 rec.pop("_execution_health", None)

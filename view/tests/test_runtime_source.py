@@ -35,21 +35,63 @@ def rollout(path, output='OUTPUT_A'):
     return path.stat()
 
 
-def scan(globs):
-    # Exercise the shared scanner on synthetic files without a subprocess.
+def scan(globs, local=True):
+    # Execute either embedded scanner branch on synthetic files, without WSL.
     import contextlib
     import io
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        exec(compile(wslpull.remote_script(globs, local=True), '<synthetic-local-scan>', 'exec'), {})
+        exec(compile(wslpull.remote_script(globs, local=local), '<synthetic-runtime-scan>', 'exec'), {})
     result = json.loads(output.getvalue())
-    result['_transport'] = 'local'
+    result['_transport'] = 'local' if local else 'wsl'
     return result
 
 
 class RuntimeSourceTests(unittest.TestCase):
     def tearDown(self):
         collector.load_sessions({})
+
+    def test_scanner_excludes_operator_audits_without_changing_files_or_legacy_receipts(self):
+        for name in ('innovation--luca--GL-4.json', 'legacy-receipt.json'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                state = root / 'state'
+                state.mkdir()
+                primary = {'issue': 'GL-4', 'issue_identifier': 'GL-4', 'tracker_kind': 'gitlab',
+                           'repository': 'innovation/luca', 'status': 'coding'}
+                raw = json.dumps(primary, ensure_ascii=False, indent=2) + '\n'
+                (state / name).write_text(raw, encoding='utf-8')
+                for index, action in enumerate(('operator_prepare_retry', 'operator_runtime_retry')):
+                    journal = {'schema': 1, 'issue': 'GL-4', 'action': action, 'receipt_before': raw}
+                    (state / f'audit-round-{index + 1}.json').write_text(
+                        json.dumps(journal, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                before = {path.relative_to(root): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+                for local in (True, False):
+                    with self.subTest(local=local):
+                        snapshot = scan([str(root)], local=local)
+                        self.assertEqual(len(snapshot['runtimes']), 1)
+                        receipts = snapshot['runtimes'][0]['receipts']
+                        self.assertEqual(len(receipts), 1)
+                        self.assertEqual(receipts[0]['_path'], str(state / name))
+                        for key, value in primary.items():
+                            self.assertEqual(receipts[0][key], value)
+                        after = {path.relative_to(root): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+                        self.assertEqual(after, before)
+
+    def test_scanner_preserves_task_receipts_with_only_one_audit_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / 'state'
+            state.mkdir()
+            for index, extra in enumerate(({'action': 'historical-task-action'},
+                                           {'receipt_before': 'historical-task-field'},
+                                           {'metadata': {'action': 'nested', 'receipt_before': 'nested'}})):
+                (state / f'legacy-{index}.json').write_text(json.dumps(
+                    {'issue': f'GH-{index + 1}', 'status': 'blocked', **extra}), encoding='utf-8')
+            for local in (True, False):
+                with self.subTest(local=local):
+                    receipts = scan([str(root)], local=local)['runtimes'][0]['receipts']
+                    self.assertEqual({rec['issue'] for rec in receipts}, {'GH-1', 'GH-2', 'GH-3'})
 
     def test_platform_auto_and_explicit_override_reject_unsupported(self):
         for platform, expected in [('win32', 'wsl'), ('linux', 'local'), ('linux2', 'local')]:
