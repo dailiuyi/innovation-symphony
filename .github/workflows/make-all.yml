@@ -59,8 +59,15 @@ jobs:
           RUN_MIX_INTEGRATION: "1"
         run: mise exec -- python3 -m unittest discover -s ../scripts/tests -v
 
+      - name: Record process visibility before make all
+        run: python3 ../scripts/proc_visibility.py
+
       - name: Verify make all
         run: mise exec -- make check-clean
+
+      - name: Record process visibility after a failed make all
+        if: failure()
+        run: python3 ../scripts/proc_visibility.py
 
   view:
     runs-on: ubuntu-24.04
