@@ -983,3 +983,16 @@ GL-4 的准确候选正式检查、独立 Reviewer 20 项批准及 Draft MR !3 �
 替代关系：此前“失败归档全部保留”的阶段记录不再描述这 11 个文件的现状；历史失败日志和已执行恢复的结果仍保留。自动轮换代码及最近三份成功日备份的规则不变，迁移基线继续保留；本次一次性授权不扩展成后续自动清理权限。现存日备份早于 GL-4，未补做交付后快照，也未重启服务、修改模型或重新验收任务。当前固定版本与现存恢复源统一见 VM_DEPLOYMENT，操作证据为主工作区 `.local/vm-storage-cleanup-20261021T031707Z.json`。
 
 本轮文档同步从本地 main `6bedb1f` 开始，只更正文档与 agent 指导，不把文档提交等同部署。旧 rootless 的任务隔离保证与当前 full-access VM 的权限取舍分别标明，旧宿主服务命令保留为历史，不作为本机启动入口。
+
+
+### 2026-10-21：PR #20 的 CI 对齐固定环境，清理/恢复失败按环境问题处理
+
+来源：所有者要求补齐 PR #20 的 CI 环境适配，复现 12 项清理/恢复失败并确认是否仍有代码问题；随后明确“不动 guest，把修复推到 PR #20 的分支，用 GitHub 的真实日志来复现”。授权范围只含推送到该 PR 分支，不含合并、部署、重启服务或调用真实模型账号。
+
+失败原因（run `39539791741`，提交 `68181dd`，21 项失败）：`ubuntu-latest` 已解析为 Ubuntu 26.04，`view` 因 setup-python 没有该系统的 3.12.3 安装包在 7 秒后失败；`make-all` 中 26.04 的 `timeout` 是 uutils 而非 GNU，使 9 项 Git fetch 期限测试被拒绝，mise 还装了 Elixir 1.19.5 而不是冻结的 1.19.6。固定 runner 与工具链后（run `39545414015`）只剩 12 项失败，均为 `ModelServicesRetentionTest` 11 项和 `IntakeTest` 1 项，且全部表现为清理被暂停。
+
+12 项的原因：runner 用户下存在同 uid 的 `(sd-pam)` 进程，其 `/proc/<pid>/fd` 返回 `EACCES`（run `39553503720` 的快照，本机同样复现）。`ModelServices` 读不到 fd 表就把占用标为 `:unconfirmed`，按既有规则保留 run，因此期望“清理发生”的测试失败。VM 门禁在私有 PID 命名空间内运行，看不到该进程，所以此前未暴露。
+
+处理：保留“无法确认占用就不删除”的规则、断言和 100% 覆盖率门槛，代码、断言和覆盖率配置均未修改。两个 job 固定为 `ubuntu-24.04`；`elixir/mise.toml` 固定 OTP `28.5.0.7`、Elixir `1.19.6`；`scripts/runtime_identity.py` 的 `toolchain()` 在测试前核验 OTP 补丁号、Elixir 与 GNU `timeout`；缓存键哈希契约文件与 `mise.toml`。隔离部分抽为 `scripts/vm/isolated-check.sh`（PID 命名空间、init 回收、非 root 用户、一次性 HOME、仅门禁使用的 Erlang DNS）。`check-native.sh` 保留 VM 标记与虚拟化校验后委托给它并传入 `docker-init`；CI 以 runner 自身用户调用，传入 apt 安装的 `tini`，不伪造 VM 标记、不固定 `elma`。`view` 失败时上传 `view/build/checks`。
+
+验证：run `39555373345`（提交 `ad3ad75`）两个 job 均成功，`make all` 为 996 项测试、0 失败、6 项显式跳过，覆盖率 100.00%，Dialyzer 0 错误。上述原因是依据 runner 快照和“进入命名空间后 12 项全部消失”作出的判断，没有单独拆分其他可能的差异。VM guest 未重新执行 `check-native.sh`，其委托改动只由本机 scripts 测试覆盖，实机验证未做。

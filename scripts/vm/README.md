@@ -161,7 +161,7 @@ bash -n scripts/vm/bootstrap-guest.sh
 
 此前全部 48 项回归也在本轮重跑通过，包括宿主备份持锁时的 CLI guard、并行检查、维护身份与恢复、Codex/native 门槛及 bootstrap；bootstrap 的 bash -n 在前轮通过，本轮未修改该脚本。
 
-安装时须把同一版本的 operations.py、guest.py、artifacts.py、bootstrap-guest.sh、check-native.sh 同步到宿主 generated/tools；guest 只需后四个文件。helper 必须与含 Maintenance/Presenter 的固定 native release 一起验收；旧 native 无维护确认时，helper 会拒绝停机。无需再次 adopt 覆盖已有 generated 目录。实际安装和服务切换状态统一见 `docs/VM_DEPLOYMENT.md`。
+安装时须把同一版本的 operations.py、guest.py、artifacts.py、bootstrap-guest.sh、check-native.sh 同步到宿主 generated/tools；guest 只需 guest.py、artifacts.py、bootstrap-guest.sh、check-native.sh 与 isolated-check.sh。helper 必须与含 Maintenance/Presenter 的固定 native release 一起验收；旧 native 无维护确认时，helper 会拒绝停机。无需再次 adopt 覆盖已有 generated 目录。实际安装和服务切换状态统一见 `docs/VM_DEPLOYMENT.md`。
 
 ## 完整原生门禁
 
@@ -170,6 +170,8 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 ```
 
 入口只接受有受控 VM 标记的 QEMU/KVM guest，使用 UID 1000 的 elma、纯净环境、一次性 HOME 及固定 native Codex 运行原有 `make all`。独立 PID namespace 使用现有 Docker 软件包的 `/usr/bin/docker-init` 回收孤儿进程，避免完整套件留下的僵尸进程使 `/proc` 检查永久不确定；这不改变运行服务的清理规则。仅门禁使用 Erlang DNS 解析，避免不可观察的 native DNS helper。覆盖率仍为 100%，没有新增忽略模块或降低断言。此入口不会执行显式 opt-in 的平台 live 套件。
+
+隔离本身在 `scripts/vm/isolated-check.sh`，参数为用户、PATH、仓库和 init 程序。`check-native.sh` 只做 VM 标记与虚拟化校验，然后固定传入 elma 和 `docker-init`；GitHub CI 以 runner 自身用户和 apt 安装的 `tini` 调用同一脚本。同 uid 且不可读 `/proc/<pid>/fd` 的进程会使占用检查进入“无法确认”，因此两边都在私有 PID 命名空间内运行，保留的清理规则不变。安装工具时 `isolated-check.sh` 与 `check-native.sh` 须同时同步。
 
 ### 原生控制器停止与备份（2026-10-21 实机修订）
 
