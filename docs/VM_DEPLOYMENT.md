@@ -143,3 +143,16 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 尚未实际验证的是宿主“未登录冷启动”及首次 timer 触发；配置已确认 linger=yes、VM/隧道/备份和磁盘 timer enabled。由用户选择时间重启宿主，登录后用 `systemctl --user is-active symphony-vm.service symphony-vm-tunnels-production.service`、`journalctl --user -b -u symphony-vm.service` 核对启动早于登录，再打开三个本机入口。真实页面体验和 MR 合并由用户验收；本代理没有重启宿主、推送 Symphony 分支、合并 MR 或部署 luca。
 
 源码与文档已保存并本地提交，固定运行安装和真实交付分别以上述证据为准；本次首次 ready 后完全无人干预未通过，修复后无需人工 Docker 证据的自动交付段通过。
+
+
+### 2026-10-21：合入本地 main 并更新固定安装
+
+来源：所有者明确要求“合并main分支 然后部署最新代码”。在独立干净工作树中将 `codex/vm-deployment-direction` 快进合入本地 main：`edb77db` → `37fa886`。未推送 Symphony。原工作目录中的 `model_services.ex`、`restart_recovery.ex` 两份未提交修改原样保留，部署前后 SHA256 一致，没有混入安装包。
+
+本次运行固定版本为 `/opt/innovation-symphony/releases/37fa886b7cf7-20261021`，源码提交 `37fa886b7cf77c673f586a796e2bf3f1b3958bf1`，源码归档 SHA256 `6689ec5175e932ec48b74c28a3e8a8a5a550e635a5ffaf61faeb8e57db1a16be`。安装前逐文件核对编译源码与提交，escript SHA256 仍为 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`；相对上一固定版本仅增加文档，运行代码及 View 代码一致。因此本次复用前述 996 项、100% 覆盖率完整门禁，没有将旧失败日志作为通过结果，也没有重新发起真实模型调用。
+
+切换先暂停新领取，取得控制器带 nonce/PID/boot identity 的空闲确认，再关闭领取、停止三个 VM 服务、更新固定路径及 systemd 单元并启动。健康检查通过后逐字恢复 WORKFLOW 并仅解除本次拥有的维护标记。四份任务回执摘要不变，ready 自动入口保持启用。运行数据、View 数据库及凭据未重建，旧宿主服务未启动。
+
+本轮实际执行：`git merge --ff-only codex/vm-deployment-direction` 成功；固定源码/二进制摘要核对成功；三个 VM 服务与 production 隧道 active；本机 4000 状态 API、8613 snapshot API 及 8765 鉴权仓库设置 API 返回 200；实际 VM UUID 一致、`docker info` 成功、Codex read-only `/usr/bin/true` 探针退出 0；`scripts/vm/operations.py ... check` 磁盘准入通过。默认仍为 coder `gpt-6.1-sol/high` 与 reviewer `deepseek-v4-flash/high`。未合并 luca MR、未部署 luca、未重启 VM 或宿主。
+
+准确安装与切换证据位于本机 `.local/main-deploy-20261021T030525Z/`，guest 配置及单元备份位于 `/home/elma/symphony-install/main-deploy-20261021T030525Z/`。本条记录随后仅以文档提交合入 main，运行代码与固定安装保持一致；运行源码准确 SHA 以该 release 的 `RELEASE.json` 为准。回退仍须先暂停并排空，再将 guest `vm-operations.json` 和三个单元恢复到保存的上一固定版本并核对健康及回执，最后恢复原领取状态；不能回滚任务数据或同时启用旧宿主消费者。
