@@ -65,8 +65,9 @@ jobs:
       - name: Verify make all in a private PID namespace
         run: |
           # The same isolation as the VM gate, as the runner's own user.
+          sudo apt-get install -y --no-install-recommends tini
           check_path=$(mise exec -- printenv PATH)
-          sudo --preserve-env=SYMPHONY_TEST_CODEX,MIX_HOME,MIX_ARCHIVES,MIX_REBAR3,HEX_HOME bash ../scripts/vm/isolated-check.sh "$(id -un)" "$check_path" "$GITHUB_WORKSPACE"
+          sudo --preserve-env=SYMPHONY_TEST_CODEX,MIX_HOME,MIX_ARCHIVES,MIX_REBAR3,HEX_HOME bash ../scripts/vm/isolated-check.sh "$(id -un)" "$check_path" "$GITHUB_WORKSPACE" /usr/bin/tini
 
       - name: Record process visibility after a failed make all
         if: failure()
