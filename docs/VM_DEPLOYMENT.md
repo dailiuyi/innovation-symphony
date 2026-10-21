@@ -1,6 +1,6 @@
 # 独立虚拟机部署与闭环验收
 
-2026-10-21 当前摘要：活动固定 release 为 `37fa886b7cf7-20261021`，本地 main 的后续 `6bedb1f` 仅补充部署记录。三个原生服务在 guest 内运行，旧宿主三服务禁用，ready 正常开启。经所有者明确授权，宿主已删除 11 个旧归档、释放 20.52 GiB；当前保留和已删除的恢复源见文末“存储清理与现存恢复源”。下文分阶段记录保留其发生时的状态，不能把历史快照路径当成当前仍存在的文件。
+2026-10-21 当前摘要：活动固定 release 为 `9cf6c1701f26-20261021`，源码为远端 main 的 PR #20 合并提交 `9cf6c17`，其后文档提交不代表重新安装。三个原生服务在 guest 内运行，旧宿主三服务禁用，ready 正常开启。经所有者明确授权，宿主已删除 11 个旧归档、释放 20.52 GiB；当前保留和已删除的恢复源见文末“存储清理与现存恢复源”。下文分阶段记录保留其发生时的状态，不能把历史快照路径当成当前仍存在的文件。
 
 日期：2026-10-20。来源：所有者逐项选择并明确批准完整实施计划；授权与替代关系见 DECISIONS 同日条目。本文随实测更新，不用部署配置代替验收证据。
 
@@ -196,3 +196,19 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 日备份恢复入口使用第二行的现存 tar，操作与凭据重建要求见 [运维说明](../scripts/vm/README.md)。初始预复制和准备 v2 的历史恢复结果仍成立，但它们的 tar 已删除，不能再给出可执行的恢复命令。当前没有新生成 GL-4 交付后备份；每日 timer 已启用，首次定时触发与宿主未登录冷启动仍待实测。本轮文档同步不补做备份或重启。
 
 系统盘、固定 cloud image/签名、工具链安装工件、`generated/`、SSH 身份/配置、成功回执及原始运行数据全部保留。源码主工作区私有证据为 `.local/vm-storage-audit-20261021.json` 与 `.local/vm-storage-cleanup-20261021T031707Z.json`，包含全部 11 条准确路径、设备/inode、前后可用字节和删除结果；辅助脚本 `.local/cleanup-reviewed-vm-archives.py` 是本次一次性操作记录，不是允许重复执行的清理入口，也不入库。
+
+### 2026-10-21：拉取远端 main 并更新固定安装到 `9cf6c1701f26-20261021`
+
+来源：所有者要求“拉取最新main分支代码 然后部署服务”。本机 main 在独立工作树 `--ff-only` 快进：`8507a2c` → `9cf6c17`（远端 main 的 PR #20 合并提交；其树与 GitHub 两个 job 均通过的 `6be9f61` 逐字一致）。本次部署没有推送任何分支，也没有合并 luca MR、部署 luca、重启 VM 或宿主；此前对 PR 分支的推送是另行授权的。
+
+与上一次不同，这次运行代码有变化：`ExecutionSandbox`、`Executor`、`ModelServices` 三个模块（拒绝评论对账后继续返工、`.recovery-pin` 写入检查与后备标记）。View 只改文档，依赖与 `mix.lock` 不变，因此必须重新构建 escript 并重新跑门禁，不复用旧结果。重启恢复的冻结摘要包含 `Executor`，所以会变；核对现有四份回执：只有 GL-4 带重启合同，且为 `awaiting_human`，不属可恢复状态，其余三份没有重启合同，没有进行中的任务因此失效，新任务按新摘要冻结。
+
+门禁：源码逐文件（163 个）核对后，guest 执行 `sudo bash scripts/vm/check-native.sh /home/elma/symphony-install/source`，998 项测试 0 失败、6 项跳过、覆盖率 100.00%、Dialyzer 0 错误、退出码 0。这也是 `check-native.sh` 委托 `isolated-check.sh` 的首次真实 guest 验证。构建注意：escript 须用 `MIX_ENV=test` 构建才与已部署版本依赖集一致；`dev` 版多含 dialyxir/erlex 且缺 cc_precompiler 等，`prod` 版体积差约 1 MB，均不采用。与上一 release 逐项比对 1498 个条目，实质差异恰为上述三个模块；`nil_escript.beam` 与 `DashboardLive.beam` 在同一源码连续两次构建中就会不同（编译非确定性），不是源码差异。新 escript SHA256 `be20ec087ee9b6b7a5264b57386c96c788e695b1bef49845fbbfae0372e869c2`，源码归档 SHA256 `36bbc76c49b984a0c17f81a56546b63ee3468e1b60a78b6b5c34f68035013918`。
+
+切换：脚本先暂停领取、取得控制器 nonce/PID/boot 空闲确认，停三个服务、更新 `release_root` 与单元并启动。`activate.py` 在 30 秒的 `wait_healthy` 处抛出 `TimeoutError`：`symphony-view` 约 70 秒内连续 13 次自动重启，均为 `Address already in use`（`view/app/symphony_board/api.py` 刻意设 `allow_reuse_address = False`，旧 View 的 TIME_WAIT 连接最长约 60 秒内阻止重新绑定），2026-10-21 09:25:04 UTC 绑定成功并稳定。脚本按设计保持领取暂停、WORKFLOW 为关闭副本。随后 `finish-activation.py` 先 `check` 后 `apply`，执行与 `activate.py` 尾部相同的断言：三服务健康、running/retrying 为 0、四份回执摘要不变、磁盘准入通过，WORKFLOW 逐字恢复，并只移除本次创建的暂停与维护标记（以精确原因文本识别）。
+
+独立验证：模型设置 API 200，luca 默认 coder `gpt-6.1-sol/high`、reviewer `deepseek-v4-flash/high`；VM UUID 一致；`docker info` 成功；Codex read-only `/usr/bin/true` 探针退出 0；三个 systemd 服务 active、控制器 `ExecStart` 指向新 release；暂停与维护标记不存在；WORKFLOW 与部署前逐字相同；宿主经隧道访问 4000 状态 API 空闲、8613 快照 200（4 个任务、15 个会话）、8765 未带凭据返回 401；宿主 VM 与 production 隧道服务 active。
+
+已知遗留：(1) `guest.wait_healthy` 的 30 秒小于 View 重新绑定可能需要的约 60 秒，下次升级 View 若有存量连接会再次让脚本中途退出（安全方向：领取保持暂停），收尾需手工完成同样的尾部步骤，或先修超时。(2) 宿主 `generated/tools` 与 guest `vm-tools` 副本未更新，仍是上一版，运行不依赖新脚本。(3) 原工作目录中 `model_services.ex`、`restart_recovery.ex` 的两份未提交修改（`:enoent` 分支与 flock Port 字节流修复）不在 main，也未部署，部署前后摘要一致（`8c9c9740…`、`c6958940…`）；它们与 main 对 `model_services.ex` 的改动在同一文件，合并时需处理。
+
+证据：主工作区 `.local/main-deploy-9cf6c17-20261021T091243Z/`（门禁、构建与比对日志、安装与激活日志、两个收尾脚本），guest `/home/elma/symphony-install/main-deploy-9cf6c17-20261021T091243Z/`（部署前 WORKFLOW、`vm-operations`、三个单元、回执摘要、`result.json`）。回退：上一 release `37fa886b7cf7-20261021` 与上述备份均保留；仍须先暂停并取得排空确认，再恢复 `vm-operations.json` 与三个单元并核对健康和回执，不得回滚任务数据或启用旧宿主消费者。

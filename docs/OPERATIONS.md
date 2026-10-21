@@ -2,7 +2,7 @@
 
 ## 当前本机入口（2026-10-21）
 
-当前服务位于独立 VM，固定 release 为 `37fa886b7cf7-20261021`；本地 main 的部署记录提交为 `6bedb1f`，之后仅文档同步不代表重新安装。宿主目录 `/data/symphony-vm`，guest 运行根 `/var/tmp/innovation-symphony-linux-runtime`，活动 WORKFLOW `/var/lib/innovation-symphony/WORKFLOW.md`。宿主只提供 QEMU、SSH 隧道和运维；编码、正式检查、独立 Review 与 Docker 均在 guest 内。准确现状与历史区别见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+当前服务位于独立 VM，固定 release 为 `9cf6c1701f26-20261021`；源码为远端 main 的 PR #20 合并提交 `9cf6c17`，其后仅文档同步不代表重新安装。宿主目录 `/data/symphony-vm`，guest 运行根 `/var/tmp/innovation-symphony-linux-runtime`，活动 WORKFLOW `/var/lib/innovation-symphony/WORKFLOW.md`。宿主只提供 QEMU、SSH 隧道和运维；编码、正式检查、独立 Review 与 Docker 均在 guest 内。准确现状与历史区别见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
 
 只读检查从源码仓库根运行：
 

@@ -18,7 +18,7 @@ innovation-symphony 基于官方 [Symphony](https://github.com/openai/symphony) 
 
 2026-10-21，本机服务已迁入独立 QEMU/KVM VM，接入 `innovation/luca`。GL-4 已完成真实 Docker 正式检查及 Reviewer 批准，交付 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)。前段两次部署故障经过人工审计接续，不能登记为首次 ready 后全程无人干预通过。准确版本、工具链、测试与剩余人工验收见 [VM 部署记录](docs/VM_DEPLOYMENT.md)。
 
-本机入口为 [控制器](http://127.0.0.1:4000/)、[View](http://127.0.0.1:8613/) 和需鉴权的模型设置后端 `127.0.0.1:8765`，均通过 SSH 隧道连接 guest loopback。运行 release 为 `37fa886b7cf7-20261021`；本地 main 已合入实现及部署记录，后续文档提交与运行代码分别记录，未推送 Symphony。
+本机入口为 [控制器](http://127.0.0.1:4000/)、[View](http://127.0.0.1:8613/) 和需鉴权的模型设置后端 `127.0.0.1:8765`，均通过 SSH 隧道连接 guest loopback。运行 release 为 `9cf6c1701f26-20261021`；其源码是远端 main 的 PR #20 合并提交 `9cf6c17`；后续文档提交与运行代码分别记录。
 
 ---
 

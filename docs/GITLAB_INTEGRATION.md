@@ -2,7 +2,7 @@
 
 ## 当前部署与交付（2026-10-21）
 
-当前在独立 VM 原生运行固定版本 `37fa886b7cf7-20261021`，本地 main 已合入实现及部署记录，Symphony 未推送。唯一真实验收替代任务 [GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4) 已通过真实 Docker 正式检查与 20 项独立 Review，交付 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，准确候选为 `267aa8f24c57d857f4bdc651099c7e5d903a22c3`。状态 awaiting_human，MR 未合并，luca 未部署；旧 GL-3 的 blocked 历史不变。
+当前在独立 VM 原生运行固定版本 `9cf6c1701f26-20261021`，其源码是远端 main 的 PR #20 合并提交 `9cf6c17`。唯一真实验收替代任务 [GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4) 已通过真实 Docker 正式检查与 20 项独立 Review，交付 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，准确候选为 `267aa8f24c57d857f4bdc651099c7e5d903a22c3`。状态 awaiting_human，MR 未合并，luca 未部署；旧 GL-3 的 blocked 历史不变。
 
 前段两次部署故障需人工审计接续，因此“首次 ready 后完全无人干预”仍未通过；最终检查、Review、推送和 MR 创建由控制器完成，没有人工补 Docker 证据。GitLab 拒绝返工/外部条件去重及不确定发布对账有回归，真实 GL-4 Reviewer 首次即批准，不混称实机拒绝返工测试。文中较早的“尚未验证”只描述对应日期。
 

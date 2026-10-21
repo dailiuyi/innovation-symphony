@@ -2,7 +2,7 @@
 
 ## 本机 VM 运行合同（2026-10-21）
 
-当前 GitLab 项目为 `innovation/luca`，单仓库、单任务。控制器以 guest 系统服务运行固定 release `37fa886b7cf7-20261021`，活动配置在 `/var/lib/innovation-symphony/WORKFLOW.md`，运行根在 `/var/tmp/innovation-symphony-linux-runtime`；不要启动下方上游 Linear 示例或旧宿主容器作为第二个执行者。当前运维和版本见 [VM_DEPLOYMENT](../docs/VM_DEPLOYMENT.md) 与 [运维入口](../scripts/vm/README.md)。
+当前 GitLab 项目为 `innovation/luca`，单仓库、单任务。控制器以 guest 系统服务运行固定 release `9cf6c1701f26-20261021`，活动配置在 `/var/lib/innovation-symphony/WORKFLOW.md`，运行根在 `/var/tmp/innovation-symphony-linux-runtime`；不要启动下方上游 Linear 示例或旧宿主容器作为第二个执行者。当前运维和版本见 [VM_DEPLOYMENT](../docs/VM_DEPLOYMENT.md) 与 [运维入口](../scripts/vm/README.md)。
 
 显式 `required_backend: vm` 核验固定 VM UUID、模型准备、管理员能力探针、目录及磁盘；`mvp.sandbox.enabled: false` 表示外层 VM 隔离，coder 使用 approval_policy=never / danger-full-access，Reviewer/诊断使用独立只读会话。VM 内 sudo 与 Docker 完全放权，不能宣称内部凭据或检查证据不受任务影响；rootless 旧合同继续独立保留。
 

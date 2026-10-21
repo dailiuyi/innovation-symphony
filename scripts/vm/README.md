@@ -2,7 +2,7 @@
 
 ## 已安装实例与文档入口（2026-10-21）
 
-当前固定 release 为 `/opt/innovation-symphony/releases/37fa886b7cf7-20261021`，实际值读取 guest `/var/lib/innovation-symphony/vm-operations.json`；下文示例路径不是新的安装位置。已有实例不要再次 prepare、覆盖 adopt 的 generated 目录或重新 bootstrap。宿主用户服务为 `symphony-vm.service`、`symphony-vm-tunnels-production.service`；guest 系统服务为 `symphony-controller.service`、`symphony-model-settings.service`、`symphony-view.service`。旧宿主 `innovation-symphony-*` 三服务已禁用。完整现状、工具链和验收见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md)。
+当前固定 release 为 `/opt/innovation-symphony/releases/9cf6c1701f26-20261021`，实际值读取 guest `/var/lib/innovation-symphony/vm-operations.json`；下文示例路径不是新的安装位置。已有实例不要再次 prepare、覆盖 adopt 的 generated 目录或重新 bootstrap。宿主用户服务为 `symphony-vm.service`、`symphony-vm-tunnels-production.service`；guest 系统服务为 `symphony-controller.service`、`symphony-model-settings.service`、`symphony-view.service`。旧宿主 `innovation-symphony-*` 三服务已禁用。完整现状、工具链和验收见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md)。
 
 当前 VM 有 8 vCPU、12 GiB 内存和 50 GiB 虚拟磁盘容量；系统盘实际分配约 21 GiB。宿主目录在授权清理后约 30 GiB，不能把磁盘容量上限当成目录实占。清理只删除了审计清单中的 11 个旧归档、释放 20.52 GiB；`.partial` 不因此变成自动可删除文件，工具的保留和轮换规则不变。
 
@@ -81,7 +81,7 @@ python3 scripts/vm/operations.py --root /data/new-symphony-vm prepare --inputs /
 
 - config_root：/var/lib/innovation-symphony；workflow、model_settings、view_config 分别指定实际 WORKFLOW.md、管理清单和 View TOML。
 - runtime_root：/var/tmp/innovation-symphony-linux-runtime；state_dir 指向其中实际的 receipt 状态目录。
-- release_root：填写实际固定 `/opt/innovation-symphony/releases/<commit>-<date>` 目录，当前为 `37fa886b7cf7-20261021`；native escript 为 elixir/bin/symphony。
+- release_root：填写实际固定 `/opt/innovation-symphony/releases/<commit>-<date>` 目录，当前为 `9cf6c1701f26-20261021`；native escript 为 elixir/bin/symphony。
 - view_root：/var/lib/innovation-symphony/view，包含独立 View 源码、app、data 和 prototypes；源码从固定 release/view 复制，由操作者维护。View DB 随 view_root 纳入备份。
 - view_venv：/var/lib/innovation-symphony/view-venv，Python 3.12 venv；操作者 按固定 release 的依赖清单安装依赖。
 - environment_file：/var/lib/innovation-symphony/runtime.env，由操作者在 guest 本地提供，文件权限 0600；不放入 seed。View 读取 GitLab MR 状态需要 `GITLAB_PAT`；自签名实例还需要 `GITLAB_CA_FILE=/var/lib/innovation-symphony/config/certs/gitlab-81-71-154-125.crt`，缺省会因证书校验失败把已合并的 MR 显示为待人审（见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md) 2026-10-21 条目）。
@@ -171,7 +171,7 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 
 入口只接受有受控 VM 标记的 QEMU/KVM guest，使用 UID 1000 的 elma、纯净环境、一次性 HOME 及固定 native Codex 运行原有 `make all`。独立 PID namespace 使用现有 Docker 软件包的 `/usr/bin/docker-init` 回收孤儿进程，避免完整套件留下的僵尸进程使 `/proc` 检查永久不确定；这不改变运行服务的清理规则。仅门禁使用 Erlang DNS 解析，避免不可观察的 native DNS helper。覆盖率仍为 100%，没有新增忽略模块或降低断言。此入口不会执行显式 opt-in 的平台 live 套件。
 
-隔离本身在 `scripts/vm/isolated-check.sh`，参数为用户、PATH、仓库和 init 程序。`check-native.sh` 只做 VM 标记与虚拟化校验，然后固定传入 elma 和 `docker-init`；GitHub CI 以 runner 自身用户和 apt 安装的 `tini` 调用同一脚本。同 uid 且不可读 `/proc/<pid>/fd` 的进程会使占用检查进入“无法确认”，因此两边都在私有 PID 命名空间内运行，保留的清理规则不变。安装工具时 `isolated-check.sh` 与 `check-native.sh` 须同时同步。
+隔离本身在 `scripts/vm/isolated-check.sh`，参数为用户、PATH、仓库和 init 程序。`check-native.sh` 只做 VM 标记与虚拟化校验，然后固定传入 elma 和 `docker-init`；GitHub CI 以 runner 自身用户和 apt 安装的 `tini` 调用同一脚本。同 uid 且不可读 `/proc/<pid>/fd` 的进程会使占用检查进入“无法确认”，因此两边都在私有 PID 命名空间内运行，保留的清理规则不变。安装工具时 `isolated-check.sh` 与 `check-native.sh` 须同时同步。已安装的宿主 `generated/tools` 与 guest `vm-tools` 副本仍是上一版（其中 `check-native.sh` 自包含）；2026-10-21 的门禁直接从 guest 源码树运行新版委托脚本，未改动这些副本。
 
 ### 原生控制器停止与备份（2026-10-21 实机修订）
 
