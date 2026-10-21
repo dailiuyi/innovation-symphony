@@ -68,8 +68,17 @@ defmodule SymphonyElixir.Mvp.Executor do
     end
   end
 
-  defp restart_adopted(_workspace, _issue, _settings, _models, receipt, opts, %{"status" => status})
-       when status in ["publish_pending", "comment_pending"], do: Delivery.reconcile(receipt, opts)
+  defp restart_adopted(workspace, issue, settings, models, receipt, opts, %{"status" => "comment_pending"}) do
+    # The adopted owner is this live controller. A confirmed rejection comment leaves a
+    # resumable blocked receipt, which would fence every later intake scan, so finish the
+    # rework now, exactly as a restart after the comment was saved would.
+    with {:ok, _} <- Delivery.reconcile(receipt, opts) do
+      restart_execute(workspace, issue, settings, models, receipt, opts, Receipt.read(receipt))
+    end
+  end
+
+  defp restart_adopted(_workspace, _issue, _settings, _models, receipt, opts, %{"status" => "publish_pending"}),
+    do: Delivery.reconcile(receipt, opts)
 
   defp restart_adopted(workspace, issue, settings, models, receipt, opts, data),
     do: restart_execute(workspace, issue, settings, models, receipt, opts, data)

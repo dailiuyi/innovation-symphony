@@ -834,7 +834,7 @@ defmodule SymphonyElixir.Mvp.RestartRecoveryTest do
     end
   end
 
-  test "comment_pending uncertainty only GETs the exact durable intent and remains blocked" do
+  test "comment_pending uncertainty only GETs the exact durable intent, then continues the rework" do
     c = context!()
     opts = options(c, reject_first: true)
     opts = Keyword.put(opts, :request_fun, fn "POST", _, _, _, _ -> throw(:comment_uncertain) end)
@@ -842,9 +842,11 @@ defmodule SymphonyElixir.Mvp.RestartRecoveryTest do
     comment = List.last(Receipt.read(c.receipt)["rounds"])["comment"]
     dead!(c)
     request = fn "GET", "/repos/owner/repo/issues/42/comments", _, nil, _ -> {:ok, %{status: 200, body: [%{"id" => 19, "body" => comment["body"]}]}} end
-    assert {:ok, _} = Executor.resume_restart(c.workspace, c.issue, c.settings, models(), c.receipt, Keyword.put(options(c), :request_fun, request))
-    assert Receipt.read(c.receipt)["status"] == "blocked"
-    assert calls(c, :coder) == 1 and calls(c, :reviewer) == 1 and calls(c, :publish) == 0
+    assert {:ok, "local-draft"} = Executor.resume_restart(c.workspace, c.issue, c.settings, models(), c.receipt, Keyword.put(options(c), :request_fun, request))
+    # The adopted owner is this live controller. Stopping at the resumable blocked receipt
+    # would fence every later intake scan with :mvp_restart_active.
+    refute Receipt.read(c.receipt)["status"] == "blocked"
+    assert calls(c, :coder) == 2 and calls(c, :reviewer) == 2 and calls(c, :publish) == 1
   end
 
   test "OS lock rejects another holder and releases after return or exception" do

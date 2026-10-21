@@ -518,6 +518,13 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     sync_tree(Path.dirname(pin_path(export)))
   end
 
+  # A resolved journal releases both the in-run pin and the one retention wrote beside the runs.
+  defp unpin_recovery(export) do
+    File.rm(pin_path(export))
+    run = export |> Path.dirname() |> Path.dirname()
+    File.rm(ModelServices.detached_pin(Path.dirname(run), run))
+  end
+
   defp write_import_journal(transaction, journal) do
     pending = Path.join(transaction, "journal.pending")
     File.write!(pending, Jason.encode!(journal), [:sync])
@@ -558,7 +565,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
           File.rename!(transaction, Path.join(operation.directory, "import-transaction"))
           sync_tree(operation.directory)
           sync_tree(workspace)
-          File.rm(pin_path(journal["export"]))
+          unpin_recovery(journal["export"])
           :ok
         end)
 
@@ -637,7 +644,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
 
   defp finish_import(:ok, export, transaction, _workspace, _original, _replacement) do
     File.rm_rf(transaction)
-    File.rm(pin_path(export))
+    unpin_recovery(export)
     sync_tree(Path.dirname(transaction))
     :ok
   end

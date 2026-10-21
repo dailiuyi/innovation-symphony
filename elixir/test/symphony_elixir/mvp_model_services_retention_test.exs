@@ -270,6 +270,42 @@ defmodule SymphonyElixir.Mvp.ModelServicesRetentionTest do
     end
   end
 
+  test "a legacy recovery pin that cannot be written is kept beside the runs and survives a configuration switch", ctx do
+    {workspace, journal, run, export} = legacy_journal!(ctx)
+    # A read-only run directory refuses the in-run pin.
+    File.chmod!(run, 0o555)
+    on_exit(fn -> File.chmod(run, 0o755) end)
+
+    assert :ok = ModelServices.prune_runs(ctx.sandboxes, 0)
+    refute File.exists?(Path.join(run, ".recovery-pin"))
+    assert File.read!(ModelServices.detached_pin(ctx.sandboxes, run)) == "journal"
+
+    # The workspace no longer reaches the journal, so discovery cannot protect the run any more.
+    # An unprotected closed run proves pruning still works in this configuration.
+    File.rm!(journal)
+    System.delete_env("WORKSPACE")
+    ordinary = run!(ctx.sandboxes, "ordinary")
+    assert :ok = ModelServices.prune_runs(ctx.sandboxes, 0)
+    refute File.exists?(ordinary)
+    assert File.dir?(export)
+    assert File.dir?(workspace)
+  end
+
+  test "a legacy recovery pin that cannot be written anywhere is reported while other runs are still pruned", ctx do
+    {_workspace, _journal, run, export} = legacy_journal!(ctx)
+    ordinary = run!(ctx.sandboxes, "ordinary")
+    File.write!(Path.join(ordinary, "session.jsonl"), "closed")
+    File.chmod!(run, 0o555)
+    on_exit(fn -> File.chmod(run, 0o755) end)
+    # A directory in the pin's place makes the beside-the-runs write fail too.
+    File.mkdir_p!(ModelServices.detached_pin(ctx.sandboxes, run))
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert :ok = ModelServices.prune_runs(ctx.sandboxes, 0) end)
+    assert log =~ "Recovery pin could not be written for run-recovery"
+    assert File.dir?(export)
+    refute File.exists?(ordinary)
+  end
+
   test "detached recovery journals are pinned while malformed journals do not protect closed runs", ctx do
     workspace = Path.join(ctx.root, "detached-workspace")
     journal = Path.join([workspace, ".symphony-import", "journal.json"])
@@ -323,6 +359,22 @@ defmodule SymphonyElixir.Mvp.ModelServicesRetentionTest do
     assert File.read!(transcript) == "recent transcript"
     refute File.exists?(capped)
     assert File.read!(unrelated) == "keep"
+  end
+
+  # A journal written before run-directory pins existed: only the configuration finds it.
+  defp legacy_journal!(ctx) do
+    workspace = Path.join(ctx.root, "detached-workspace")
+    journal = Path.join([workspace, ".symphony-import", "journal.json"])
+    File.mkdir_p!(Path.dirname(journal))
+    preserve_env!("WORKSPACE", workspace)
+    preserve_env!("SYMPHONY_WORKSPACE", "")
+    run = run!(ctx.sandboxes, "recovery")
+    export = Path.join(run, "sandbox/export")
+    File.mkdir_p!(export)
+    # A completed export: only the journal reference or a pin still protects this run.
+    File.write!(Path.join([run, "sandbox", "result.json"]), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true}))
+    File.write!(journal, Jason.encode!(%{"export" => export}))
+    {workspace, journal, run, export}
   end
 
   defp run!(sandboxes, name) do

@@ -969,7 +969,13 @@ defmodule SymphonyElixir.MvpExecutionSandboxTest do
   test "a verified failed import may retain missing staged additions and archive a complete rollback" do
     {context, transaction, digest, audit} = failed_import!()
     refute File.exists?(Path.join(context.workspace, "added.txt"))
+    # Retention writes this pin beside the runs when a run directory refuses its own.
+    run = transaction |> Path.join("journal.json") |> File.read!() |> Jason.decode!() |> Map.fetch!("export") |> Path.dirname() |> Path.dirname()
+    detached = ModelServices.detached_pin(Path.dirname(run), run)
+    File.mkdir_p!(Path.dirname(detached))
+    File.write!(detached, "journal")
     assert :ok = ExecutionSandbox.recover_import(context, digest, audit)
+    refute File.exists?(detached)
     refute File.exists?(transaction)
     assert File.read!(Path.join(context.workspace, "source.txt")) == "original"
     refute File.exists?(Path.join(context.workspace, "added.txt"))

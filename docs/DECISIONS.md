@@ -996,3 +996,14 @@ GL-4 的准确候选正式检查、独立 Reviewer 20 项批准及 Draft MR !3 �
 处理：保留“无法确认占用就不删除”的规则、断言和 100% 覆盖率门槛，代码、断言和覆盖率配置均未修改。两个 job 固定为 `ubuntu-24.04`；`elixir/mise.toml` 固定 OTP `28.5.0.7`、Elixir `1.19.6`；`scripts/runtime_identity.py` 的 `toolchain()` 在测试前核验 OTP 补丁号、Elixir 与 GNU `timeout`；缓存键哈希契约文件与 `mise.toml`。隔离部分抽为 `scripts/vm/isolated-check.sh`（PID 命名空间、init 回收、非 root 用户、一次性 HOME、仅门禁使用的 Erlang DNS）。`check-native.sh` 保留 VM 标记与虚拟化校验后委托给它并传入 `docker-init`；CI 以 runner 自身用户调用，传入 apt 安装的 `tini`，不伪造 VM 标记、不固定 `elma`。`view` 失败时上传 `view/build/checks`。
 
 验证：run `39555373345`（提交 `ad3ad75`）两个 job 均成功，`make all` 为 996 项测试、0 失败、6 项显式跳过，覆盖率 100.00%，Dialyzer 0 错误。上述原因是依据 runner 快照和“进入命名空间后 12 项全部消失”作出的判断，没有单独拆分其他可能的差异。VM guest 未重新执行 `check-native.sh`，其委托改动只由本机 scripts 测试覆盖，实机验证未做。
+
+
+### 2026-10-21：审查 PR #20 的两个恢复/清理 P1 问题及修复
+
+来源：对提交 `2bff6af` 的独立审查指出两项问题；所有者随后说明本机已配置 Elixir 并授权自行查找环境。范围仍限 PR #20 分支，不含合并、部署或重启服务。
+
+问题一：重启后 `comment_pending` 经 GET 对账确认评论，回执被存为可恢复的 `blocked`，而 owner 已换成存活的新控制器，下一轮 `RestartIntake` 返回 `mvp_restart_active`，整个领取队列被阻塞。修复：对账成功后继续 `restart_execute`，沿用既有的 `blocked` 恢复路径，不再发送评论。原“对账后保持 blocked”的测试断言固化了该缺陷，已改为“继续返工”，并确认在旧代码上变红。
+
+问题二：`.recovery-pin` 补写失败被忽略，配置切换后恢复导出被删（旧代码上已复现）。修复：检查写入；run 目录拒绝时写 `sandboxes` 顶层的 `.recovery-pin-<run>`；日志解决时 `ExecutionSandbox` 两处一并删除两种标记。两处都写不进时不暂停清理：该 run 本轮仍受日志保护，暂停对之后的配置切换没有保护作用，只会使全部清理停摆，因此只记告警。这条与我最初向所有者提出的“暂停清理”方案不同，原因是独立审查指出其无保护作用。
+
+验证：本机用冻结的 OTP 28.5.0.7、Elixir 1.19.6 与 Codex 0.163.0（源码包摘要已核对）、私有 PID 命名空间、一次性 HOME、GNU timeout，完整 `make all` 等价检查为 998 项 0 失败、6 跳过、覆盖率 100.00%，格式、Credo、Dialyzer 通过；GitHub CI 结果见 PR。未处理的残余：无法写入任何标记的 run，在之后的配置切换中仍可能丢失引用，仅有告警日志。

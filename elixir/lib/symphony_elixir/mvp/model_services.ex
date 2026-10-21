@@ -202,6 +202,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
       {:ok, entries} ->
         inspect_result = open_paths_under(sandboxes_dir)
         recovery_exports = recovery_exports(sandboxes_dir)
+
         pin_recovery_runs(sandboxes_dir, recovery_exports)
         prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports)
 
@@ -212,16 +213,31 @@ defmodule SymphonyElixir.Mvp.ModelServices do
 
   # Journals written before run-directory pins existed are only discoverable through the
   # current configuration; pin their runs now so a later workspace/state_dir switch keeps them.
+  # A run that refuses its pin gets one beside the runs instead. If neither can be written the
+  # run is still protected by its journal for this pass, so pruning continues; the warning is
+  # the only trace that a later configuration switch could lose the reference.
   defp pin_recovery_runs(sandboxes_dir, recovery_exports) do
     prefix = Path.expand(sandboxes_dir) <> "/"
 
-    for export <- recovery_exports, String.starts_with?(export, prefix) do
-      run = Path.join(prefix, export |> String.replace_prefix(prefix, "") |> Path.split() |> hd())
-      if File.dir?(run), do: File.write(Path.join(run, ".recovery-pin"), "journal")
-    end
-
-    :ok
+    recovery_exports
+    |> Enum.filter(&String.starts_with?(&1, prefix))
+    |> Enum.map(&Path.join(prefix, &1 |> String.replace_prefix(prefix, "") |> Path.split() |> hd()))
+    |> Enum.uniq()
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.reject(&pin_run(sandboxes_dir, &1))
+    |> Enum.each(fn run ->
+      Logger.warning("Recovery pin could not be written for #{Path.basename(run)}; a configuration switch would lose its journal reference")
+    end)
   end
+
+  defp pin_run(sandboxes_dir, run) do
+    File.write(Path.join(run, ".recovery-pin"), "journal") == :ok or
+      File.write(detached_pin(sandboxes_dir, run), "journal") == :ok
+  end
+
+  @doc "Pin written beside the runs when a run directory refuses its own."
+  @spec detached_pin(Path.t(), Path.t()) :: Path.t()
+  def detached_pin(sandboxes_dir, run), do: Path.join(sandboxes_dir, ".recovery-pin-" <> Path.basename(run))
 
   defp prune_candidates(sandboxes_dir, entries, keep_count, inspect_result, recovery_exports) do
     entries
@@ -251,6 +267,7 @@ defmodule SymphonyElixir.Mvp.ModelServices do
     has_open_file?(dir, open_paths) or
       referenced_by_recovery?(dir, recovery_exports) or
       File.exists?(Path.join(dir, ".recovery-pin")) or
+      File.exists?(detached_pin(Path.dirname(dir), dir)) or
       sandbox_protected?(dir)
   end
 
