@@ -15,7 +15,8 @@ class IsolatedCheckContractTest(unittest.TestCase):
     def test_unprivileged_caller_is_refused_before_anything_is_created(self):
         before = set(Path("/var/tmp").glob("symphony-native-check.*"))
         result = subprocess.run(["bash", str(SHARED), "nobody", "/usr/bin", str(VM)], capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"isolated-check: usage", result.stderr)
         self.assertEqual(set(Path("/var/tmp").glob("symphony-native-check.*")), before)
 
     def test_vm_entry_keeps_its_identity_proof_and_delegates_isolation(self):
