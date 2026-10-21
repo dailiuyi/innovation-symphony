@@ -159,6 +159,13 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 
 准确安装与切换证据位于本机 `.local/main-deploy-20261021T030525Z/`，guest 配置及单元备份位于 `/home/elma/symphony-install/main-deploy-20261021T030525Z/`。本条记录随后仅以文档提交合入 main，运行代码与固定安装保持一致；运行源码准确 SHA 以该 release 的 `RELEASE.json` 为准。回退仍须先暂停并排空，再将 guest `vm-operations.json` 和三个单元恢复到保存的上一固定版本并核对健康及回执，最后恢复原领取状态；不能回滚任务数据或同时启用旧宿主消费者。
 
+## 2026-10-21 GitLab 已合并但 View 仍显示待人审
+
+所有者报告 GitLab MR !1、!2、!3 均已合并，View 仍把 GL-1、GL-2、GL-4 放在「待人审」列。定位结果：控制器的 receipt 状态停在 `awaiting_human` 且不会轮询人工合并，View 的 `story_outcome` 只有在实时读取到 `pr.state=merged` 时才归入「已交付」。guest 内实测 `fetch_gitlab_mr` 全部返回 `state=unknown`，直接用 urllib 访问同一 API 报 `SSL: CERTIFICATE_VERIFY_FAILED: self-signed certificate`：`GITLAB_PAT` 已配置，但 View 服务没有 `GITLAB_CA_FILE`，代码内置的候选路径都不指向 guest 的 `/var/lib/innovation-symphony/config/certs/gitlab-81-71-154-125.crt`。
+
+修复仅改 guest 配置：先把 `/var/lib/innovation-symphony/runtime.env` 备份为 `runtime.env.bak-20261021-viewca`，再追加 `GITLAB_CA_FILE=/var/lib/innovation-symphony/config/certs/gitlab-81-71-154-125.crt`，重启 `symphony-view.service`；View 源码、固定 release 和控制器均未改动。验证：带该变量读取三个 MR 均返回 `state=merged`；8613 `/api/snapshot` 中 GL-1、GL-2、GL-4 为 `outcome=已交付`、`outcomeKind=done`、`pr.state=merged`，GL-3 仍为 `blocked`（没有 MR），与 GitLab 一致。
+
+两点运维事实：View 重启后约 60 秒内会因 `BoardHTTPServer.allow_reuse_address=False` 与旧连接的 TIME_WAIT 冲突而反复绑定失败，期间 8613 不可用，本次未改动该行为；`runtime.env` 按凭据规则排除在备份外，重建或恢复环境时必须重新提供 `GITLAB_PAT` 与 `GITLAB_CA_FILE`，否则看板会再次把未知 MR 状态显示成待人审。
 
 ## 存储清理与现存恢复源（2026-10-21）
 

@@ -84,7 +84,7 @@ python3 scripts/vm/operations.py --root /data/new-symphony-vm prepare --inputs /
 - release_root：填写实际固定 `/opt/innovation-symphony/releases/<commit>-<date>` 目录，当前为 `37fa886b7cf7-20261021`；native escript 为 elixir/bin/symphony。
 - view_root：/var/lib/innovation-symphony/view，包含独立 View 源码、app、data 和 prototypes；源码从固定 release/view 复制，由操作者维护。View DB 随 view_root 纳入备份。
 - view_venv：/var/lib/innovation-symphony/view-venv，Python 3.12 venv；操作者 按固定 release 的依赖清单安装依赖。
-- environment_file：/var/lib/innovation-symphony/runtime.env，由操作者在 guest 本地提供，文件权限 0600；不放入 seed。
+- environment_file：/var/lib/innovation-symphony/runtime.env，由操作者在 guest 本地提供，文件权限 0600；不放入 seed。View 读取 GitLab MR 状态需要 `GITLAB_PAT`；自签名实例还需要 `GITLAB_CA_FILE=/var/lib/innovation-symphony/config/certs/gitlab-81-71-154-125.crt`，缺省会因证书校验失败把已合并的 MR 显示为待人审（见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md) 2026-10-21 条目）。
 - auth_paths：所有凭据文件/目录的绝对路径；备份无条件排除此列表、environment_file，以及 .ssh、auth.json、credentials.json、secrets.env、runtime.env。其他可能含密钥的 Codex 配置必须由操作者加入清单。
 - credential_inventory_reviewed：默认 false；操作者 核对完整凭据清单后显式改 true，备份才允许运行。这个声明不等于内容扫描或自动脱敏。
 
