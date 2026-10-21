@@ -1,5 +1,7 @@
 # 独立虚拟机部署与闭环验收
 
+2026-10-21 当前摘要：活动固定 release 为 `37fa886b7cf7-20261021`，本地 main 的后续 `6bedb1f` 仅补充部署记录。三个原生服务在 guest 内运行，旧宿主三服务禁用，ready 正常开启。经所有者明确授权，宿主已删除 11 个旧归档、释放 20.52 GiB；当前保留和已删除的恢复源见文末“存储清理与现存恢复源”。下文分阶段记录保留其发生时的状态，不能把历史快照路径当成当前仍存在的文件。
+
 日期：2026-10-20。来源：所有者逐项选择并明确批准完整实施计划；授权与替代关系见 DECISIONS 同日条目。本文随实测更新，不用部署配置代替验收证据。
 
 ## 固定部署
@@ -14,7 +16,7 @@ NAT 只向宿主 loopback 转发 SSH 22220；页面通过 SSH 隧道连接 VM lo
 
 ## 基线保全
 
-操作证据目录 `.local/vm-deployment-20261020T090218Z`；其中 baseline 保存原工作流、启动入口、服务单元、HEAD 及回执 SHA256。运行根初始归档保存在 VM 目录的 `migration-runtime-20261020T090218Z.tar.gz`，它是预复制，不替代切换时的一致性备份。原运行 release 为 `a8ef726-20261017T172900`，旧服务在新环境门禁通过且空闲切换前保持运行。
+操作证据目录 `.local/vm-deployment-20261020T090218Z`；其中 baseline 保存原工作流、启动入口、服务单元、HEAD 及回执 SHA256。运行根初始归档曾保存为 VM 目录的 `migration-runtime-20261020T090218Z.tar.gz`，它是预复制，不替代切换时的一致性备份；该归档已在下述授权清理中删除。原运行 release 为 `a8ef726-20261017T172900`，旧服务在新环境门禁通过且空闲切换前保持运行。
 
 ## 当前状态（2026-10-21）
 
@@ -40,7 +42,7 @@ VM 模式分配新模型会话目录时保留全部历史，不调用旧的“�
 
 ## 2026-10-21 准备备份与门禁修复
 
-准备备份 `/data/symphony-vm/migration-prepared-20261021-v2.tar` 已通过独立目录恢复，SHA256 为 `0cfded9a1c5f883186f5313a55e8f4a587875c7aa92649a4b5d090638b634092`。恢复目录 `/home/elma/symphony-restore-20261021` 未激活领取；恢复前后历史回执摘要一致，View SQLite integrity_check 为 ok，含 3 个任务、71 条状态变化及 10 个会话。此备份来自准备副本，正式切换仍须停止旧服务后完成最终一致性复制。
+准备备份 `/data/symphony-vm/migration-prepared-20261021-v2.tar` 当时通过独立目录恢复，SHA256 为 `0cfded9a1c5f883186f5313a55e8f4a587875c7aa92649a4b5d090638b634092`；该 tar 已在后续授权清理中删除，不再是可用恢复源。恢复目录 `/home/elma/symphony-restore-20261021` 未激活领取；当时恢复前后历史回执摘要一致，View SQLite integrity_check 为 ok，含 3 个任务、71 条状态变化及 10 个会话。此备份来自准备副本，正式切换随后另做最终一致性复制。
 
 第一次准备归档因 guest 引导时留下、未被运行配置使用的 `runtime/venv` 外部符号链接而失败，失败归档 `.tar.partial` 保留。该目录已移至 guest `/home/elma/symphony-install/unused-runtime-venv-20261021`；活动 View 独立环境不变。没有为绕过校验而放宽归档链接规则。
 
@@ -113,7 +115,7 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 
 ## 最终安装、运行状态与交接（2026-10-21）
 
-最终固定 release 为 `/opt/innovation-symphony/releases/005474a4a67e-20261021`，源码提交 `005474a4a67e9425cd87ae1dc80b0be579bd3237`，源码归档 SHA256 `a36af1c8a34819f443dfa87949c7d5c1cb2b559648df3704441c429a24795f0d`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。Elixir 源码与 996 项全门禁版本相同；组件和 View 修订分别本地提交 `2442618`、`005474a`。View 安装快照同属后者，升级前的三个源文件另行保留，数据库、缓存和历史未删除。原三个宿主服务 disabled，只有 VM 的控制器消费队列。
+首次收尾固定 release 为 `/opt/innovation-symphony/releases/005474a4a67e-20261021`，后由文末 main 升级记录中的 `37fa886b7cf7-20261021` 替代。该首次收尾源码提交 `005474a4a67e9425cd87ae1dc80b0be579bd3237`，源码归档 SHA256 `a36af1c8a34819f443dfa87949c7d5c1cb2b559648df3704441c429a24795f0d`，escript SHA256 `e2f461a97dc5481e5dc707feb9fe77e15956a37f1c44310591591c3ce07d625f`。Elixir 源码与 996 项全门禁版本相同；组件和 View 修订分别本地提交 `2442618`、`005474a`。View 安装快照同属后者，升级前的三个源文件另行保留，数据库、缓存和历史未删除。原三个宿主服务 disabled，只有 VM 的控制器消费队列。
 
 准确工具链：OTP 28.5.0.7、Elixir 1.19.6、Codex 0.163.0（主程序与同版 helper 摘要见前文）、Node 24.21.0、OpenJDK 21.0.12.1、Python 3.12.3、Docker 29.1.3、Buildx 0.30.1。准确发行版包修订、Git/coreutils/bubblewrap/AppArmor 版本及摘要保存在 guest `/var/lib/innovation-symphony/toolchain-final-005474a.json` 和本机证据目录的同名副本；没有跳过 native client 检查。
 
@@ -123,7 +125,7 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 
 最终正常 VM reboot 后，boot ID 从 `bceb69da-a605-4322-889c-493f79b131d1` 变为 `5cdac192-689d-469e-95a0-3b407baefc36`。三服务、production 隧道与只读沙箱恢复；宿主 QEMU NRestarts=0。GL-1/2/3 的原回执 SHA256 与切换前一致，GL-4 的回执 SHA256 `dbef03da4ad652b10990f114707bcd0ac637d32f86bc668f465cc57acd3aacf0` 在此次 reboot 前后不变。仅解除本轮拥有且摘要匹配的临时 intake-paused；ready 列表只有已有回执的 GL-3/4，当前 running/retrying=0。恢复正常可信 ready 入口，旧 GL-3 不会重领。
 
-本机 4000 状态 API、8613 View snapshot 和经认证的 8765 设置 API 均已实际读取；默认仍为 coder gpt-6.1-sol/high、reviewer deepseek-v4-flash/high。View 为 4 个真实任务，GL-4 关联 4 次真实会话、两轮、正式检查和批准的 Review。宿主可用空间最后核对约 18.5 GiB，guest 约 26.5 GiB，高于 15/5 GiB 暂停阈值。每日空闲备份 timer enabled，已手动验证的同一日备份入口及独立恢复见前文；首次定时触发尚未发生，现有备份来自 GL-4 之前，不误报为新任务的交付后快照。保留最近三份成功日备份及迁移备份，不删除失败归档。
+本机 4000 状态 API、8613 View snapshot 和经认证的 8765 设置 API 均已实际读取；默认仍为 coder gpt-6.1-sol/high、reviewer deepseek-v4-flash/high。View 为 4 个真实任务，GL-4 关联 4 次真实会话、两轮、正式检查和批准的 Review。宿主可用空间最后核对约 18.5 GiB，guest 约 26.5 GiB，高于 15/5 GiB 暂停阈值。每日空闲备份 timer enabled，已手动验证的同一日备份入口及独立恢复见前文；首次定时触发尚未发生，现有备份来自 GL-4 之前，不误报为新任务的交付后快照。自动轮换保留最近三份成功日备份及迁移备份，工具不会自动删除失败归档；后续一次人工授权清理见文末。
 
 本轮实际通过的主命令与证据：
 
@@ -136,7 +138,7 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 | 最终 OS reboot 与当前执行准入 | 健康恢复，原回执不变，ready | final-reboot-result.json、final-readiness.log |
 | `python3 scripts/vm/operations.py --root /data/symphony-vm check` | host/guest disk admitted，未暂停 | final-operations-check.json |
 
-准备、检查、启停、备份、恢复的可重复入口完整列在 `scripts/vm/README.md`，已有 VM 不重跑 prepare/bootstrap。备份位置为 `/data/symphony-vm/backups`，已验证恢复目录为 guest `/home/elma/symphony-restore-final-20261021`，其领取关闭且未激活。运行日志与回执在持久 runtime 根内；原归档与失败证据仍保留在 `/data/symphony-vm` 和本机 `.local/vm-deployment-20261020T090218Z`。
+准备、检查、启停、备份、恢复的可重复入口完整列在 `scripts/vm/README.md`，已有 VM 不重跑 prepare/bootstrap。备份位置为 `/data/symphony-vm/backups`，已验证恢复目录为 guest `/home/elma/symphony-restore-final-20261021`，其领取关闭且未激活。运行日志与回执在持久 runtime 根内；现存归档以文末清单为准；失败诊断日志仍在本机 `.local/vm-deployment-20261020T090218Z`，不能据此宣称已删除的失败 tar 仍存在。
 
 回退顺序：先在 VM 暂停新领取并取得维护排空确认，核对活动执行与 GitLab 远端副作用，再保存包含 GL-4 的最新状态/证据。停止 VM 控制器和 production 隧道，旧宿主工作流先设置 enabled=false，旧服务只以关闭领取状态恢复。GL-4 已发布，禁止用迁移前快照直接覆盖当前状态、清回执重领或盲目重发 MR。也可保持 VM 暂停，切回前一固定 native release排查；不要同时启动两套消费者。旧 release、宿主单元、配置备份与原始数据都还在，未执行自动回退。
 
@@ -156,3 +158,34 @@ View 两份运维审计日志原本因顶层 issue 字段被当作额外任务�
 本轮实际执行：`git merge --ff-only codex/vm-deployment-direction` 成功；固定源码/二进制摘要核对成功；三个 VM 服务与 production 隧道 active；本机 4000 状态 API、8613 snapshot API 及 8765 鉴权仓库设置 API 返回 200；实际 VM UUID 一致、`docker info` 成功、Codex read-only `/usr/bin/true` 探针退出 0；`scripts/vm/operations.py ... check` 磁盘准入通过。默认仍为 coder `gpt-6.1-sol/high` 与 reviewer `deepseek-v4-flash/high`。未合并 luca MR、未部署 luca、未重启 VM 或宿主。
 
 准确安装与切换证据位于本机 `.local/main-deploy-20261021T030525Z/`，guest 配置及单元备份位于 `/home/elma/symphony-install/main-deploy-20261021T030525Z/`。本条记录随后仅以文档提交合入 main，运行代码与固定安装保持一致；运行源码准确 SHA 以该 release 的 `RELEASE.json` 为准。回退仍须先暂停并排空，再将 guest `vm-operations.json` 和三个单元恢复到保存的上一固定版本并核对健康及回执，最后恢复原领取状态；不能回滚任务数据或同时启用旧宿主消费者。
+
+
+## 存储清理与现存恢复源（2026-10-21）
+
+来源：所有者先要求核对 `/data/symphony-vm` 的约 50 GB 占用，随后明确选中“13.9 GiB，进一步可清约 6.7 GiB”并要求“清理这些”。本次只删除审计清单中的 11 个普通文件，不建立自动清理政策，不修改工作区、回执、证据、服务或虚拟磁盘容量。
+
+清理在宿主 operations 锁内进行。先核对备份服务 inactive/MainPID=0、文件设备/inode/大小及单链接身份；以 root 扫描 `/proc/*/fd`，11 个候选均无打开的描述符、无不可观察项。最终迁移归档的 SHA256、成功日备份的回执摘要及 3691 项归档清单再次校验通过，才按准确路径逐项删除并记录结果。不能仅凭 `.partial` 扩展名或时间做同类删除。
+
+| 已删除文件（相对 `/data/symphony-vm`） | 实际分配空间 |
+| --- | ---: |
+| `daily-backup-diagnostic-20261021.tar.partial` | 3.20 GiB |
+| `daily-main-diagnostic-20261021.tar.partial` | 3.86 GiB |
+| `daily-timewait-proof-20261021.tar.partial` | 3.86 GiB |
+| `migration-prepared-20261021.tar.partial` | 2.95 GiB |
+| `daily-exact-cli-diagnostic-20261021.tar.partial` 及审计列出的四个 `backups/daily-*.tar.partial` | 0（五个空文件） |
+| `migration-runtime-20261020T090218Z.tar.gz` | 3.27 GiB |
+| `migration-prepared-20261021-v2.tar` | 3.38 GiB |
+| 合计（准确分配字节 22,033,547,264） | 20.52 GiB |
+
+`du -sh /data/symphony-vm` 从约 51 GiB 降到 30 GiB；`df -h /data/symphony-vm` 可用空间从约 19 GiB 增至 40 GiB。`system.qcow2` 实际分配约 21 GiB，虚拟容量仍为 50 GiB，未压缩、转换、扩盘或删除。宿主 QEMU/production 隧道 active，控制器 API 正常，磁盘门槛检查 disk_admitted=true，领取未暂停。
+
+当前保留的恢复源为：
+
+| 文件（均在 `/data/symphony-vm`） | SHA256 | 边界 |
+| --- | --- | --- |
+| `migration-final-runtime-20261021.tar` | `bd20e5d123da46617af5ee9ed03717f60e5b7523b77676f96580bdbb02c754c6` | 最终迁移时的运行根归档，保留为迁移基线；不是整台 VM 镜像或 GL-4 交付后快照 |
+| `backups/daily-20261020T190632300613Z-90591e7de9cd4f23aa74033661e3fffd.tar` 及同名 `.success.json` | `d49c53e67ad715796d681e4942bfbe313174ed329f5231c185f68e52b1199f3e` | config/runtime/View 完整受管归档；先前独立恢复通过，本次摘要及清单重验通过；早于 GL-4 |
+
+日备份恢复入口使用第二行的现存 tar，操作与凭据重建要求见 [运维说明](../scripts/vm/README.md)。初始预复制和准备 v2 的历史恢复结果仍成立，但它们的 tar 已删除，不能再给出可执行的恢复命令。当前没有新生成 GL-4 交付后备份；每日 timer 已启用，首次定时触发与宿主未登录冷启动仍待实测。本轮文档同步不补做备份或重启。
+
+系统盘、固定 cloud image/签名、工具链安装工件、`generated/`、SSH 身份/配置、成功回执及原始运行数据全部保留。源码主工作区私有证据为 `.local/vm-storage-audit-20261021.json` 与 `.local/vm-storage-cleanup-20261021T031707Z.json`，包含全部 11 条准确路径、设备/inode、前后可用字节和删除结果；辅助脚本 `.local/cleanup-reviewed-vm-archives.py` 是本次一次性操作记录，不是允许重复执行的清理入口，也不入库。

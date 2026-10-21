@@ -1,5 +1,13 @@
 # innovation-view · Symphony 独立只读看板
 
+## 当前 VM 安装（2026-10-21）
+
+活动 View 位于 guest `/var/lib/innovation-symphony/view`，配置 `/var/lib/innovation-symphony/view.toml`，独立 venv 为 `/var/lib/innovation-symphony/view-venv`；由系统级 `symphony-view.service` 管理。宿主 production SSH 隧道提供 `http://127.0.0.1:8613/`，快照入口 `/api/snapshot`。当前三个入口仅本机可达，下文局域网访问是其他获准部署的说明，不表示本机已对内网开放。不要启动旧宿主 View，也不要把整个 view_root 覆盖为开发目录；源码更新保留数据库、缓存、历史和日志。
+
+实际采集包含迁移历史及 GL-4 的 4 次会话、正式检查和批准 Review。guest 标准 `scripts/run_view_checks.py` 已通过 Python 57、JavaScript 15、Linux 集成 11 项及浏览器合成/迁移检查；环境为 Python 3.12.3、Node 24.21.0、Playwright 1.62.1 与配套 Chromium 151。下文旧环境的浏览器失败保留为历史，不能覆盖这次 guest 结果；真实 Windows/WSL 与用户页面体验仍分别验收。
+
+View 随成功日备份纳入 config/runtime/View 受管归档，SQLite 使用 backup 接口合并 WAL。2026-10-21 的宿主归档清理未删除 View 数据或 VM 内恢复目录；现存成功日备份早于 GL-4，不能当成交付后快照。固定版本、数据与备份位置见 [VM_DEPLOYMENT](../docs/VM_DEPLOYMENT.md)。
+
 `innovation-view` 把 Symphony 运行时中的任务回执、检查证据和 Codex 会话整理成一个 Linear 风格的只读工作台。它用于查看进度和上下文，不启动或控制 Symphony 任务，任务数据仍只读。GH-16 在设置页提供受控仓库双角色默认模型管理，配置写入由 Elixir 负责。
 
 现以固定源码快照放在 innovation-symphony 的 `view/` 下，仍独立运行。`elixir/`
@@ -29,7 +37,7 @@ Linux Python 使用同一解释器启动固定只读扫描脚本并直接复制�
 显式 `local` 仅支持 Linux，显式 `wsl` 仅支持 Windows；无效值或不支持的组合报错，
 不会静默改用其他来源。缺少该项的旧配置无需修改。Python 最低 3.11；本轮 Linux
 合成集成使用 Python 3.12.14、Node 24.19.0、`codex-transcript-viewer==0.5.0`。
-真实 Windows＋WSL 和浏览器 UI 仍须在可用环境另行验收。
+这组历史环境的真实 Windows＋WSL 和浏览器 UI 未完成验收；当前 guest 的合成浏览器检查见文首。
 如需 PR 状态，另需可用的 `gh` CLI；没有它时看板仍可运行，但 PR 状态可能未知。
 Node 用于 JS 和浏览器检查，正常 Python 看板启动不需要 Node。
 
@@ -116,7 +124,7 @@ loopback HTTP/context/HTML 合成集成，以及坏 JSON、权限、消失、超
 避免包括 ignored 文件在内的候选库存被检查产物污染。固定浏览器夹具的截图与
 smoke 报告写入该结果目录的 `fixture/browser/`，不另写源码树。
 
-完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
+完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium；以下为既有 CI 的 Node 24.19.0 准备方式，当前 guest 已通过的 Node 24.21.0 组合见文首：
 
 ```sh
 npm install --prefix view/build/browser --no-audit --no-fund playwright@1.62.1
@@ -126,8 +134,8 @@ NODE_PATH="$PWD/view/build/browser/node_modules" node view/tests/browser-fixture
 
 上述 Linux 命令对应 CI；Windows 可安装同版本 Playwright 后设置 `NODE_PATH`（如
 PowerShell `$env:NODE_PATH = (Resolve-Path view/build/browser/node_modules).Path`），再运行
-相同 Node 命令。准备阶段已核实 Playwright 1.62.1 和 Chrome 153.0.8010.54，但浏览器
-启动被受限环境拒绝，未通过 UI 断言。本离线沙箱也未预置 Playwright／Chromium，
+相同 Node 命令。早期准备阶段已核实 Playwright 1.62.1 和 Chrome 153.0.8010.54，但浏览器
+启动被受限环境拒绝，未通过 UI 断言。该次离线沙箱也未预置 Playwright／Chromium，
 本轮浏览器检查失败原因和未执行项见验证记录；不把安装命令当作已验证组合。
 
 夹具入口只在随机 loopback 端口服务脱敏固定数据及本轮实际生成的 HTML，调用原

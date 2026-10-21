@@ -1,5 +1,7 @@
 # 领取前执行环境就绪检查
 
+2026-10-21 活动 VM 固定版本为 `37fa886b7cf7-20261021`，UUID `e95ff885-dd31-4ad7-b894-35d1a0102429`，新领取已开启。宿主阈值 15 GiB、guest 阈值 5 GiB；本次授权归档清理后实测约为 40/27 GiB 可用，准入通过。磁盘 guard 只暂停新领取，不自动删除历史或扩盘；清理和保留备份见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md#存储清理与现存恢复源2026-10-21)。
+
 ## 2026-10-20：独立 VM 执行后端
 
 所有者已批准整套 Symphony 进入独立 VM、VM 内完全放权。新配置通过 `required_backend: vm`、固定 `vm_uuid` 和管理员 argv `capability_probes` 显式启用；`sandbox.enabled: false` 在此配置下表示使用外层 VM，而非 rootless 沙箱故障后的宿主回退。实际 systemd 虚拟化身份、DMI UUID、sudo、Docker、项目工具、角色服务及持久磁盘空间均须核验。准备报告仍不是候选正式验收。

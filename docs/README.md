@@ -1,10 +1,11 @@
 # 文档入口
 
-2026-10-21 当前运行已迁入独立 VM，GL-4 已交付 Reviewer 批准的 Draft MR !3；固定 release、真实门禁、历史人工接续及剩余手动验收统一见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+2026-10-21 当前运行是独立 VM 固定 release `37fa886b7cf7-20261021`，GL-4 已交付 Reviewer 批准的 Draft MR !3；本地 main 的实现/部署记录已合入，后续文档同步与运行版本分开记录。宿主清理已按授权释放 20.52 GiB，目录约 30 GiB；旧预复制和准备 v2 归档已删除。固定版本、现存恢复源、真实门禁、人工接续及剩余手动验收统一见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
 
 | 内容 | 文档 |
 | --- | --- |
-| 整套 VM 部署、迁移、恢复及真实闭环验收 | [VM_DEPLOYMENT.md](VM_DEPLOYMENT.md) |
+| 当前 VM 版本、存储清理、现存备份与真实闭环验收 | [VM_DEPLOYMENT.md](VM_DEPLOYMENT.md) |
+| VM 准备、检查、维护排空、启停与备份恢复命令 | [scripts/vm/README.md](../scripts/vm/README.md) |
 | GitLab 与 luca 接入、验证和待办 | [GITLAB_INTEGRATION.md](GITLAB_INTEGRATION.md) |
 | 领取前执行环境就绪检查与激活边界 | [EXECUTION_READINESS.md](EXECUTION_READINESS.md) |
 | 三项 rootless 审查问题修复及回归 | [ROOTLESS_REVIEW_FIXES.md](ROOTLESS_REVIEW_FIXES.md) |

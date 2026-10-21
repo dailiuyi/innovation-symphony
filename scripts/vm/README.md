@@ -1,5 +1,11 @@
 # Local VM operations
 
+## 已安装实例与文档入口（2026-10-21）
+
+当前固定 release 为 `/opt/innovation-symphony/releases/37fa886b7cf7-20261021`，实际值读取 guest `/var/lib/innovation-symphony/vm-operations.json`；下文示例路径不是新的安装位置。已有实例不要再次 prepare、覆盖 adopt 的 generated 目录或重新 bootstrap。宿主用户服务为 `symphony-vm.service`、`symphony-vm-tunnels-production.service`；guest 系统服务为 `symphony-controller.service`、`symphony-model-settings.service`、`symphony-view.service`。旧宿主 `innovation-symphony-*` 三服务已禁用。完整现状、工具链和验收见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md)。
+
+当前 VM 有 8 vCPU、12 GiB 内存和 50 GiB 虚拟磁盘容量；系统盘实际分配约 21 GiB。宿主目录在授权清理后约 30 GiB，不能把磁盘容量上限当成目录实占。清理只删除了审计清单中的 11 个旧归档、释放 20.52 GiB；`.partial` 不因此变成自动可删除文件，工具的保留和轮换规则不变。
+
 2026-10-20，来源：用户批准的独立虚拟机实施方案。这里说明可重复使用的运维入口；实际安装和验收状态见 `docs/VM_DEPLOYMENT.md`。工具不触发模型调用或 Git 发布。
 
 固定合同：Ubuntu 24.04 amd64，8 vCPU、12288 MiB、独立 50 GiB qcow2；宿主目录 `/data/symphony-vm`。QEMU 使用 KVM 与 user-mode NAT，只将 SSH 映射到宿主 `127.0.0.1:22220`，没有共享目录、宿主 Docker socket 或网桥。guest 正常 reboot 可用。
@@ -75,7 +81,7 @@ python3 scripts/vm/operations.py --root /data/new-symphony-vm prepare --inputs /
 
 - config_root：/var/lib/innovation-symphony；workflow、model_settings、view_config 分别指定实际 WORKFLOW.md、管理清单和 View TOML。
 - runtime_root：/var/tmp/innovation-symphony-linux-runtime；state_dir 指向其中实际的 receipt 状态目录。
-- release_root：/opt/innovation-symphony/release；固定 native escript 为 elixir/bin/symphony。
+- release_root：填写实际固定 `/opt/innovation-symphony/releases/<commit>-<date>` 目录，当前为 `37fa886b7cf7-20261021`；native escript 为 elixir/bin/symphony。
 - view_root：/var/lib/innovation-symphony/view，包含独立 View 源码、app、data 和 prototypes；源码从固定 release/view 复制，由操作者维护。View DB 随 view_root 纳入备份。
 - view_venv：/var/lib/innovation-symphony/view-venv，Python 3.12 venv；操作者 按固定 release 的依赖清单安装依赖。
 - environment_file：/var/lib/innovation-symphony/runtime.env，由操作者在 guest 本地提供，文件权限 0600；不放入 seed。
@@ -178,3 +184,19 @@ sudo bash scripts/vm/check-native.sh /absolute/symphony/source
 ### TCP 端口探针
 
 停服后的绑定探针设置 SO_REUSEADDR，以处理此前 HTTP 连接留下的 TIME_WAIT；不设置 SO_REUSEPORT。受管进程的 MainPID/cgroup 检查不变。61 项运维回归包含真实 TCP TIME_WAIT、loopback/wildcard × 复用开关四种活动 listener 拒绝。绑定成功仅证明该监听探针通过，不排除服务外尚未 listen 的 socket，亦不消除检查后的端口竞争。
+
+
+## 存储清理与现存备份
+
+2026-10-21 经用户指定，仅删除 9 个失败 `.partial` 与 2 个早期迁移 tar；先锁定 host `.operations.lock`，核对任务/备份占用、准确 inode/大小、可观察的进程描述符和保留备份，再逐项删除。不得用 `rm *.partial`、全局 Docker prune、文件年龄或历史脚本替代这些检查，也不得自动删除工作区、回执或恢复产物。完整清单及实测字节见 [存储记录](../../docs/VM_DEPLOYMENT.md#存储清理与现存恢复源2026-10-21)。
+
+保留 `/data/symphony-vm/migration-final-runtime-20261021.tar` 和 `backups/daily-20261020T190632300613Z-90591e7de9cd4f23aa74033661e3fffd.tar` 及成功回执。后者是可使用本工具恢复的受管归档，早于 GL-4，摘要和 manifest 已重验；凭据、venv、固定 release 和工具链需按清单另行准备。初始 `migration-runtime-20261020T090218Z.tar.gz`、准备阶段 `migration-prepared-20261021-v2.tar` 已删除，不能继续引用作现存恢复源。
+
+只读预览示例（target 必须换成 guest 内尚不存在、与活动根独立的目录）：
+
+```bash
+python3 scripts/vm/operations.py --root /data/symphony-vm daily-backup
+python3 scripts/vm/operations.py --root /data/symphony-vm restore --archive /data/symphony-vm/backups/daily-20261020T190632300613Z-90591e7de9cd4f23aa74033661e3fffd.tar --target /var/lib/symphony-restore-review-new
+```
+
+恢复预览不创建目录；实际恢复需明确获准后加 `--apply`，领取保持关闭，先核对历史、数据库、工作区、证据和远端副作用，再决定是否切换。不要把 GL-4 之前的快照覆盖当前运行状态。每日 timer 已启用，但首次定时触发和新任务交付后的备份尚未实测；最新状态以部署记录为准。

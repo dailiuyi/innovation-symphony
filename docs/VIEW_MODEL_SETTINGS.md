@@ -1,5 +1,11 @@
 # GH-16 工程方案与验收记录
 
+## 当前运行与历史方案的区别（2026-10-21）
+
+View 与 Elixir 管理服务现在位于独立 VM，宿主只通过 SSH 隧道提供 loopback 8613/8765；旧宿主服务已禁用。当前 `innovation/luca` 默认 coder `gpt-6.1-sol/high`、reviewer `deepseek-v4-flash/high`，本轮清理和文档同步未改模型、管理令牌、注册表或任务冻结快照。服务配置、固定 release 与实际验证见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+
+下文按阶段保留方案和失败/通过记录。初始“令牌仅在页面内存”的方案已被 IS-098 替代：用户明确要求当前浏览器长期保存管理员登录，现使用同源 localStorage，并在退出或 401 时清除。该决定不表示入口已向局域网开放，也不允许把令牌写入仓库或对话。当前 guest 的标准合成浏览器检查通过，真实 Windows/WSL 与用户视觉体验仍分别验收。
+
 来源：2026-10-08 GH-16 Issue 与本次离线编码指令；基线决定编号止于 IS-078。
 实施前已读取 AGENTS、README、REQUIREMENTS、DECISIONS、MODEL_SERVICES。
 本页方案是工程选择，不登记为用户永久指定的架构或参数。

@@ -1,5 +1,13 @@
 # GitLab 与 luca 接入
 
+## 当前部署与交付（2026-10-21）
+
+当前在独立 VM 原生运行固定版本 `37fa886b7cf7-20261021`，本地 main 已合入实现及部署记录，Symphony 未推送。唯一真实验收替代任务 [GL-4](https://81.71.154.125:8443/innovation/luca/-/work_items/4) 已通过真实 Docker 正式检查与 20 项独立 Review，交付 [Draft MR !3](https://81.71.154.125:8443/innovation/luca/-/merge_requests/3)，准确候选为 `267aa8f24c57d857f4bdc651099c7e5d903a22c3`。状态 awaiting_human，MR 未合并，luca 未部署；旧 GL-3 的 blocked 历史不变。
+
+前段两次部署故障需人工审计接续，因此“首次 ready 后完全无人干预”仍未通过；最终检查、Review、推送和 MR 创建由控制器完成，没有人工补 Docker 证据。GitLab 拒绝返工/外部条件去重及不确定发布对账有回归，真实 GL-4 Reviewer 首次即批准，不混称实机拒绝返工测试。文中较早的“尚未验证”只描述对应日期。
+
+2026-10-21 清理只涉及宿主旧归档，回执、工作区、证据及远端 MR 未改。现存日备份早于 GL-4；恢复时先保存当前发布记录并对账，不能覆盖成旧快照后重新消费 ready。现存恢复源与已删文件见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md#存储清理与现存恢复源2026-10-21)。
+
 ## 2026-10-20 独立 VM 闭环实施
 
 所有者批准将整套服务迁入具备 Docker 和 sudo 的独立 VM，补齐正式检查证据输入、GitLab 自动返工和新任务重启接续，并限一个替代 GL-3 的新 Issue 做真实模型、任务分支推送和 Draft MR 验收。旧 GL-3 的 blocked 历史不变。具体当前状态与证据见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)，下文日期较早的“尚未验证/未经授权”只描述对应历史操作，不能覆盖本次明确授权，也不能以新授权代替实际验收通过。

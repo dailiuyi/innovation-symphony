@@ -1,5 +1,26 @@
 # 原型运行与项目交付
 
+## 当前本机入口（2026-10-21）
+
+当前服务位于独立 VM，固定 release 为 `37fa886b7cf7-20261021`；本地 main 的部署记录提交为 `6bedb1f`，之后仅文档同步不代表重新安装。宿主目录 `/data/symphony-vm`，guest 运行根 `/var/tmp/innovation-symphony-linux-runtime`，活动 WORKFLOW `/var/lib/innovation-symphony/WORKFLOW.md`。宿主只提供 QEMU、SSH 隧道和运维；编码、正式检查、独立 Review 与 Docker 均在 guest 内。准确现状与历史区别见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+
+只读检查从源码仓库根运行：
+
+```bash
+systemctl --user is-active symphony-vm.service symphony-vm-tunnels-production.service
+ssh -F /data/symphony-vm/ssh_config symphony-vm 'systemctl is-active symphony-controller.service symphony-model-settings.service symphony-view.service'
+curl --fail http://127.0.0.1:4000/api/v1/state
+python3 scripts/vm/operations.py --root /data/symphony-vm check
+du -sh /data/symphony-vm
+df -h /data/symphony-vm
+```
+
+4000/8613/8765 均只向宿主 loopback 提供入口，View 为 `/api/snapshot`，模型设置后端要求管理员鉴权。guest 的三个应用是系统级服务，宿主 VM/隧道是用户级服务；`systemctl --user restart innovation-symphony-controller.service` 是下文历史容器部署的命令，不能用于当前 VM。旧宿主三个服务已停止并禁用，不能为了排障启动第二个消费者。原生服务停止前先用 [VM 运维工具](../scripts/vm/README.md) 暂停新领取并取得 nonce/PID/boot 一致的排空确认；普通空闲快照不足以停服务。
+
+2026-10-21 已按用户准确选定的清单删除 11 个失败归档及早期快照，释放 20.52 GiB，目录约 30 GiB，宿主可用约 40 GiB。`migration-runtime-20261020T090218Z.tar.gz` 和 `migration-prepared-20261021-v2.tar` 已删除；保留最终迁移归档及成功日备份。现存备份早于 GL-4，清理未生成交付后快照；恢复源、摘要及删除证据见 [存储记录](VM_DEPLOYMENT.md#存储清理与现存恢复源2026-10-21)。自动轮换仍只处理符合成功回执与摘要的日备份，保留最近三份；本次一次性删除不改变该政策。
+
+下文按日期保留旧容器、WSL、看门狗、临时安装和派发处置；其中“当前”、暂停状态与服务命令均属于对应历史阶段。VM 内使用显式 full-access coder 和只读 Reviewer，旧 rootless 的内部隔离保证不能套用。
+
 ## 2026-10-16 GitLab／luca 上线准备与首次派发处置
 
 来源：IS-101 落地到真实实例。本节记录运维约束与处置流程；接入事实与实测证据见 [GITLAB_INTEGRATION](GITLAB_INTEGRATION.md)。

@@ -1,5 +1,11 @@
 # GH-12／GH-16：角色模型服务配置
 
+## 当前 VM 部署（2026-10-21）
+
+当前 `innovation/luca` 的实际默认为 coder `gpt-6.1-sol/high`、reviewer `deepseek-v4-flash/high`。管理由 guest 系统服务 `symphony-model-settings.service` 提供，配置 `/var/lib/innovation-symphony/model-settings.json`，宿主 `127.0.0.1:8765` 经 SSH 隧道连接 guest loopback；View 仅转发获准配置操作。旧宿主同类服务禁用，本轮未改变默认或新增模型能力声明。
+
+原生 Codex 0.163.0 的 CLI 和相邻 `codex-code-mode-host` 均固定校验；领取前探针包含组件存在与只读执行启动，但不逐次发起模型调用。VM 内 coder full-access，Reviewer/诊断独立只读，不能把旧 rootless 的密钥隔离承诺套到 guest root。凭据仅在私有通道配置，不进入源码、聊天、seed 或受管日备份；在途及恢复继续使用冻结的角色服务快照。准确版本、现有凭据迁移及实测边界见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。
+
 GH-12 的 IS-060–063 及其历史验证保留。GH-16／IS-079 推进受控内网仓库默认设置
 和 DeepSeek Responses；GLM 后置。下述格式、命令和参数是工程实现，不登记为用户
 批准的永久接口。OpenAI／Codex AppServer 保持兼容，DeepSeek 使用独立
