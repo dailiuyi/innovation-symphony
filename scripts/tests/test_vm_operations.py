@@ -110,6 +110,8 @@ class VmOperationsTest(unittest.TestCase):
         self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
         self.assertTrue((self.root / 'generated/host/symphony-vm.service').is_file())
         self.assertTrue((self.root / 'generated/guest/vm-operations.example.json').is_file())
+        # check-native.sh delegates to its sibling, so the installed tools need both.
+        self.assertTrue((self.root / 'generated/tools/isolated-check.sh').is_file())
         with self.assertRaises(FileExistsError):
             vm.adopt(self.root, apply=True, external=True)
 

@@ -172,7 +172,7 @@ def generate(root, data, verification):
     out.mkdir(mode=0o700)  # Exclusive: partial or previous generations require operator review.
     (out / 'host').mkdir()
     (out / 'tools').mkdir()
-    for name in ('operations.py', 'guest.py', 'bootstrap-guest.sh', 'artifacts.py', 'check-native.sh'):
+    for name in ('operations.py', 'guest.py', 'bootstrap-guest.sh', 'artifacts.py', 'check-native.sh', 'isolated-check.sh'):
         shutil.copyfile(Path(__file__).with_name(name), out / 'tools' / name)
         os.chmod(out / 'tools' / name, 0o700)
     for name, contents in host_units(root, data).items():

@@ -62,8 +62,11 @@ jobs:
       - name: Record process visibility before make all
         run: python3 ../scripts/proc_visibility.py
 
-      - name: Verify make all
-        run: mise exec -- make check-clean
+      - name: Verify make all in a private PID namespace
+        run: |
+          # The same isolation as the VM gate, as the runner's own user.
+          check_path=$(mise exec -- printenv PATH)
+          sudo --preserve-env=SYMPHONY_TEST_CODEX bash ../scripts/vm/isolated-check.sh "$(id -un)" "$check_path" "$GITHUB_WORKSPACE"
 
       - name: Record process visibility after a failed make all
         if: failure()
