@@ -203,6 +203,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     with :ok <- validate_paths(config, context) do
       run = Path.join(root, "run-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
+      ModelServices.prune_runs(root, 50)
       if config["backend"] == "rootless", do: File.chmod!(root, 0o711)
       :ok = File.mkdir(run)
       :ok = File.chmod(run, if(config["backend"] == "rootless", do: 0o711, else: 0o700))
@@ -473,6 +474,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
     result =
       invoke(fn ->
         File.mkdir!(transaction)
+        pin_recovery!(export, transaction)
 
         journal = %{
           schema: 2,
@@ -500,10 +502,28 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
         :ok
       end)
 
-    finish_import(result, transaction, workspace, original, replacement)
+    finish_import(result, export, transaction, workspace, original, replacement)
   end
 
   defp encoded_manifest(files), do: files
+
+  # The pin lives in the run directory under sandbox.root, which outlives workspace/state_dir
+  # configuration changes, so pruning keeps the export until the journal is resolved.
+  @recovery_pin ".recovery-pin"
+
+  defp pin_path(export), do: Path.join(export |> Path.dirname() |> Path.dirname(), @recovery_pin)
+
+  defp pin_recovery!(export, transaction) do
+    File.write!(pin_path(export), transaction, [:sync])
+    sync_tree(Path.dirname(pin_path(export)))
+  end
+
+  # A resolved journal releases both the in-run pin and the one retention wrote beside the runs.
+  defp unpin_recovery(export) do
+    File.rm(pin_path(export))
+    run = export |> Path.dirname() |> Path.dirname()
+    File.rm(ModelServices.detached_pin(Path.dirname(run), run))
+  end
 
   defp write_import_journal(transaction, journal) do
     pending = Path.join(transaction, "journal.pending")
@@ -545,6 +565,7 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
           File.rename!(transaction, Path.join(operation.directory, "import-transaction"))
           sync_tree(operation.directory)
           sync_tree(workspace)
+          unpin_recovery(journal["export"])
           :ok
         end)
 
@@ -621,13 +642,14 @@ defmodule SymphonyElixir.Mvp.ExecutionSandbox do
   defp import_file(:copy, source, target), do: File.cp(source, target)
   defp import_file(:rename, source, target), do: File.rename(source, target)
 
-  defp finish_import(:ok, transaction, _workspace, _original, _replacement) do
+  defp finish_import(:ok, export, transaction, _workspace, _original, _replacement) do
     File.rm_rf(transaction)
+    unpin_recovery(export)
     sync_tree(Path.dirname(transaction))
     :ok
   end
 
-  defp finish_import(error, transaction, workspace, original, replacement) do
+  defp finish_import(error, _export, transaction, workspace, original, replacement) do
     # Preserve the journal, staged files and any backup that cannot be restored.
     # Rollback uses real filesystem operations, independent of an injected failure.
     rollback =

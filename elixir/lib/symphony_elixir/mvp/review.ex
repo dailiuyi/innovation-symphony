@@ -41,7 +41,19 @@ defmodule SymphonyElixir.Mvp.Review do
   }
 
   @spec schema(non_neg_integer()) :: map()
-  def schema(0), do: @legacy
+  def schema(0) do
+    @legacy
+    |> Map.put("required", ["approved", "summary", "criteria", "blockers"])
+    |> put_in(
+      ["properties"],
+      %{
+        "approved" => %{"type" => "boolean"},
+        "summary" => %{"type" => "string"},
+        "criteria" => %{"type" => "array", "items" => @criterion},
+        "blockers" => %{"type" => "array", "items" => @blocker}
+      }
+    )
+  end
 
   def schema(_) do
     @legacy
@@ -186,8 +198,18 @@ defmodule SymphonyElixir.Mvp.Review do
       Enum.all?(review["blockers"], &(&1["external_kind"] == "verification"))
   end
 
+  # In single-turn review (limit == 0), criteria and blockers are optional audit traces.
+  # They may be either string summaries or structured criteria/blocker objects.
+  # Safety against invalid approval is enforced:
+  # 1. When approved is true, blockers must be empty ([]).
+  # 2. When approved is true and criteria is a structured list, every criterion must be adequate=true.
+  # 3. disposition/1 routes any non-empty blocker list directly to :repair_code.
+  # Type checks (is_boolean/is_binary) are evaluated before any boolean logic on their values
+  # to prevent ArgumentError when approved is not a boolean.
   defp valid?(%{"approved" => approved, "summary" => summary} = value, 0) do
-    map_size(value) == 2 and is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0
+    valid_single_turn_types?(approved, summary) and
+      valid_single_turn_keys?(value) and
+      valid_single_turn_content?(value, approved)
   end
 
   defp valid?(%{"approved" => approved, "summary" => summary} = value, _limit) do
@@ -195,6 +217,52 @@ defmodule SymphonyElixir.Mvp.Review do
   end
 
   defp valid?(_, _), do: false
+
+  defp valid_single_turn_types?(approved, summary) do
+    is_boolean(approved) and is_binary(summary) and byte_size(summary) > 0
+  end
+
+  defp valid_single_turn_keys?(value) do
+    Map.keys(value) -- ["approved", "summary", "criteria", "blockers"] == []
+  end
+
+  defp valid_single_turn_content?(value, approved) do
+    criteria = Map.get(value, "criteria")
+    blockers = Map.get(value, "blockers", [])
+
+    valid_single_turn_list?(criteria) and
+      valid_single_turn_list?(blockers) and
+      valid_single_turn_approval?(approved, criteria, blockers)
+  end
+
+  defp valid_single_turn_approval?(false, _criteria, _blockers), do: true
+
+  defp valid_single_turn_approval?(true, criteria, blockers) do
+    blockers == [] and criteria_adequate?(criteria)
+  end
+
+  # When approved is true and criteria contains structured map entries, all must have adequate=true.
+  # String-summary entries are not checked (they carry no adequate field).
+  defp criteria_adequate?(nil), do: true
+
+  defp criteria_adequate?(list) when is_list(list) do
+    Enum.all?(list, fn
+      item when is_map(item) -> item["adequate"] == true
+      _ -> true
+    end)
+  end
+
+  defp valid_single_turn_list?(nil), do: true
+
+  defp valid_single_turn_list?(list) when is_list(list) do
+    Enum.all?(list, fn
+      item when is_binary(item) -> String.trim(item) != ""
+      item when is_map(item) -> item != %{}
+      _ -> false
+    end)
+  end
+
+  defp valid_single_turn_list?(_), do: false
 
   defp valid_fields?(value) do
     criteria = value["criteria"]

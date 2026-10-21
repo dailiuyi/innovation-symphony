@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Mvp.ExternalDraft do
   @moduledoc "Journaled Draft PR delivery without claiming final external acceptance."
 
-  alias SymphonyElixir.Mvp.{Commands, Delivery, ExternalHandoff, Intake, Receipt, Review}
+  alias SymphonyElixir.Mvp.{CheckEvidence, Commands, Delivery, ExternalHandoff, Intake, Receipt, Review}
   alias SymphonyElixir.Mvp.Forge
 
   @spec publish(Path.t(), map(), map(), String.t(), String.t(), Path.t(), keyword()) ::
@@ -64,9 +64,9 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     end
   end
 
-  defp review_proof(data, receipt, workspace) do
+  defp review_proof(data, receipt, workspace, saved \\ nil) do
     round = List.last(data["rounds"] || []) || %{}
-    path = round["review_path"]
+    path = if is_nil(saved), do: round["review_path"], else: saved["review"]["path"]
     root = Path.expand(receipt <> ".evidence") <> "/"
 
     with true <- round["candidate_sha"] == data["candidate_sha"] and is_binary(path),
@@ -77,11 +77,22 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
          {:ok, ""} <- Commands.git(["status", "--porcelain"], workspace),
          {:ok, head} <- Commands.git(["rev-parse", "HEAD"], workspace),
          true <- head == data["candidate_sha"],
-         {:ok, checks} <- check_proofs(round["checks"], Path.dirname(path), receipt, workspace) do
+         {:ok, checks} <- delivery_checks(data, round, Path.dirname(path), receipt, workspace, saved) do
       {:ok, review, %{"review" => %{"path" => path, "sha256" => digest(raw)}, "checks" => checks}}
     else
       _ -> {:error, :proof}
     end
+  end
+
+  defp delivery_checks(data, round, directory, receipt, workspace, nil) do
+    case CheckEvidence.delivery_proof(receipt, workspace, data["candidate_sha"]) do
+      {:ok, :legacy} -> check_proofs(round["checks"], directory, receipt, workspace)
+      result -> result
+    end
+  end
+
+  defp delivery_checks(_data, _round, _directory, _receipt, _workspace, saved) do
+    if saved_proof_valid?(saved), do: {:ok, saved["checks"]}, else: {:error, :checks}
   end
 
   defp check_proofs(commands, directory, receipt, workspace) when is_list(commands) and commands != [] do
@@ -295,7 +306,7 @@ defmodule SymphonyElixir.Mvp.ExternalDraft do
     with %{"intent" => intent} <- delivery,
          :ok <- valid_journal(receipt, delivery),
          true <- intent["candidate_sha"] == data["candidate_sha"] and intent["repository"] == data["repository"] and intent["branch"] == data["branch"],
-         {:ok, review, proof} <- review_proof(data, receipt, data["workspace"]),
+         {:ok, review, proof} <- review_proof(data, receipt, data["workspace"], intent["proof"]),
          true <- proof == intent["proof"] and review_mode?(review, intent["mode"]),
          {:ok, [pull]} <- pulls(intent["repository"], intent["branch"], opts),
          :ok <- verify_pull(pull, intent, opts) do

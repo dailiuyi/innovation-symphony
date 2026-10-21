@@ -2,17 +2,9 @@ defmodule SymphonyElixir.Mvp.ExecutorTest do
   use SymphonyElixir.TestSupport
 
   alias Mix.Tasks.PrBody.Check, as: PrBodyCheck
-  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Feedback, Intake, OperatorRecheck, Receipt}
+  alias SymphonyElixir.Mvp.{Commands, Delivery, Executor, Feedback, Intake, OperatorRecheck, Receipt, Review}
 
-  @review_schema %{
-    "type" => "object",
-    "additionalProperties" => false,
-    "required" => ["approved", "summary"],
-    "properties" => %{
-      "approved" => %{"type" => "boolean"},
-      "summary" => %{"type" => "string"}
-    }
-  }
+  @review_schema Review.schema(0)
 
   test "five-argument run fails closed when its default GitHub repository adapter has no credentials" do
     context = execution_context!()

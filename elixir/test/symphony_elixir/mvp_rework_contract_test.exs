@@ -95,7 +95,8 @@ defmodule SymphonyElixir.Mvp.ReworkContractTest do
     end
 
     assert {:error, :mvp_invalid_review} = Review.parse("not json", 2)
-    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(valid), 0)
+    assert {:ok, ^valid} = Review.parse(Jason.encode!(valid), 0)
+    assert {:error, :mvp_invalid_review} = Review.parse(Jason.encode!(Map.put(valid, "criteria", [123])), 0)
     assert {:ok, %{"approved" => false}} = Review.parse(~s({"approved":false,"summary":"Rejected"}), 0)
     assert {:ok, %{"approved" => true}} = Review.parse(~s({"approved":true,"summary":" "}), 0)
 

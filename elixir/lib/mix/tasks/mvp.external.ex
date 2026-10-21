@@ -509,7 +509,7 @@ defmodule Mix.Tasks.Mvp.External do
     with true <- valid_recovery_policy_json?(current_policy),
          true <- valid_recovery_policy_json?(record_policy),
          true <- record_policy == receipt_policy,
-         true <- drop_recovery_wall_budget(record_policy) == drop_recovery_wall_budget(current_policy),
+         true <- same_recovery_limits?(record_policy, current_policy),
          {:ok, effective_policy} <-
            verify_recovery_extension_chain(receipt_path, recovery, current_policy, record_policy) do
       {:ok, recovery_policy_atoms(effective_policy)}
@@ -568,8 +568,16 @@ defmodule Mix.Tasks.Mvp.External do
       end
     end)
     |> case do
-      {:ok, ^record_policy, _seen_ids} -> {:ok, record_policy}
+      {:ok, effective, _seen_ids} -> match_recovery_extension_policy(effective, record_policy)
       _ -> {:error, :recovery_extension_chain_mismatch}
+    end
+  end
+
+  defp match_recovery_extension_policy(effective, record_policy) do
+    if Recovery.same_policy?(effective, record_policy) do
+      {:ok, record_policy}
+    else
+      {:error, :recovery_extension_chain_mismatch}
     end
   end
 
@@ -598,16 +606,16 @@ defmodule Mix.Tasks.Mvp.External do
 
   defp extension_audit_matches?(audit, completion, id, extension, original_policy, effective_policy) do
     audit["id"] == id and audit["wall_budget_extension_ms"] == extension and
-      audit["original_recovery_policy"] == original_policy and
-      audit["effective_recovery_policy"] == effective_policy and completion["id"] == id
+      Recovery.same_policy?(audit["original_recovery_policy"], original_policy) and
+      Recovery.same_policy?(audit["effective_recovery_policy"], effective_policy) and completion["id"] == id
   end
 
   defp extension_event?(%{"kind" => "operator_wall_budget_extension"}), do: true
   defp extension_event?(_event), do: false
 
   defp valid_recovery_policy_json?(policy) when is_map(policy) do
-    Enum.sort(Map.keys(policy)) == Enum.sort(Enum.map(@recovery_policy_fields, &elem(&1, 0))) and
-      is_boolean(policy["enabled"]) and
+    Enum.sort(Map.keys(Map.delete(policy, "resume_on_restart"))) == Enum.sort(Enum.map(@recovery_policy_fields, &elem(&1, 0))) and
+      is_boolean(policy["enabled"]) and is_boolean(Map.get(policy, "resume_on_restart", false)) and
       Enum.all?(~w(max_rework diagnose_every stage_attempts max_elapsed_ms max_agent_attempts), fn key ->
         is_integer(policy[key]) and policy[key] > 0
       end)
@@ -617,8 +625,13 @@ defmodule Mix.Tasks.Mvp.External do
 
   defp drop_recovery_wall_budget(policy), do: Map.delete(policy, @recovery_max_elapsed_key)
 
+  defp same_recovery_limits?(record_policy, current_policy) do
+    Recovery.same_policy?(drop_recovery_wall_budget(record_policy), drop_recovery_wall_budget(current_policy))
+  end
+
   defp recovery_policy_atoms(policy) do
     Map.new(@recovery_policy_fields, fn {json_key, atom_key} -> {atom_key, Map.fetch!(policy, json_key)} end)
+    |> Map.put(:resume_on_restart, Map.get(policy, "resume_on_restart", false))
   end
 
   defp json_map(value) do

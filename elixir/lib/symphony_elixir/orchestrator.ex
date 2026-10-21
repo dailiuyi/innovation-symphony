@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Mvp.{Maintenance, Receipt, RestartIntake, RestartRecovery}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -261,7 +262,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.active_states),
-         true <- available_slots(state) > 0 do
+         true <- available_slots(state) > 0,
+         {:ok, issues} <- restart_issues(issues) do
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -308,6 +310,19 @@ defmodule SymphonyElixir.Orchestrator do
 
       false ->
         state
+    end
+  end
+
+  defp restart_issues(issues) do
+    case Config.mvp_settings() do
+      {:ok, %{enabled: true} = settings} ->
+        RestartIntake.refresh(issues, settings, Config.settings!().tracker, &Tracker.fetch_issues_by_ids/1)
+
+      {:ok, _} ->
+        {:ok, issues}
+
+      error ->
+        error
     end
   end
 
@@ -798,14 +813,27 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
+    restart_settings =
+      case Config.mvp_settings() do
+        {:ok, settings} -> settings
+        _ -> %{}
+      end
+
     Enum.sort_by(issues, fn
       %Issue{} = issue ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
+        {restart_dispatch_rank(issue, restart_settings), priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
 
       _ ->
-        {priority_rank(nil), issue_created_at_sort_key(nil), ""}
+        {1, priority_rank(nil), issue_created_at_sort_key(nil), ""}
     end)
   end
+
+  defp restart_dispatch_rank(%Issue{native_ref: ref} = issue, settings) when is_map(ref) do
+    if RestartRecovery.enabled?(settings) and
+         RestartRecovery.eligible?(Receipt.path(settings, issue), settings), do: 0, else: 1
+  end
+
+  defp restart_dispatch_rank(_issue, _settings), do: 1
 
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
   defp priority_rank(_priority), do: 5
@@ -1496,6 +1524,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
+       maintenance: Maintenance.current_snapshot(state),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{

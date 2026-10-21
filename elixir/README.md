@@ -1,5 +1,15 @@
 > GH-1 / IS-025：`mvp.max_rework` 默认 0，显式 1..5 开启检查与 Review 共用预算的有限返工；完整日志和外部 formatter 的结构化 ExUnit 报告本地保留，Review 拒绝理由回帖。普通及自定义断言可返工；未知检查错误、环境故障、缺失或矛盾报告、评论不确定或运行中断即停止。`mix mvp.reconcile` 仅只读对账，不恢复执行。`Executor.recheck/3` 仅供可信操作者在明确授权、原回执摘要和完整性核对后复检，执行级互斥与前序终态审计保护历史，已用次数不重置，轮询不会自动恢复 blocked。外部新版 `check_baseline.py` 通过 `--baseline` 显式指定原冻结快照；检查命令可用 `--evidence-root "{evidence}"` 将完整报告保存在本轮证据目录。逐轮证据、Review schema、用量未知值和测试对应见 [REVIEW_REWORK.md](../docs/REVIEW_REWORK.md)。
 
+## 本机 VM 运行合同（2026-10-21）
+
+当前 GitLab 项目为 `innovation/luca`，单仓库、单任务。控制器以 guest 系统服务运行固定 release `37fa886b7cf7-20261021`，活动配置在 `/var/lib/innovation-symphony/WORKFLOW.md`，运行根在 `/var/tmp/innovation-symphony-linux-runtime`；不要启动下方上游 Linear 示例或旧宿主容器作为第二个执行者。当前运维和版本见 [VM_DEPLOYMENT](../docs/VM_DEPLOYMENT.md) 与 [运维入口](../scripts/vm/README.md)。
+
+显式 `required_backend: vm` 核验固定 VM UUID、模型准备、管理员能力探针、目录及磁盘；`mvp.sandbox.enabled: false` 表示外层 VM 隔离，coder 使用 approval_policy=never / danger-full-access，Reviewer/诊断使用独立只读会话。VM 内 sudo 与 Docker 完全放权，不能宣称内部凭据或检查证据不受任务影响；rootless 旧合同继续独立保留。
+
+新任务 recovery 配置为 enabled=true、max_rework=30、max_agent_attempts=96、max_elapsed_ms=14400000、diagnose_every=3、stage_attempts=3、resume_on_restart=true。正式检查上限 1800000 ms，同时受剩余任务预算约束；Reviewer 收到准确候选、轮次与 attempt 的完整结束检查证据。重启不重置预算，旧 blocked 任务不自动复活，未知用量和无法唯一对账的远端写入保守停止。恢复细节见 [AUTOMATIC_RECOVERY](../docs/AUTOMATIC_RECOVERY.md)。
+
+原生工具链为 OTP 28.5.0.7、Elixir 1.19.6、Codex 0.163.0（主程序和相邻 helper 均核验摘要）；完整门禁为仓库根执行 `sudo bash scripts/vm/check-native.sh /absolute/source`，内部仍运行 elixir 下原有 `make all`。上一同运行代码全门禁为 996 项零失败、6 项显式跳过、100% 覆盖率与 Dialyzer 零错误；本次文档同步没有重跑该门禁或重新调用模型。下文 GH-1/旧接续和上游说明保留其适用范围，0..5 并非当前 VM recovery 的上限。
+
 > 本项目基于官方 Symphony 固定提交扩展，来源见 [UPSTREAM.md](../docs/UPSTREAM.md)。下方保留上游运行说明。`WORKFLOW.github.example.md` 是默认停用的 GitHub MVP 示例，`WORKFLOW.gitlab.example.md` 是对应的 GitLab 示例（实例、项目路径、token 与可选 CA 均以环境引用填写，见 [GITLAB_INTEGRATION.md](../docs/GITLAB_INTEGRATION.md)）；使用前填写仓库、用户/模型允许名单及独立路径；`mix mvp.check /absolute/WORKFLOW.md` 仅本地检查，不启动轮询。新增配置、恢复限制及人工交接见 [IMPLEMENTATION_V0.md](../docs/IMPLEMENTATION_V0.md)。不要使用旧 Linear 示例的自动合并流程。
 
 GH-3 新增 escript `--preflight`：保留 guardrails acknowledgement 参数，只读校验已启用的 GitHub MVP 配置并查询任务列表，不启动 Symphony 运行监督器，成功输出 JSON 后退出。使用方式及外部超时要求见 [OPERATIONS.md](../docs/OPERATIONS.md#gh-3-只读体检)；完整接棒、自动回退尚未实现。

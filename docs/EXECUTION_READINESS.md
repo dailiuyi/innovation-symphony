@@ -1,5 +1,17 @@
 # 领取前执行环境就绪检查
 
+2026-10-21 活动 VM 固定版本为 `37fa886b7cf7-20261021`，UUID `e95ff885-dd31-4ad7-b894-35d1a0102429`，新领取已开启。宿主阈值 15 GiB、guest 阈值 5 GiB；本次授权归档清理后实测约为 40/27 GiB 可用，准入通过。磁盘 guard 只暂停新领取，不自动删除历史或扩盘；清理和保留备份见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md#存储清理与现存恢复源2026-10-21)。
+
+## 2026-10-20：独立 VM 执行后端
+
+所有者已批准整套 Symphony 进入独立 VM、VM 内完全放权。新配置通过 `required_backend: vm`、固定 `vm_uuid` 和管理员 argv `capability_probes` 显式启用；`sandbox.enabled: false` 在此配置下表示使用外层 VM，而非 rootless 沙箱故障后的宿主回退。实际 systemd 虚拟化身份、DMI UUID、sudo、Docker、项目工具、角色服务及持久磁盘空间均须核验。准备报告仍不是候选正式验收。
+
+2026-10-21 工程补充：实际 Codex 0.163.0 单二进制缺件故障后，新部署的管理员探针增加同版执行组件存在及原生只读 sandbox 启动两项；安装阶段另实际验证拒绝写入。它们是本地无模型探针，不逐次构建 Docker 或发起模型请求；GL-4 原冻结配置不追改。当前准入 ready 与准确候选的正式检查/Review 分开记录，最终安装见 VM_DEPLOYMENT。
+
+本地维护通过 `<state_dir>/intake-paused` 仅暂停新领取，不改 `mvp.enabled`，不撤销在途任务权限；文件不可读取或归属不明时保留暂停。VM 执行、源码门禁和真实交付状态分别见 [VM_DEPLOYMENT](VM_DEPLOYMENT.md)。下文 rootless 合同保留，不能将旧冻结任务自动转换为 VM 任务。
+
+备份/关机另使用 `<state_dir>/maintenance.json` 的 nonce 维护围栏，同时阻止新领取与尚未启动的重启接续，不中止已运行任务。`GET /api/v1/state` 的 `maintenance` 字段由 Orchestrator 串行快照产生，绑定 nonce、BEAM OS PID 和 boot ID；只有 running/retrying 为空且轮询未在进行，才返回 drained。运维工具必须取得同 nonce、同服务进程与启动周期的排空确认后才停服务，不能把一次普通空闲快照当成维护锁。
+
 来源：2026-10-09 所有者选择“让实际任务使用已批准的执行环境，并在领取前确认编码、正式检查和真实验收所需条件都已准备好”，要求“补齐这个措施”（IS-100）。
 
 ## 执行合同
@@ -52,3 +64,6 @@ Coder 仍可首轮创建任务内配方；允许空声明和安全相对路径�
 rootless runner 的准备及执行容器共用 Podman `--init --init-path=/usr/bin/catatonit`，使用 root-owned、原生 ELF、可执行且父目录受保护的固定宿主 helper。领取前 inventory 同时验证 helper。真实独立 PID namespace 回归在相同双重 fork 场景下复现无 init 的180个孤儿僵尸，并确认加 init 后为0；它证明回收机制，不证明完整门禁的所有失败都由僵尸导致。保持512 PID、6 CPU、6144 MiB内存及16384 MiB工作盘，不放宽断言、覆盖率或超时。
 
 新控制器安装保持 `mvp.enabled=false`，待固定受信补丁安装并重跑真实容器候选、基线及所需任务验收后，才能恢复领取。双角色 registry、冻结回执、既有 OAuth 身份修复和独立 View 入口保留。CLI 的默认命令清理使用这次已加载的 tracker 凭据名称快照，避免未启动 WorkflowStore 的只读进程误读默认 Linear 配置。
+
+
+2026-10-21 实机工程修订：VM 初始 Git fetch 不再固定为 120 秒，而由原冻结总预算约束、单次最多 30 分钟；其他路径不变。版本/连接能力预检不代表大仓库首次传输已通过，GL-4 首次在此阶段超时的记录见 VM_DEPLOYMENT。

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.MVPAppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Mvp.ModelServices
+
   test "MVP session freezes model and enforces read-only tool and output schema options" do
     test_root =
       Path.join(
@@ -266,6 +268,286 @@ defmodule SymphonyElixir.MVPAppServerTest do
                not File.exists?("/proc/#{pid}")
              end),
              "fake app-server process #{pid} survived a closed port"
+    end
+  end
+
+  test "persistent codex_home option is preserved and not cleaned up on stop_session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-persistent-home-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    workspace = Path.join(test_root, "workspaces/MVP-1")
+    custom_home = Path.join(test_root, "sandboxes/run-1/codex-home")
+    codex_binary = Path.join(test_root, "fake-codex")
+
+    File.mkdir_p!(workspace)
+    File.mkdir_p!(custom_home)
+    write_fake_app_server!(codex_binary)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.dirname(workspace),
+      codex_command: "#{shell_quote(codex_binary)} app-server",
+      codex_turn_timeout_ms: 5_000
+    )
+
+    System.put_env("GH12_CODER_KEY", "test-key-coder")
+    System.put_env("GH12_REVIEWER_KEY", "test-key-reviewer")
+
+    on_exit(fn ->
+      System.delete_env("GH12_CODER_KEY")
+      System.delete_env("GH12_REVIEWER_KEY")
+    end)
+
+    settings = SymphonyElixir.ModelServicesFixture.settings(test_root)
+    {:ok, service} = ModelServices.snapshot(settings, "coding", :coder, "fixture")
+    service = Map.put(service, "command", "#{codex_binary} app-server")
+
+    assert {:ok, session} =
+             AppServer.start_session(workspace,
+               model: "gpt-test",
+               model_service: service,
+               codex_home: custom_home,
+               read_only: false,
+               tools: false
+             )
+
+    assert File.exists?(Path.join(custom_home, "config.toml"))
+
+    AppServer.stop_session(session)
+
+    # Must NOT be deleted after session stop
+    assert File.dir?(custom_home)
+    assert File.exists?(Path.join(custom_home, "config.toml"))
+  end
+
+  test "ModelServices.standalone_run_home generates runtime sandboxes codex-home when sandbox disabled" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-runtime-root-#{System.unique_integer([:positive])}"
+      )
+
+    state_dir = Path.join(test_root, "state")
+    File.mkdir_p!(state_dir)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    assert {:ok, home} = ModelServices.standalone_run_home(%{state_dir: state_dir})
+    assert is_binary(home)
+    assert String.starts_with?(home, Path.join(test_root, "sandboxes"))
+    assert String.ends_with?(home, "codex-home")
+    assert File.dir?(home)
+
+    # When sandbox is enabled, must return {:ok, nil} and not allocate a home
+    assert {:ok, nil} =
+             ModelServices.standalone_run_home(%{
+               state_dir: state_dir,
+               sandbox: %{enabled: true}
+             })
+
+    assert {:ok, nil} = ModelServices.standalone_run_home(%{state_dir: "/nonexistent/state/dir"})
+    assert {:ok, nil} = ModelServices.standalone_run_home(%{})
+  end
+
+  test "ModelServices.prune_runs retains standalone run directory with open session file descriptor despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-test-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 as standalone run (codex-home only)
+    active_run = Path.join(sandboxes, "run-0")
+    sessions_dir = Path.join([active_run, "codex-home", "sessions"])
+    File.mkdir_p!(sessions_dir)
+    transcript = Path.join(sessions_dir, "rollout-active.jsonl")
+    file = File.open!(transcript, [:write])
+    IO.binwrite(file, "initial session content\n")
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    ModelServices.prune_runs(sandboxes, 50)
+
+    # active_run has an open file descriptor, must NOT be pruned
+    assert File.dir?(active_run)
+    assert File.regular?(transcript)
+
+    # Writing to open file still works and path exists
+    IO.binwrite(file, "subsequent session content\n")
+    File.close(file)
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory when export failed despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-export-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 with failed export
+    failed_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(failed_run, "sandbox")
+    File.mkdir_p!(scratch)
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(export_dir, "candidate.txt"), "failed export code")
+    result_path = Path.join(scratch, "result.json")
+    File.write!(result_path, Jason.encode!(%{"cleanup_complete" => true, "export_complete" => false, "scratch_root" => scratch, "exit_status" => 1}))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    ModelServices.prune_runs(sandboxes, 50)
+
+    # failed_run must be preserved for operator inspection
+    assert File.dir?(failed_run)
+    assert File.read!(Path.join(export_dir, "candidate.txt")) == "failed export code"
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory referenced by recovery journal despite 50 newer runs" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-recovery-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    workspace = Path.join(test_root, "workspace")
+    import_dir = Path.join(workspace, ".symphony-import")
+    File.mkdir_p!(sandboxes)
+    File.mkdir_p!(import_dir)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0 with completed export
+    recovered_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(recovered_run, "sandbox")
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => 0}))
+
+    # Journal in workspace references run-0
+    journal = %{"schema" => 2, "export" => export_dir}
+    File.write!(Path.join(import_dir, "journal.json"), Jason.encode!(journal))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    ModelServices.prune_runs(sandboxes, 50)
+
+    # recovered_run must be preserved because recovery journal references it
+    assert File.dir?(recovered_run)
+  end
+
+  test "ModelServices.prune_runs retains sandbox directory referenced by recovery journal in disjoint workspace from receipt" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-disjoint-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    state_dir = Path.join(test_root, "state")
+    disjoint_workspace = Path.join(System.tmp_dir!(), "symphony-disjoint-ws-#{System.unique_integer([:positive])}")
+    import_dir = Path.join(disjoint_workspace, ".symphony-import")
+
+    File.mkdir_p!(sandboxes)
+    File.mkdir_p!(state_dir)
+    File.mkdir_p!(import_dir)
+
+    on_exit(fn ->
+      File.rm_rf(test_root)
+      File.rm_rf(disjoint_workspace)
+    end)
+
+    # Create run-0 with completed export in sandboxes
+    recovered_run = Path.join(sandboxes, "run-0")
+    scratch = Path.join(recovered_run, "sandbox")
+    export_dir = Path.join(scratch, "export")
+    File.mkdir_p!(export_dir)
+    File.write!(Path.join(scratch, "result.json"), Jason.encode!(%{"cleanup_complete" => true, "export_complete" => true, "scratch_root" => scratch, "exit_status" => 0}))
+
+    # Journal in disjoint workspace references run-0
+    journal = %{"schema" => 2, "export" => export_dir}
+    File.write!(Path.join(import_dir, "journal.json"), Jason.encode!(journal))
+
+    # Receipt in state dir points to disjoint workspace
+    receipt = %{"issue_id" => "mvp-disjoint", "workspace" => disjoint_workspace}
+    File.write!(Path.join(state_dir, "receipt-mvp-disjoint.json"), Jason.encode!(receipt))
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    ModelServices.prune_runs(sandboxes, 50)
+
+    # recovered_run must be preserved because recovery journal in receipt workspace references it
+    assert File.dir?(recovered_run)
+  end
+
+  test "ModelServices.prune_runs does not prune runs when peer process file descriptors cannot be confirmed" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-prune-unconfirmed-#{System.unique_integer([:positive])}")
+    sandboxes = Path.join(test_root, "sandboxes")
+    File.mkdir_p!(sandboxes)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    # Create run-0
+    target_run = Path.join(sandboxes, "run-0")
+    File.mkdir_p!(target_run)
+
+    # Create 55 newer runs
+    for i <- 1..55 do
+      dir = Path.join(sandboxes, "run-#{i}")
+      File.mkdir_p!(dir)
+      File.touch!(dir, System.os_time(:second) + i)
+    end
+
+    python = System.find_executable("python3")
+
+    if python != nil and File.exists?("/proc") do
+      script = """
+      import ctypes, sys
+      libc = ctypes.CDLL(None)
+      libc.prctl(4, 0, 0, 0, 0)
+      sys.stdout.write("READY\\n")
+      sys.stdout.flush()
+      sys.stdin.read()
+      """
+
+      port =
+        Port.open({:spawn_executable, python}, [
+          :binary,
+          args: ["-c", script]
+        ])
+
+      receive do
+        {^port, {:data, "READY\n"}} -> :ok
+      after
+        1000 -> :ok
+      end
+
+      try do
+        ModelServices.prune_runs(sandboxes, 50)
+
+        # Under unconfirmed usage state, deletion must not be authorized when /proc/<pid>/fd is eacces
+        case File.stat("/proc/self") do
+          {:ok, %{uid: 0}} ->
+            :ok
+
+          _ ->
+            assert File.dir?(target_run)
+        end
+      after
+        Port.close(port)
+      end
+    else
+      :ok
     end
   end
 end

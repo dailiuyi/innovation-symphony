@@ -1,5 +1,7 @@
 # Linux 只读采集适配
 
+2026-10-21 当前本机使用 VM 内 Linux 本地采集，运行根为 `/var/tmp/innovation-symphony-linux-runtime`，View 安装于 `/var/lib/innovation-symphony/view` 并维护独立数据库、缓存和日志。宿主通过 production SSH 隧道访问 8613，不从日常宿主共享 HOME 或仓库。已采集迁移历史及 GL-4 的真实会话、正式检查和批准 Review；guest 标准 Linux/浏览器合成检查已通过。准确部署与未完成验收见 [VM_DEPLOYMENT](../../docs/VM_DEPLOYMENT.md)，下文是最初采集适配的授权及实现历史，不代表当前服务仍待安装。
+
 2026-10-03 用户批准此前审阅的 Linux 采集计划，并指定开发与独立审查均使用
 GPT-6.1-sol、两个不同会话。授权只涵盖 dot 云端独立工作区内实现、测试和固定
 可审查版本；允许本地提交，不包含 push、PR、合并、生产部署、个人电脑操作或启动

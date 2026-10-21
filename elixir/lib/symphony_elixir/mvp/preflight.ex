@@ -17,7 +17,7 @@ defmodule SymphonyElixir.Mvp.Preflight do
          :ok <- Config.validate_settings(config),
          {:ok, mvp} <- MvpConfig.settings(workflow, Path.dirname(path)),
          :ok <- require_enabled(mvp),
-         :ok <- Mvp.validate_runtime(config),
+         :ok <- Mvp.validate_runtime(config, mvp),
          :ok <- require_active_states(config),
          :ok <- ExecutionReadiness.defaults(mvp, opts),
          {:ok, _apps} <- Application.ensure_all_started(:req),

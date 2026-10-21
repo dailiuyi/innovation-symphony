@@ -1,4 +1,6 @@
+import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,7 +15,7 @@ from symphony_board.collector import display_title, parse_rollout
 from symphony_board.common import issue_from_cwd, issue_from_prompt, receipt_issue_identifier, repo_of
 from symphony_board.config import BoardConfig, RepoCfg
 from symphony_board.context import _safe_workdir
-from symphony_board.derive import build_tasks, build_stories, enrich_pulls, parse_pull_request, safe_web_url
+from symphony_board.derive import build_tasks, build_stories, enrich_pulls, parse_pull_request, safe_web_url, story_outcome, fetch_gitlab_mr
 
 
 class GitLabViewTests(unittest.TestCase):
@@ -65,7 +67,8 @@ class GitLabViewTests(unittest.TestCase):
                              'issue': gid, 'entries': 1, 'counts': {'reasoning': 0, 'tool': 0},
                              'agent_msgs': [], 'bytes': 0})
         tasks = build_tasks({'runtimes': [{'root': '/runtime', 'receipts': receipts}]}, sessions, {})
-        with patch('symphony_board.derive.fetch_pr') as fetch:
+        mock_resp = io.BytesIO(json.dumps({'state': 'opened', 'title': 'Draft MR', 'draft': True}).encode('utf-8'))
+        with patch('symphony_board.derive.fetch_pr') as fetch, patch('symphony_board.derive.open_gitlab_url', return_value=mock_resp):
             enrich_pulls(tasks)
             fetch.assert_not_called()
         stories = build_stories(tasks)
@@ -77,7 +80,7 @@ class GitLabViewTests(unittest.TestCase):
         gitlab = next(s for s in stories if s['issueLabel'] == 'GL-42')
         self.assertTrue(gitlab['id'].endswith('GL-42'))
         self.assertEqual(gitlab['issueUrl'], receipts[1]['issue_url'])
-        self.assertEqual(gitlab['pr']['state'], 'unknown')
+        self.assertEqual(gitlab['pr']['state'], 'open')
         self.assertIn('MR #3', gitlab['outcomeDetail'])
         self.assertIn('Draft MR', by_label['GL-42']['result'])
         self.assertNotIn('issueUrl', by_label['GH-42'])
@@ -87,7 +90,7 @@ class GitLabViewTests(unittest.TestCase):
         parsed = parse_pull_request(url)
         self.assertEqual(parsed, {'repo': 'team/subgroup/luca', 'number': 123, 'url': url, 'kind': 'merge_request'})
         task = {'pullRequest': url}
-        with patch('symphony_board.derive.subprocess.run') as run:
+        with patch('symphony_board.derive.subprocess.run') as run, patch('symphony_board.derive.open_gitlab_url', side_effect=OSError('network disabled')):
             enrich_pulls([task])
             run.assert_not_called()
         self.assertEqual(task['pr']['url'], url)
@@ -98,6 +101,94 @@ class GitLabViewTests(unittest.TestCase):
                         'https://gitlab.example/team/luca/-/merge_requests/nope'):
             self.assertIsNone(parse_pull_request(invalid))
         self.assertFalse(safe_web_url('javascript:alert(1)'))
+
+    def test_gitlab_merge_request_merged_enters_delivered_story(self):
+        url = 'https://81.71.154.125:8443/team/luca/-/merge_requests/1'
+        task = {
+            'pullRequest': url,
+            'status': 'awaiting_human',
+            'statusLabel': '待人审',
+            'attempt': 'attempt-1',
+            'issue': '1',
+            'runtime': 'local',
+            'repo': 'team/luca',
+            'title': 'Test Issue',
+            'id': 'task-1',
+        }
+        mock_response = io.BytesIO(json.dumps({'state': 'merged', 'title': 'Add feature', 'web_url': url}).encode('utf-8'))
+        with patch('symphony_board.derive.open_gitlab_url', return_value=mock_response):
+            enrich_pulls([task])
+        self.assertEqual(task['pr']['state'], 'merged')
+        outcome, kind, badge, detail = story_outcome(task)
+        self.assertEqual(kind, 'done')
+        self.assertEqual(outcome, '已交付')
+        self.assertIn('人工已合并 MR #1', detail)
+
+    def test_untrusted_gitlab_instance_does_not_send_token(self):
+        url = 'https://untrusted-gitlab.example.org/team/luca/-/merge_requests/1'
+        captured_req = []
+        def fake_open(req, ctx=None):
+            captured_req.append(req)
+            return io.BytesIO(json.dumps({'state': 'opened'}).encode('utf-8'))
+        with patch.dict(os.environ, {'GITLAB_PAT': 'secret-token-123'}), \
+             patch('symphony_board.derive.open_gitlab_url', side_effect=fake_open):
+            fetch_gitlab_mr('team/luca', 1, url)
+        self.assertEqual(len(captured_req), 1)
+        self.assertNotIn('Private-token', captured_req[0].headers)
+        self.assertNotIn('PRIVATE-TOKEN', captured_req[0].headers)
+
+    def test_trusted_gitlab_instance_sends_token(self):
+        url = 'https://81.71.154.125:8443/team/luca/-/merge_requests/1'
+        captured_req = []
+        def fake_open(req, ctx=None):
+            captured_req.append(req)
+            return io.BytesIO(json.dumps({'state': 'opened'}).encode('utf-8'))
+        with patch.dict(os.environ, {'GITLAB_PAT': 'secret-token-123'}), \
+             patch('symphony_board.derive.open_gitlab_url', side_effect=fake_open):
+            fetch_gitlab_mr('team/luca', 1, url)
+        self.assertEqual(len(captured_req), 1)
+        self.assertEqual(captured_req[0].headers.get('Private-token'), 'secret-token-123')
+
+    def test_trusted_gitlab_instance_over_http_does_not_send_token(self):
+        url = 'http://81.71.154.125:8443/team/luca/-/merge_requests/1'
+        captured_req = []
+        def fake_open(req, ctx=None):
+            captured_req.append(req)
+            return io.BytesIO(json.dumps({'state': 'opened'}).encode('utf-8'))
+        with patch.dict(os.environ, {'GITLAB_PAT': 'secret-token-123'}), \
+             patch('symphony_board.derive.open_gitlab_url', side_effect=fake_open):
+            fetch_gitlab_mr('team/luca', 1, url)
+        self.assertEqual(len(captured_req), 1)
+        self.assertNotIn('Private-token', captured_req[0].headers)
+        self.assertNotIn('PRIVATE-TOKEN', captured_req[0].headers)
+
+    def test_safe_redirect_handler_blocks_cross_host_and_strips_token(self):
+        from symphony_board.derive import SafeGitLabRedirectHandler
+        import urllib.request
+        handler = SafeGitLabRedirectHandler()
+        req = urllib.request.Request('https://trusted.local/api/v4/projects/1', headers={'PRIVATE-TOKEN': 'secret'})
+        # Cross-host redirect should be rejected
+        cross_result = handler.redirect_request(req, None, 302, 'Found', {}, 'https://evil.example.com/api')
+        self.assertIsNone(cross_result)
+        # Same-host redirect should strip token
+        same_result = handler.redirect_request(req, None, 302, 'Found', {}, 'https://trusted.local/api/v4/projects/1/redirected')
+        self.assertIsNotNone(same_result)
+        self.assertNotIn('Private-token', same_result.headers)
+        self.assertNotIn('PRIVATE-TOKEN', same_result.headers)
+
+    def test_cross_instance_mr_cache_isolation(self):
+        task_a = {'pullRequest': 'https://gitlab-a.internal/team/luca/-/merge_requests/1'}
+        task_b = {'pullRequest': 'https://gitlab-b.internal/team/luca/-/merge_requests/1'}
+        def fake_open(req, ctx=None):
+            if 'gitlab-a.internal' in req.full_url:
+                return io.BytesIO(json.dumps({'state': 'merged', 'title': 'A', 'web_url': task_a['pullRequest']}).encode('utf-8'))
+            return io.BytesIO(json.dumps({'state': 'opened', 'title': 'B', 'web_url': task_b['pullRequest']}).encode('utf-8'))
+        with patch('symphony_board.derive.open_gitlab_url', side_effect=fake_open):
+            enrich_pulls([task_a, task_b])
+        self.assertEqual(task_a['pr']['state'], 'merged')
+        self.assertEqual(task_b['pr']['state'], 'open')
+        self.assertEqual(task_a['pr']['url'], task_a['pullRequest'])
+        self.assertEqual(task_b['pr']['url'], task_b['pullRequest'])
 
 
 if __name__ == '__main__':

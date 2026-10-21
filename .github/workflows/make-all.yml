@@ -8,7 +8,7 @@ on:
 
 jobs:
   make-all:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: elixir
@@ -41,26 +41,37 @@ jobs:
           cache: true
           working_directory: elixir
 
+      - name: Verify toolchain matches runtime-identity
+        run: mise exec -- python3 ../scripts/runtime_identity.py
+
       - name: Cache deps and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             elixir/deps
             elixir/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          key: ${{ runner.os }}-ubuntu-24.04-${{ hashFiles('scripts/runtime-identity.json', 'elixir/mise.toml') }}-mix-${{ hashFiles('elixir/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
+            ${{ runner.os }}-ubuntu-24.04-${{ hashFiles('scripts/runtime-identity.json', 'elixir/mise.toml') }}-mix-
 
       - name: Verify check environment isolation
         env:
           RUN_MIX_INTEGRATION: "1"
         run: mise exec -- python3 -m unittest discover -s ../scripts/tests -v
 
-      - name: Verify make all
-        run: mise exec -- make check-clean
+      - name: Verify make all in a private PID namespace
+        run: |
+          # The same isolation as the VM gate, as the runner's own user.
+          sudo apt-get install -y --no-install-recommends tini
+          check_path=$(mise exec -- printenv PATH)
+          sudo --preserve-env=SYMPHONY_TEST_CODEX,MIX_HOME,MIX_ARCHIVES,MIX_REBAR3,HEX_HOME bash ../scripts/vm/isolated-check.sh "$(id -un)" "$check_path" "$GITHUB_WORKSPACE" /usr/bin/tini
+
+      - name: Record process visibility after a failed make all
+        if: failure()
+        run: python3 ../scripts/proc_visibility.py
 
   view:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -81,3 +92,10 @@ jobs:
         env:
           NODE_PATH: ${{ github.workspace }}/view/build/browser/node_modules
         run: python -B scripts/run_view_checks.py --output view/build/checks
+      - name: Keep View check evidence after a failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: view-checks
+          path: view/build/checks
+          if-no-files-found: warn

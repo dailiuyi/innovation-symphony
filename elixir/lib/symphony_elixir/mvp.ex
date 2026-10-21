@@ -3,17 +3,30 @@ defmodule SymphonyElixir.Mvp do
 
   require Logger
   alias SymphonyElixir.{Config, Tracker, Workspace}
-  alias SymphonyElixir.Mvp.{ExecutionReadiness, Executor, Intake, ModelServices, Receipt}
+  alias SymphonyElixir.Mvp.Commands
+  alias SymphonyElixir.Mvp.{ExecutionReadiness, Executor, Intake, Maintenance, ModelServices, Receipt, RestartRecovery}
 
   @preserved_failure_statuses ["publish_pending", "comment_pending", "awaiting_external"]
 
   @spec available?(map()) :: boolean()
   def available?(issue) do
     case Config.mvp_settings() do
-      {:ok, %{enabled: false, configured: false}} -> true
-      {:ok, %{enabled: false}} -> false
-      {:ok, settings} -> ExecutionReadiness.backend_ready?(settings) and Intake.ready?(issue, settings.ready_label) and not Receipt.exists?(settings, issue)
-      {:error, _} -> false
+      {:ok, %{enabled: false, configured: false}} ->
+        true
+
+      {:ok, %{enabled: false}} ->
+        false
+
+      {:ok, settings} ->
+        Maintenance.open(settings) == :ok and ExecutionReadiness.backend_ready?(settings) and
+          if Receipt.exists?(settings, issue) do
+            RestartRecovery.eligible?(Receipt.path(settings, issue), settings)
+          else
+            ExecutionReadiness.intake_open(settings) == :ok and Intake.ready?(issue, settings.ready_label)
+          end
+
+      {:error, _} ->
+        false
     end
   end
 
@@ -22,7 +35,9 @@ defmodule SymphonyElixir.Mvp do
   def dispatch_readiness(issue) do
     case Config.mvp_settings() do
       {:ok, %{enabled: true} = settings} ->
-        if Receipt.exists?(settings, issue), do: :ok, else: dispatch_prepared(issue, settings)
+        with :ok <- Maintenance.open(settings) do
+          dispatch_enabled(issue, settings)
+        end
 
       {:ok, _} ->
         :ok
@@ -32,21 +47,73 @@ defmodule SymphonyElixir.Mvp do
     end
   end
 
+  defp dispatch_enabled(issue, settings) do
+    if Receipt.exists?(settings, issue) do
+      with {:ok, _} <- resume_models(issue, settings, []), do: :ok
+    else
+      dispatch_prepared(issue, settings)
+    end
+  end
+
   defp dispatch_prepared(issue, settings) do
-    with {:ok, _} <- ExecutionReadiness.prepare(issue, settings, []), do: :ok
+    with :ok <- ExecutionReadiness.intake_open(settings),
+         {:ok, _} <- ExecutionReadiness.prepare(issue, settings, []),
+         do: :ok
   end
 
   @spec run(map(), pid() | nil, map(), keyword()) :: :ok
   def run(issue, recipient, settings, opts \\ []) do
-    with :ok <- validate_runtime(),
-         true <- Intake.ready?(issue, settings.ready_label),
-         true <- not Receipt.exists?(settings, issue) or {:error, :mvp_receipt_exists},
-         {:ok, prepared} <- ExecutionReadiness.prepare(issue, settings, opts),
-         {:ok, file} <- Receipt.claim(settings, issue) do
-      execute_claimed(issue, recipient, settings, file, opts, prepared)
+    with :ok <- validate_runtime(Config.settings!(), settings),
+         :ok <- Maintenance.open(settings),
+         {:ok, file, prepared, resuming} <- admission(issue, settings, opts) do
+      execute_claimed(issue, recipient, settings, file, opts, prepared, resuming)
     else
       {:error, reason} -> block(issue, recipient, reason)
       false -> block(issue, recipient, :issue_not_ready)
+    end
+  end
+
+  defp admission(issue, settings, opts) do
+    if Receipt.exists?(settings, issue) do
+      with {:ok, models} <- resume_models(issue, settings, opts), do: {:ok, Receipt.path(settings, issue), models, true}
+    else
+      with :ok <- ExecutionReadiness.intake_open(settings),
+           true <- Intake.ready?(issue, settings.ready_label),
+           {:ok, prepared} <- ExecutionReadiness.prepare(issue, settings, opts),
+           :ok <- ExecutionReadiness.intake_open(settings),
+           :ok <- Maintenance.open(settings),
+           {:ok, file} <- Receipt.claim(settings, issue) do
+        {:ok, file, prepared, false}
+      end
+    end
+  end
+
+  defp resume_models(issue, settings, opts) do
+    file = Receipt.path(settings, issue)
+
+    if RestartRecovery.eligible?(file, settings) do
+      receipt = Receipt.read(file)
+      models = %{coder: receipt["models"]["coder"], reviewer: receipt["models"]["reviewer"], services: receipt["services"]}
+
+      with :ok <- restart_authorization(file, issue, settings, opts),
+           {:ok, report} <- ExecutionReadiness.check(settings, models, opts),
+           :ok <- Maintenance.open(settings),
+           do: {:ok, Map.put(models, :readiness, report)}
+    else
+      {:error, :mvp_receipt_exists}
+    end
+  end
+
+  defp restart_authorization(file, issue, settings, opts) do
+    case Intake.authorize_claimed(issue, settings, opts) do
+      {:error, {:unauthorized_ready_actor, _}} = error ->
+        RestartRecovery.stop(file, issue, settings, error)
+
+      {:error, reason} = error when reason in [:issue_not_ready, :ready_label_event_not_found] ->
+        RestartRecovery.stop(file, issue, settings, error)
+
+      result ->
+        result
     end
   end
 
@@ -63,14 +130,25 @@ defmodule SymphonyElixir.Mvp do
 
   @doc false
   @spec validate_runtime(map()) :: :ok | {:error, term()}
-  def validate_runtime(config \\ Config.settings!()) do
+  def validate_runtime(config \\ Config.settings!()), do: validate_runtime(config, %{})
+
+  @spec validate_runtime(map(), map()) :: :ok | {:error, term()}
+  def validate_runtime(config, settings) do
     if config.tracker.kind in ["github", "gitlab"] and config.agent.max_concurrent_agents == 1 and
          config.worker.ssh_hosts == [] and match?({:unix, _}, :os.type()) and
-         config.codex.thread_sandbox == "workspace-write" and
-         is_nil(config.codex.turn_sandbox_policy) and is_map(config.codex.approval_policy) do
+         sandbox_policy?(config.codex, settings) do
       :ok
     else
       {:error, :mvp_requires_github_serial_local_linux_and_default_sandbox}
+    end
+  end
+
+  defp sandbox_policy?(codex, settings) do
+    if ExecutionReadiness.vm?(settings) do
+      ExecutionReadiness.backend_ready?(settings) and codex.approval_policy == "never" and
+        codex.thread_sandbox == "danger-full-access" and codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+    else
+      codex.thread_sandbox == "workspace-write" and is_nil(codex.turn_sandbox_policy) and is_map(codex.approval_policy)
     end
   end
 
@@ -80,7 +158,7 @@ defmodule SymphonyElixir.Mvp do
 
   defp prepared_models(models, _issue, _settings, _opts), do: {:ok, models}
 
-  defp execute_claimed(issue, recipient, settings, file, opts, prepared) do
+  defp execute_claimed(issue, recipient, settings, file, opts, prepared, resuming) do
     tracker = Tracker.bind_agent_tools().tracker_settings
 
     handler = fn message ->
@@ -92,17 +170,11 @@ defmodule SymphonyElixir.Mvp do
 
     result =
       with {:ok, models} <- prepared_models(prepared, issue, settings, options),
-           :ok <- Receipt.update(file, "preparing", %{"models" => Map.take(models, [:coder, :reviewer]), "services" => models.services, "execution_readiness" => Map.get(models, :readiness)}),
-           {:ok, workspace} <- Workspace.create_for_issue(issue, nil) do
+           :ok <- freeze_claim(file, issue, settings, models, resuming),
+           {:ok, workspace} <- claim_workspace(issue, settings, resuming) do
         if is_pid(recipient), do: send(recipient, {:worker_runtime_info, issue.id, %{worker_host: nil, workspace_path: workspace}})
 
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, nil) do
-            Executor.run(workspace, issue, settings, models, file, options)
-          end
-        after
-          Workspace.run_after_run_hook(workspace, issue, nil)
-        end
+        execute_workspace(workspace, issue, settings, models, file, options, resuming)
       end
 
     case result do
@@ -110,12 +182,50 @@ defmodule SymphonyElixir.Mvp do
         block(issue, recipient, {:awaiting_human_merge, url})
 
       {:error, reason} ->
-        unless Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => inspect(reason)})
+        unless resuming or Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => inspect(reason)})
         block(issue, recipient, reason)
     end
   rescue
     exception ->
-      unless Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => Exception.message(exception)})
+      unless resuming or Receipt.read(file)["status"] in @preserved_failure_statuses, do: Receipt.update(file, "blocked", %{"reason" => Exception.message(exception)})
       block(issue, recipient, {:mvp_failed, Exception.message(exception)})
+  end
+
+  defp execute_workspace(workspace, issue, settings, models, file, options, resuming) do
+    run = fn -> execute_workspace_mode(workspace, issue, settings, models, file, options, resuming) end
+    data = Receipt.read(file)
+
+    if RestartRecovery.enabled?(settings) and is_nil(data["recovery"]) do
+      {:ok, started, _} = DateTime.from_iso8601(data["restart_recovery"]["started_at"])
+      deadline = DateTime.to_unix(started, :millisecond) + settings.recovery.max_elapsed_ms
+      Commands.with_git_fetch_deadline(deadline, run)
+    else
+      run.()
+    end
+  end
+
+  defp execute_workspace_mode(workspace, issue, settings, models, file, options, true),
+    do: RestartRecovery.resume(workspace, issue, settings, models, file, options)
+
+  defp execute_workspace_mode(workspace, issue, settings, models, file, options, false) do
+    with :ok <- Workspace.run_before_run_hook(workspace, issue, nil) do
+      Executor.run(workspace, issue, settings, models, file, options)
+    end
+  after
+    Workspace.run_after_run_hook(workspace, issue, nil)
+  end
+
+  defp claim_workspace(issue, _settings, false), do: Workspace.create_for_issue(issue, nil)
+
+  defp claim_workspace(issue, settings, true) do
+    workspace = Path.join(settings.execution_workspace_root, Workspace.workspace_key(issue))
+    {:ok, workspace}
+  end
+
+  defp freeze_claim(_file, _issue, _settings, _models, true), do: :ok
+
+  defp freeze_claim(file, issue, settings, models, false) do
+    with :ok <- Receipt.update(file, "preparing", %{"models" => Map.take(models, [:coder, :reviewer]), "services" => models.services, "execution_readiness" => Map.get(models, :readiness)}),
+         do: RestartRecovery.freeze(file, issue, settings, models)
   end
 end

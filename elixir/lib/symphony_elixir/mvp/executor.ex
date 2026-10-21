@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Mvp.Executor do
   alias SymphonyElixir.Mvp.{
     Attempts,
     AutomaticAcceptance,
+    CheckEvidence,
     Commands,
     Delivery,
     ExecutionSandbox,
@@ -17,10 +18,13 @@ defmodule SymphonyElixir.Mvp.Executor do
     OperatorRecheck,
     Receipt,
     Recovery,
+    RestartRecovery,
     Review,
     ReviewProtocol,
     Usage
   }
+
+  alias SymphonyElixir.PathSafety
 
   @max_wall_budget_extension_ms 86_400_000
   @workspace_digest_max_metadata_bytes 16 * 1_024 * 1_024
@@ -34,8 +38,635 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     with :ok <- Forge.receipt_scope(Receipt.read(receipt), opts),
          true <- (is_integer(limit) and limit in 0..5) or {:error, :mvp_rework_not_supported},
-         true <- is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started} do
+         true <- is_nil(Receipt.read(receipt)["base_sha"]) or {:error, :mvp_execution_already_started},
+         :ok <- restart_freeze(receipt, issue, settings, models) do
       execute(workspace, issue, settings, models, receipt, opts)
+    end
+  end
+
+  @doc "Resume only a frozen new VM task whose previous OS controller is provably dead."
+  @spec resume_restart(Path.t(), map(), map(), map(), Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def resume_restart(workspace, issue, settings, models, receipt, opts \\ []) do
+    eligible = RestartRecovery.eligible?(receipt, settings)
+
+    result =
+      with {:ok, _} <- RestartRecovery.validate(workspace, issue, settings, models, receipt) do
+        RestartRecovery.locked(receipt, fn ->
+          restart_locked(workspace, issue, settings, models, receipt, opts)
+        end)
+      end
+
+    if eligible and result != {:error, :mvp_restart_active}, do: RestartRecovery.stop(receipt, issue, settings, result), else: result
+  end
+
+  defp restart_locked(workspace, issue, settings, models, receipt, opts) do
+    with {:ok, data} <- RestartRecovery.validate(workspace, issue, settings, models, receipt),
+         :ok <- Forge.receipt_scope(data, opts),
+         :ok <- restart_preflight(data, settings, opts),
+         :ok <- RestartRecovery.adopt(receipt, data) do
+      restart_adopted(workspace, issue, settings, models, receipt, opts, data)
+    end
+  end
+
+  defp restart_adopted(workspace, issue, settings, models, receipt, opts, %{"status" => "comment_pending"}) do
+    # The adopted owner is this live controller. A confirmed rejection comment leaves a
+    # resumable blocked receipt, which would fence every later intake scan, so finish the
+    # rework now, exactly as a restart after the comment was saved would.
+    with {:ok, _} <- Delivery.reconcile(receipt, opts) do
+      restart_execute(workspace, issue, settings, models, receipt, opts, Receipt.read(receipt))
+    end
+  end
+
+  defp restart_adopted(_workspace, _issue, _settings, _models, receipt, opts, %{"status" => "publish_pending"}),
+    do: Delivery.reconcile(receipt, opts)
+
+  defp restart_adopted(workspace, issue, settings, models, receipt, opts, data),
+    do: restart_execute(workspace, issue, settings, models, receipt, opts, data)
+
+  defp restart_freeze(receipt, issue, settings, models) do
+    if is_nil(Receipt.read(receipt)["restart_recovery"]), do: RestartRecovery.freeze(receipt, issue, settings, models), else: :ok
+  end
+
+  defp restart_preflight(%{"status" => status}, _settings, _opts) when status in ["publish_pending", "comment_pending"], do: :ok
+
+  defp restart_preflight(data, settings, opts) do
+    with :ok <- RestartRecovery.budget(data, settings, opts),
+         false <- restart_open_model?(data) do
+      :ok
+    else
+      true -> {:error, :mvp_restart_model_call_uncertain}
+      error -> error
+    end
+  end
+
+  defp restart_open_model?(data) do
+    events = get_in(data, ["recovery", "events"]) || []
+
+    Enum.any?(events, fn event ->
+      event["role"] in ["coder", "reviewer", "diagnosis"] and event["status"] == "started" and
+        not Enum.any?(events, &(&1["usage_key"] == event["usage_key"] and &1["status"] == "finished"))
+    end)
+  end
+
+  defp restart_execute(workspace, issue, settings, models, receipt, opts, data) do
+    case data["restart_recovery"]["checkpoint"] do
+      nil ->
+        with :ok <- File.mkdir_p(workspace), do: execute(workspace, issue, settings, models, receipt, opts)
+
+      checkpoint ->
+        metadata = Map.new(checkpoint["metadata"], fn {path, value} -> {path, if(is_nil(value), do: {:error, :enoent}, else: {:ok, Base.decode64!(value)})} end)
+
+        context = %{
+          workspace: workspace,
+          issue: issue,
+          settings: settings,
+          models: Map.take(models, [:coder, :reviewer]),
+          services: models[:services],
+          receipt: receipt,
+          opts: opts,
+          branch: checkpoint["branch"],
+          repository: %{repo: checkpoint["repository"]["repo"], base: checkpoint["repository"]["base"], url: checkpoint["repository"]["url"]},
+          evidence: receipt <> ".evidence",
+          base: checkpoint["base_sha"],
+          metadata: metadata,
+          baseline_digest: Base.decode16!(checkpoint["baseline_sha256"], case: :lower),
+          limit: Recovery.limit(settings)
+        }
+
+        with :ok <- restart_execution_integrity(context, data, checkpoint),
+             true <- data["base_sha"] == context.base and data["models"] == models_json(context.models),
+             true <- data["services"] == context.services,
+             true <- data["recovery"]["policy"] == policy_json(settings.recovery) do
+          restart_dispatch(context, data, checkpoint) |> then(&finish(context, &1))
+        else
+          false -> {:error, :mvp_restart_binding_invalid}
+          error -> error
+        end
+    end
+  end
+
+  defp restart_dispatch(context, data, checkpoint) do
+    last = List.last(data["rounds"] || [])
+
+    cond do
+      is_nil(last) -> round(context, 1, context.base, nil)
+      data["status"] == "coding" -> restart_coding(context, data, checkpoint, last)
+      data["status"] in ["checking", "reviewing", "blocked"] -> restart_candidate(context, data, last)
+      data["status"] == "recovering" -> restart_diagnosis(context, data, last)
+      true -> {:error, :mvp_restart_stage_uncertain}
+    end
+  end
+
+  defp restart_coding(context, data, checkpoint, last) do
+    events = restart_attempts(data, last["round"], "coder")
+
+    case List.last(events) do
+      nil ->
+        code_round(context, last["round"], checkpoint["head"], checkpoint["feedback"], last["evidence"])
+
+      event ->
+        with {:ok, result} <- restart_completed(data, event),
+             :ok <- restart_coder_source(context, data, checkpoint, result),
+             {:ok, sha} <- restart_commit_candidate(context, checkpoint["head"]),
+             :ok <- record(context, "checking", %{"candidate_sha" => sha}) do
+          restart_candidate(context, Receipt.read(context.receipt), Map.put(last, "candidate_sha", sha))
+        end
+    end
+  end
+
+  defp restart_execution_integrity(context, %{"status" => "coding"} = data, checkpoint) do
+    case data["restart_recovery"]["commit_intent"] do
+      nil -> agent_integrity(context, :coder, checkpoint["head"])
+      intent -> restart_commit_binding(context, checkpoint, intent)
+    end
+  end
+
+  defp restart_execution_integrity(context, _data, checkpoint),
+    do: agent_integrity(context, :coder, checkpoint["head"])
+
+  defp restart_coder_source(context, data, checkpoint, result) do
+    intent = data["restart_recovery"]["commit_intent"]
+    index = if intent, do: [env: [{"GIT_INDEX_FILE", intent["source_index"]}]], else: []
+
+    with {:ok, digest} <- workspace_digest(context.workspace, index),
+         true <- digest == checkpoint["workspace_sha256"] and digest == result["source_after_model"] do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_workspace_changed}
+    end
+  end
+
+  defp restart_diagnosis(context, data, last) do
+    context = Map.put(context, :check_attempt, restart_check_attempt(data, last) - 1)
+    feedback_event = Enum.find(Enum.reverse(data["recovery"]["events"]), &is_map(&1["feedback"]))
+    diagnosis = List.last(restart_attempts(data, last["round"], "diagnosis"))
+
+    with true <- is_map(feedback_event),
+         :ok <- verify(context, last["candidate_sha"]) do
+      restart_diagnostic_action(context, data, last, feedback_event["feedback"], diagnosis)
+    else
+      false -> {:error, :mvp_restart_stage_uncertain}
+      error -> error
+    end
+  end
+
+  defp restart_diagnostic_action(context, data, last, feedback, nil) do
+    history = Enum.map(data["recovery"]["events"], & &1["fingerprint"])
+    recover_code_or_unknown(context, last["round"], last["candidate_sha"], feedback, context.settings.recovery, history)
+  end
+
+  defp restart_diagnostic_action(context, data, last, feedback, diagnosis) do
+    with {:ok, result} <- restart_completed(data, diagnosis),
+         {:ok, advice} <- Recovery.parse(result["output_text"], get_in(context, [:services, "coder"])) do
+      diagnostic_action(Map.put(context, :diagnosis_raw, result["output_text"]), last["round"], last["candidate_sha"], feedback, advice)
+    end
+  end
+
+  defp restart_candidate(context, data, last) do
+    sha = last["candidate_sha"]
+    attempt = restart_check_attempt(data, last)
+    context = Map.put(context, :check_attempt, attempt)
+
+    with :ok <- verify(context, sha),
+         true <- attempt <= context.settings.recovery.stage_attempts or {:error, :mvp_recovery_stage_exhausted},
+         {:ok, evidence} <- restart_evidence(context, last),
+         :ok <- recovery_budget(context, last["round"]) do
+      restart_review_candidate(context, data, last, evidence)
+    end
+  end
+
+  defp restart_check_attempt(data, last) do
+    number = last["round"]
+    sha = last["candidate_sha"]
+
+    case data["formal_check_evidence"] do
+      %{"round" => ^number, "candidate_sha" => ^sha, "attempt" => attempt} -> attempt + 1
+      _ -> 1
+    end
+  end
+
+  defp restart_review_candidate(context, data, last, evidence) do
+    reviewers = restart_attempts(data, last["round"], "reviewer")
+
+    case restart_saved_review(context, data, last, reviewers) do
+      {:ok, review} ->
+        restart_confirm_review(context, last, evidence, review)
+
+      :fresh ->
+        stage = Enum.reduce(reviewers, 1, &max(&1["stage_attempt"] + 1, &2))
+        check_and_review(Map.put(context, :restart_stage_attempts, %{reviewer: stage}), last["round"], last["candidate_sha"], evidence)
+
+      error ->
+        error
+    end
+  end
+
+  defp restart_confirm_review(context, last, evidence, review) do
+    sha = last["candidate_sha"]
+
+    with :ok <- checks(context, evidence),
+         {:ok, _} <- CheckEvidence.current(context, last["round"], sha, evidence),
+         :ok <- verify(context, sha),
+         review_path = Path.join(evidence, "review.json"),
+         :ok <- File.write(review_path, Jason.encode!(review), [:exclusive, :sync]),
+         :ok <- record(context, "reviewing", %{"review" => review, "review_path" => review_path}) do
+      restart_conclude(context, last, sha, review)
+    end
+  end
+
+  defp restart_conclude(context, %{"comment" => %{"id" => id}} = last, sha, %{"approved" => false} = review) when is_integer(id) and id > 0 do
+    if last["comment"]["candidate_sha"] == sha and last["comment"]["round"] == last["round"] do
+      case Review.disposition(review) do
+        :repair_code ->
+          rework(context, last["round"], sha, review)
+
+        :awaiting_external ->
+          create_external_handoff(context, "review", last["round"], sha, Review.external_conditions(review), %{
+            "source_data" => review,
+            "source_raw" => Jason.encode!(review),
+            "source_digest" => digest_hex(Jason.encode!(review)),
+            "review_path" => List.last(Receipt.read(context.receipt)["rounds"])["review_path"]
+          })
+      end
+    else
+      {:error, :mvp_restart_binding_invalid}
+    end
+  end
+
+  defp restart_conclude(context, last, sha, review), do: conclude(context, last["round"], sha, review)
+
+  defp restart_saved_review(context, data, last, reviewers) do
+    # A durable rejection cannot be erased by asking a new reviewer about the same SHA.
+    case last["review"] do
+      review when is_map(review) ->
+        with {:ok, raw} <- File.read(last["review_path"]), {:ok, ^review} <- Review.parse(raw, context.limit), do: {:ok, review}
+
+      _ ->
+        restart_review_attempt(context, data, last, List.last(reviewers))
+    end
+  end
+
+  defp restart_review_attempt(_context, data, last, nil) do
+    if rejected_candidate?(data["rounds"], last["candidate_sha"]), do: {:error, :mvp_restart_rejected_candidate}, else: :fresh
+  end
+
+  defp restart_review_attempt(context, data, _last, event) do
+    finished = Enum.find(data["recovery"]["events"], &(&1["usage_key"] == event["usage_key"] and &1["status"] == "finished"))
+
+    if get_in(finished, ["completed", "ok"]) == false and finished["outcome"] == inspect({:error, :mvp_invalid_review}) do
+      :fresh
+    else
+      with {:ok, result} <- restart_completed(data, event), do: Review.parse(result["output_text"], context.limit)
+    end
+  end
+
+  defp restart_attempts(data, number, role) do
+    Enum.filter(data["recovery"]["events"], &(&1["round"] == number and &1["role"] == role and &1["status"] == "started"))
+  end
+
+  defp restart_completed(data, event) do
+    finished = Enum.find(data["recovery"]["events"], &(&1["usage_key"] == event["usage_key"] and &1["status"] == "finished"))
+
+    with %{"completed" => %{"ok" => true} = result} <- finished,
+         {:ok, output} <- File.read(Path.join(event["evidence"], "output.txt")),
+         true <- output == result["output_text"] and digest_hex(output) == result["output_sha256"] do
+      {:ok, Map.put(result, "source_after_model", finished["source_after_model"])}
+    else
+      _ -> {:error, :mvp_restart_model_evidence_invalid}
+    end
+  end
+
+  defp restart_evidence(context, last) do
+    generation = Receipt.read(context.receipt)["restart_recovery"]["generation"]
+    path = Path.join(last["evidence"], "restart-#{generation}")
+    with :ok <- File.mkdir(path), do: {:ok, path}
+  end
+
+  defp restart_prepare(workspace, repository, branch, receipt, opts) do
+    if is_map(Receipt.read(receipt)["restart_recovery"]) do
+      intent = Receipt.read(receipt)["restart_recovery"]["preparation"]
+
+      with :ok <- restart_seed(workspace, intent),
+           {:ok, ""} <- Commands.git(["status", "--porcelain"], workspace),
+           :ok <- restart_prepare_intent(workspace, repository, branch, receipt, intent),
+           {:ok, target} <- restart_prepare_target(workspace, repository, receipt, opts),
+           :ok <- restart_checkout(workspace, branch, target) do
+        {:ok, target}
+      else
+        {:error, _} = error -> error
+        _ -> {:error, :mvp_restart_preparation_changed}
+      end
+    else
+      prepare(workspace, repository, branch, opts)
+    end
+  end
+
+  defp restart_seed(workspace, nil) do
+    head = if File.dir?(Path.join(workspace, ".git")), do: Commands.git(["rev-parse", "--verify", "HEAD"], workspace), else: {:error, :mvp_workspace_git_missing}
+
+    case head do
+      {:ok, _head} ->
+        :ok
+
+      {:error, _} ->
+        with {:ok, entries} <- File.ls(workspace),
+             true <- entries -- [".git"] == [],
+             {:ok, _} <- Commands.git(["init"], workspace),
+             {:ok, ""} <- Commands.git(["for-each-ref", "--format=%(refname)"], workspace) do
+          :ok
+        else
+          _ -> {:error, :mvp_restart_preparation_changed}
+        end
+    end
+  end
+
+  defp restart_seed(_workspace, _intent), do: :ok
+
+  defp restart_prepare_intent(workspace, repository, branch, receipt, nil) do
+    head =
+      case Commands.git(["rev-parse", "--verify", "HEAD"], workspace) do
+        {:ok, sha} -> sha
+        {:error, _} -> nil
+      end
+
+    with {:ok, encoded} <- ExternalHandoff.encode_git_metadata(metadata(workspace)) do
+      intent = %{"repository" => repository_json(repository), "branch" => branch, "initial_head" => head, "metadata" => encoded}
+      RestartRecovery.preparation(receipt, workspace, intent)
+    end
+  end
+
+  defp restart_prepare_intent(workspace, repository, branch, _receipt, intent) do
+    with true <- intent["repository"] == repository_json(repository) and intent["branch"] == branch,
+         {:ok, encoded} <- ExternalHandoff.encode_git_metadata(metadata(workspace)),
+         true <- encoded == intent["metadata"],
+         {:ok, head} <- restart_preparing_head(workspace, intent),
+         true <- head in [intent["initial_head"], intent["target"]] do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_preparation_changed}
+    end
+  end
+
+  defp restart_preparing_head(workspace, %{"initial_head" => nil, "target" => nil}), do: restart_unborn_head(workspace)
+
+  defp restart_preparing_head(workspace, %{"initial_head" => initial}) do
+    case Commands.git(["rev-parse", "--verify", "HEAD"], workspace) do
+      {:ok, head} -> {:ok, head}
+      {:error, _} when is_nil(initial) -> restart_unborn_head(workspace)
+      error -> error
+    end
+  end
+
+  defp restart_unborn_head(workspace) do
+    with {:ok, branch} <- Commands.git(["symbolic-ref", "HEAD"], workspace),
+         {:ok, ""} <- Commands.git(["for-each-ref", "--format=%(refname)"], workspace),
+         {:error, _} <- Commands.git(["show-ref", "--verify", branch], workspace) do
+      {:ok, nil}
+    else
+      _ -> {:error, :mvp_restart_preparation_changed}
+    end
+  end
+
+  defp restart_prepare_target(workspace, repository, receipt, opts) do
+    case Receipt.read(receipt)["restart_recovery"]["preparation"]["target"] do
+      nil ->
+        with {:ok, env} <- Delivery.git_env(opts),
+             {:ok, _} <- Commands.git(["fetch", "--no-tags", repository.url, repository.base], workspace, env: env),
+             {:ok, target} <- Commands.git(["rev-parse", "FETCH_HEAD"], workspace),
+             :ok <- RestartRecovery.preparation(receipt, workspace, %{"target" => target}) do
+          {:ok, target}
+        end
+
+      target ->
+        {:ok, target}
+    end
+  end
+
+  defp restart_checkout(workspace, branch, target) do
+    case Commands.git(["rev-parse", "--verify", "refs/heads/" <> branch], workspace) do
+      {:ok, ^target} ->
+        with {:ok, ^branch} <- Commands.git(["branch", "--show-current"], workspace), {:ok, ^target} <- Commands.git(["rev-parse", "HEAD"], workspace), do: :ok
+
+      {:error, _} ->
+        with {:ok, _} <- Commands.git(["checkout", "-b", branch, target], workspace), do: :ok
+
+      _ ->
+        {:error, :mvp_restart_preparation_changed}
+    end
+  end
+
+  defp restart_reset_commit(context) do
+    data = Receipt.read(context.receipt)
+
+    case data["restart_recovery"] do
+      %{"commit_intent" => _} = frozen ->
+        Receipt.update(context.receipt, data["status"], %{"restart_recovery" => Map.delete(frozen, "commit_intent")})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp restart_commit_candidate(context, head) do
+    data = Receipt.read(context.receipt)
+
+    if is_map(data["restart_recovery"]) do
+      with {:ok, intent} <- restart_commit_intent(context, head, data) do
+        restart_apply_commit(context, intent)
+      end
+    else
+      commit_candidate(context.workspace, context.issue)
+    end
+  end
+
+  defp restart_commit_intent(_context, _head, %{"restart_recovery" => %{"commit_intent" => intent}}),
+    do: {:ok, intent}
+
+  defp restart_commit_intent(context, head, data) do
+    checkpoint = data["restart_recovery"]["checkpoint"]
+    last = List.last(data["rounds"])
+    event = List.last(restart_attempts(data, last["round"], "coder"))
+    directory = Path.join(last["evidence"], "candidate-commit-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
+
+    with {:ok, status} <- Commands.git(["status", "--porcelain"], context.workspace),
+         true <- status != "" or {:error, :mvp_no_changes},
+         {:ok, result} <- restart_completed(data, event),
+         :ok <- restart_coder_source(context, data, checkpoint, result),
+         :ok <- File.mkdir(directory),
+         {:ok, source} <- restart_commit_source(context.workspace, directory),
+         {:ok, tree} <- restart_worktree_tree(context.workspace, source["source_index"], directory) do
+      intent =
+        Map.merge(source, %{
+          "parent" => head,
+          "tree" => tree,
+          "branch" => context.branch,
+          "round" => last["round"],
+          "timestamp" => System.system_time(:second),
+          "commit_path" => Path.join(directory, "commit")
+        })
+
+      restart_freeze_commit(context, intent)
+    end
+  end
+
+  defp restart_commit_source(workspace, directory) do
+    source_index = Path.join(directory, "source.index")
+    options = [env: [{"GIT_INDEX_FILE", source_index}]]
+
+    with :ok <- File.cp(Path.join(workspace, ".git/index"), source_index),
+         {:ok, original_tree} <- Commands.git(["write-tree"], workspace, options),
+         {:ok, digest} <- workspace_digest(workspace, options),
+         {:ok, index_bytes} <- File.read(source_index) do
+      {:ok, %{"source_index" => source_index, "source_index_sha256" => digest_hex(index_bytes), "source_before" => digest, "original_tree" => original_tree}}
+    end
+  end
+
+  defp restart_worktree_tree(workspace, source_index, directory) do
+    target_index = Path.join(directory, "target.index")
+    options = [env: [{"GIT_INDEX_FILE", target_index}]]
+
+    with :ok <- File.cp(source_index, target_index),
+         {:ok, _} <- Commands.git(["add", "--all"], workspace, options) do
+      Commands.git(["write-tree"], workspace, options)
+    end
+  end
+
+  defp restart_commit_payload(issue, intent) do
+    identity = "Symphony <symphony@localhost> #{intent["timestamp"]} +0000"
+
+    "tree #{intent["tree"]}\nparent #{intent["parent"]}\nauthor #{identity}\ncommitter #{identity}\n\n" <>
+      "#{issue.identifier}: #{issue.title}\n"
+  end
+
+  defp restart_freeze_commit(context, intent) do
+    with :ok <- File.write(intent["commit_path"], restart_commit_payload(context.issue, intent), [:exclusive, :sync]),
+         {:ok, sha} <- Commands.git(["hash-object", "-t", "commit", intent["commit_path"]], context.workspace) do
+      intent = Map.put(intent, "candidate_sha", sha)
+      data = Receipt.read(context.receipt)
+      frozen = Map.put(data["restart_recovery"], "commit_intent", intent)
+      :ok = Receipt.update(context.receipt, data["status"], %{"restart_recovery" => frozen})
+      :ok = restart_commit_event(context, :mvp_candidate_commit_intent)
+      {:ok, intent}
+    end
+  end
+
+  defp restart_commit_binding(context, checkpoint, intent) do
+    with :ok <- assert_metadata(context.workspace, context.metadata),
+         true <- tree_digest(Path.join(context.evidence, "baseline")) == context.baseline_digest,
+         true <- intent["parent"] == checkpoint["head"] and intent["branch"] == context.branch,
+         true <- intent["source_before"] == checkpoint["workspace_sha256"],
+         :ok <- restart_commit_files(context, intent),
+         :ok <- restart_commit_workspace(context, intent) do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_commit_binding_invalid}
+    end
+  end
+
+  defp restart_commit_files(context, intent) do
+    directory = Path.dirname(intent["source_index"])
+    expected_root = Path.join(context.evidence, "round-#{intent["round"]}")
+    number = List.last(Receipt.read(context.receipt)["rounds"])["round"]
+
+    with true <- intent["round"] == number and Path.dirname(directory) == expected_root,
+         true <- Regex.match?(~r/\Acandidate-commit-\d+-\d+\z/, Path.basename(directory)),
+         true <- intent["source_index"] == Path.join(directory, "source.index"),
+         true <- intent["commit_path"] == Path.join(directory, "commit"),
+         {:ok, ^directory} <- PathSafety.canonicalize(directory),
+         {:ok, %{type: :regular}} <- File.lstat(intent["source_index"]),
+         {:ok, %{type: :regular}} <- File.lstat(intent["commit_path"]),
+         {:ok, index_bytes} <- File.read(intent["source_index"]),
+         true <- digest_hex(index_bytes) == intent["source_index_sha256"],
+         {:ok, commit_bytes} <- File.read(intent["commit_path"]),
+         true <- commit_bytes == restart_commit_payload(context.issue, intent),
+         {:ok, sha} <- Commands.git(["hash-object", "-t", "commit", intent["commit_path"]], context.workspace),
+         true <- sha == intent["candidate_sha"] do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_commit_binding_invalid}
+    end
+  end
+
+  defp restart_commit_workspace(context, intent) do
+    branch = intent["branch"]
+    options = [env: [{"GIT_INDEX_FILE", intent["source_index"]}]]
+
+    with false <- File.exists?(Path.join(context.workspace, ".git/index.lock")),
+         {:ok, ^branch} <- Commands.git(["branch", "--show-current"], context.workspace),
+         {:ok, head} <- Commands.git(["rev-parse", "HEAD"], context.workspace),
+         true <- head in [intent["parent"], intent["candidate_sha"]],
+         {:ok, digest} <- workspace_digest(context.workspace, options),
+         true <- digest == intent["source_before"],
+         {:ok, tree} <- Commands.git(["write-tree"], context.workspace),
+         true <- tree in [intent["original_tree"], intent["tree"]] do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_commit_binding_invalid}
+    end
+  end
+
+  defp restart_apply_commit(context, intent) do
+    checkpoint = Receipt.read(context.receipt)["restart_recovery"]["checkpoint"]
+    tree = intent["tree"]
+    sha = intent["candidate_sha"]
+
+    with :ok <- restart_commit_binding(context, checkpoint, intent),
+         {:ok, _} <- Commands.git(["add", "--all"], context.workspace),
+         {:ok, ^tree} <- Commands.git(["write-tree"], context.workspace),
+         :ok <- restart_commit_event(context, :mvp_candidate_staged),
+         {:ok, ^sha} <- Commands.git(["hash-object", "-t", "commit", "-w", intent["commit_path"]], context.workspace),
+         :ok <- restart_commit_ref(context, intent),
+         :ok <- restart_commit_event(context, :mvp_candidate_committed) do
+      {:ok, sha}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :mvp_restart_commit_binding_invalid}
+    end
+  end
+
+  defp restart_commit_ref(context, intent) do
+    branch = intent["branch"]
+
+    with {:ok, ^branch} <- Commands.git(["branch", "--show-current"], context.workspace),
+         {:ok, head} <- Commands.git(["rev-parse", "HEAD"], context.workspace),
+         true <- head in [intent["parent"], intent["candidate_sha"]],
+         {:ok, _} <- Commands.git(["update-ref", "refs/heads/" <> branch, intent["candidate_sha"], head], context.workspace) do
+      :ok
+    else
+      _ -> {:error, :mvp_restart_commit_binding_invalid}
+    end
+  end
+
+  defp restart_commit_event(context, event) do
+    on_message(context).(%{event: event, timestamp: DateTime.utc_now(), message: "candidate commit"})
+    :ok
+  end
+
+  defp restart_snapshot(workspace, evidence, base, receipt) do
+    if is_map(Receipt.read(receipt)["restart_recovery"]) do
+      restart_prepare_snapshot(workspace, evidence, base)
+    else
+      snapshot(workspace, evidence, base)
+    end
+  end
+
+  defp restart_prepare_snapshot(workspace, evidence, base) do
+    staging = Path.join(evidence, "preparing-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}")
+
+    with :ok <- File.mkdir(staging),
+         :ok <- snapshot(workspace, staging, base) do
+      restart_publish_baseline(staging, evidence)
+    end
+  end
+
+  defp restart_publish_baseline(staging, evidence) do
+    baseline = Path.join(evidence, "baseline")
+    prepared = Path.join(staging, "baseline")
+
+    if File.exists?(baseline) do
+      if tree_digest(baseline) == tree_digest(prepared), do: :ok, else: {:error, :mvp_restart_baseline_changed}
+    else
+      File.rename(prepared, baseline)
     end
   end
 
@@ -566,7 +1197,7 @@ defmodule SymphonyElixir.Mvp.Executor do
   defp frozen_handoff_execution?(context, data, record, encoded_metadata) do
     expected = %{
       "checks" => context.settings.checks,
-      "recovery_policy" => policy_json(context.settings.recovery),
+      "recovery_policy" => record["recovery_policy"],
       "recovery_started_at" => data["recovery"]["started_at"],
       "recovery_state" => data["recovery"],
       "usage" => data["usage"],
@@ -579,6 +1210,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     }
 
     Map.take(record, Map.keys(expected)) == expected and
+      Recovery.same_policy?(record["recovery_policy"], context.settings.recovery) and
       data["recovery"]["policy"] == record["recovery_policy"] and external_checks_binding?(context, data)
   end
 
@@ -1303,11 +1935,13 @@ defmodule SymphonyElixir.Mvp.Executor do
 
   @doc "Bind tracked index metadata, current file content and non-build untracked files with streaming hashes."
   @spec workspace_digest(Path.t()) :: {:ok, String.t()} | {:error, term()}
-  def workspace_digest(workspace) do
-    metadata = workspace_git!(workspace, ["ls-files", "--stage", "-z"]) |> workspace_index!()
+  def workspace_digest(workspace), do: workspace_digest(workspace, [])
+
+  defp workspace_digest(workspace, git_options) do
+    metadata = workspace_git!(workspace, ["ls-files", "--stage", "-z"], git_options) |> workspace_index!()
     tracked = metadata |> Map.keys() |> Enum.sort()
-    untracked = workspace_git!(workspace, ["ls-files", "--others", "--exclude-standard", "-z"])
-    ignored = workspace_git!(workspace, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
+    untracked = workspace_git!(workspace, ["ls-files", "--others", "--exclude-standard", "-z"], git_options)
+    ignored = workspace_git!(workspace, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], git_options)
     true = byte_size(untracked) + byte_size(ignored) <= @workspace_digest_max_metadata_bytes
     extra = workspace_paths(untracked <> ignored)
     true = length(tracked) + length(extra) <= @workspace_digest_max_files
@@ -1324,8 +1958,8 @@ defmodule SymphonyElixir.Mvp.Executor do
     _ -> {:error, :mvp_recovery_workspace_digest_unavailable}
   end
 
-  defp workspace_git!(workspace, args) do
-    {:ok, raw} = Commands.git(args, workspace, preserve_output: true)
+  defp workspace_git!(workspace, args, git_options) do
+    {:ok, raw} = Commands.git(args, workspace, Keyword.put(git_options, :preserve_output, true))
     true = byte_size(raw) <= @workspace_digest_max_metadata_bytes
     raw
   end
@@ -1730,7 +2364,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     policy = if is_map(recovery), do: recovery["policy"], else: nil
 
     is_map(policy) and policy["enabled"] == true and policy["max_rework"] == context.limit and
-      policy == policy_json(context.settings.recovery)
+      Recovery.same_policy?(policy, context.settings.recovery)
   end
 
   defp resume_recovery_progress?(data) do
@@ -1911,8 +2545,8 @@ defmodule SymphonyElixir.Mvp.Executor do
     File.mkdir_p!(evidence)
 
     with {:ok, repository} <- Keyword.get(opts, :repository, &Delivery.repository/2).(issue, opts),
-         {:ok, base} <- prepare(workspace, repository, branch, opts),
-         :ok <- snapshot(workspace, evidence, base) do
+         {:ok, base} <- restart_prepare(workspace, repository, branch, receipt, opts),
+         :ok <- restart_snapshot(workspace, evidence, base, receipt) do
       context = %{
         workspace: workspace,
         issue: issue,
@@ -1930,6 +2564,10 @@ defmodule SymphonyElixir.Mvp.Executor do
         limit: Recovery.limit(settings)
       }
 
+      recovery = recovery_state(context, %{})
+      frozen = Receipt.read(receipt)["restart_recovery"]
+      recovery = if is_map(frozen), do: Map.put(recovery, "started_at", frozen["started_at"]), else: recovery
+
       Receipt.update(receipt, "coding", %{
         "base_sha" => base,
         "workspace" => workspace,
@@ -1940,8 +2578,10 @@ defmodule SymphonyElixir.Mvp.Executor do
         "rework_count" => 0,
         "issue_scope" => issue_scope(issue),
         "execution_sandbox" => Map.get(settings, :sandbox, %{enabled: false}),
-        "recovery" => recovery_state(context, %{})
+        "recovery" => recovery
       })
+
+      :ok = RestartRecovery.checkpoint(context)
 
       result = round(context, 1, base, nil)
       finish(context, result)
@@ -1982,10 +2622,14 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp code_round(context, number, head, feedback, evidence) do
+    context = Map.delete(context, :restart_stage_attempts)
+    :ok = restart_reset_commit(context)
+    :ok = RestartRecovery.checkpoint(context, %{"coding_head" => head, "feedback" => feedback})
+
     with {:ok, _} <- run_agent(context, :coder, coding_prompt(context.issue) <> feedback_prompt(feedback)),
          :ok <- assert_metadata(context.workspace, context.metadata),
          :ok <- unchanged_head(context.workspace, head),
-         {:ok, sha} <- commit_candidate(context.workspace, context.issue),
+         {:ok, sha} <- restart_commit_candidate(context, head),
          :ok <- record(context, "checking", %{"candidate_sha" => sha}) do
       check_and_review(Map.delete(context, :coder_stage_attempt), number, sha, evidence)
     else
@@ -2023,14 +2667,24 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp review_candidate(context, number, sha, evidence) do
-    with :ok <- record(context, "reviewing", %{"check_failure" => nil}),
+    with {:ok, formal_check_prompt} <- formal_check_evidence_prompt(context, number, sha, evidence),
+         :ok <- record(context, "reviewing", %{"check_failure" => nil}),
          {:ok, result} <-
-           run_agent(context, :reviewer, review_prompt(context.issue, context.base, sha) <> test_review_prompt(context.limit) <> protocol_feedback_prompt(context) <> external_evidence_prompt(context)),
+           run_agent(
+             context,
+             :reviewer,
+             review_prompt(context.issue, context.base, sha) <>
+               test_review_prompt(context.limit) <> protocol_feedback_prompt(context) <> external_evidence_prompt(context) <> formal_check_prompt
+           ),
          {:ok, review} <- review_result(result, evidence, context.limit),
          :ok <- record(context, "reviewing", %{"review" => review, "review_path" => Path.join(evidence, "review.json")}),
          :ok <- verify(context, sha) do
       conclude(context, number, sha, review)
     end
+  end
+
+  defp formal_check_evidence_prompt(context, number, sha, evidence) do
+    CheckEvidence.prompt(context, number, sha, evidence)
   end
 
   defp start_round(%{limit: 0, services: nil, evidence: evidence}, _number), do: evidence
@@ -2057,8 +2711,17 @@ defmodule SymphonyElixir.Mvp.Executor do
   end
 
   defp record(context, status, fields) do
-    Receipt.update(context.receipt, status, fields)
-    if context.limit > 0, do: Receipt.update_round(context.receipt, status, fields), else: :ok
+    rounds = Receipt.read(context.receipt)["rounds"]
+
+    fields =
+      if match?([_ | _], rounds) do
+        Map.put(fields, "rounds", List.update_at(rounds, -1, &Map.merge(&1, fields)))
+      else
+        fields
+      end
+
+    checkpoint = RestartRecovery.checkpoint_fields(context, %{"status" => status})
+    Receipt.update(context.receipt, status, Map.merge(fields, checkpoint))
   end
 
   defp run_agent(context, role, prompt) do
@@ -2106,11 +2769,13 @@ defmodule SymphonyElixir.Mvp.Executor do
       on_message(context).(message)
     end
 
-    options = [tools: false, on_message: handler]
-    options = if role == :reviewer, do: options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: options
+    base_options = [tools: false, on_message: handler]
+    base_options = if role == :reviewer, do: base_options ++ [read_only: true, output_schema: Review.schema(context.limit)], else: base_options
 
     result =
-      with {:ok, service_options} <- ModelServices.options(context, role) do
+      with {:ok, home} <- ModelServices.standalone_run_home(context.settings),
+           options = if(home, do: base_options ++ [codex_home: home], else: base_options),
+           {:ok, service_options} <- ModelServices.options(context, role) do
         if usage_recorded?(context) do
           Usage.request(context.receipt, Atom.to_string(role), service_options[:model_service])
         end
@@ -2621,7 +3286,8 @@ defmodule SymphonyElixir.Mvp.Executor do
 
     command = expand_check_command(context, argv, evidence)
 
-    log_path = Path.join(evidence, "check-#{index}.log")
+    record = CheckEvidence.start(context, command, index, evidence)
+    log_path = record["log_path"]
 
     result =
       if ExecutionSandbox.enabled?(context.settings),
@@ -2637,7 +3303,7 @@ defmodule SymphonyElixir.Mvp.Executor do
     check = %{"index" => index, "argv" => command, "log_path" => log_path, "exit_status" => status, "repairable" => status == 10}
     check = Map.merge(check, check_failure_binding(context, result, log_path))
     check = if is_nil(status), do: Map.put(check, "error", inspect(result)), else: check
-    File.write!(Path.join(evidence, "check-#{index}.json"), Jason.encode!(check, pretty: true))
+    check = CheckEvidence.finish(record, check)
 
     if status == 0, do: {:cont, :ok}, else: {:halt, {:error, check}}
   end

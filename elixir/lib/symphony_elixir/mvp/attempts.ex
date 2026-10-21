@@ -1,12 +1,12 @@
 defmodule SymphonyElixir.Mvp.Attempts do
   @moduledoc "Bounded fresh model sessions with durable evidence and independent usage accounting."
 
-  alias SymphonyElixir.Mvp.{DeepSeek, ModelServices, Receipt, Recovery, Review, Usage}
+  alias SymphonyElixir.Mvp.{DeepSeek, ModelServices, Receipt, Recovery, RestartRecovery, Review, Usage}
 
   @type role :: :coder | :reviewer | :diagnosis
   @spec run(map(), role(), String.t(), (-> :ok | {:error, term()})) :: {:ok, map()} | {:error, term()}
   def run(context, role, prompt, verify_fun) do
-    stage = if role == :coder, do: Map.get(context, :coder_stage_attempt, 1), else: 1
+    stage = get_in(context, [:restart_stage_attempts, role]) || if(role == :coder, do: Map.get(context, :coder_stage_attempt, 1), else: 1)
 
     if is_integer(stage) and stage in 1..context.settings.recovery.stage_attempts,
       do: attempt(context, role, prompt, prompt, verify_fun, stage),
@@ -100,10 +100,12 @@ defmodule SymphonyElixir.Mvp.Attempts do
 
     remaining = remaining_ms(context)
     common = [tools: false, on_message: handler, wall_timeout_ms: remaining]
-    options = common ++ role_options(role, context.limit)
+    base_options = common ++ role_options(role, context.limit)
 
     result =
-      with {:ok, service_options} <- ModelServices.options(context, role) do
+      with {:ok, home} <- ModelServices.standalone_run_home(context.settings),
+           options = if(home, do: base_options ++ [codex_home: home], else: base_options),
+           {:ok, service_options} <- ModelServices.options(context, role) do
         Usage.request(context.receipt, usage_key, service_options[:model_service])
         result = invoke_with_budget(context, prompt, service_options ++ options, remaining)
         result = normalize_result(role, result, service_options[:model_service])
@@ -207,7 +209,25 @@ defmodule SymphonyElixir.Mvp.Attempts do
   defp complete(context, usage_key, outcome) do
     data = Receipt.read(context.receipt)
     event = %{"usage_key" => usage_key, "status" => "finished", "outcome" => inspect(outcome, limit: :infinity, printable_limit: :infinity)}
+    checkpoint = RestartRecovery.checkpoint_fields(context)
+    event = restart_completion(event, checkpoint, outcome)
     recovery = Map.update!(data["recovery"], "events", &(&1 ++ [event]))
-    Receipt.update(context.receipt, data["status"], %{"recovery" => recovery})
+    fields = Map.merge(%{"recovery" => recovery}, checkpoint)
+    Receipt.update(context.receipt, data["status"], fields)
   end
+
+  defp restart_completion(event, checkpoint, _outcome) when checkpoint == %{}, do: event
+
+  defp restart_completion(event, checkpoint, outcome) do
+    event
+    |> Map.put("completed", completed_result(outcome))
+    |> Map.put("source_after_model", checkpoint["restart_recovery"]["checkpoint"]["workspace_sha256"])
+  end
+
+  defp completed_result({:ok, result}) do
+    text = Map.get(result, :output_text, "")
+    %{"ok" => true, "output_text" => text, "output_sha256" => :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)}
+  end
+
+  defp completed_result(_), do: %{"ok" => false}
 end

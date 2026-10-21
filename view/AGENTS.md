@@ -8,6 +8,10 @@ GH-16 唯一配置写入口通过受控 loopback 管理接口转发仓库双角�
 调度、编码、检查、Review、恢复、交付与 AppServer 属于 `../elixir/`。
 不得增加任务控制入口、写控制器回执或 GitHub 状态，也不得用展示测试证明真实接入。
 
+2026-10-21 活动部署在独立 VM：源码及数据位于 `/var/lib/innovation-symphony/view`，配置为同级 `view.toml`，由 guest 系统级 `symphony-view.service` 托管；宿主 production SSH 隧道提供 `127.0.0.1:8613`。活动控制器与模型设置分别使用 4000/8765。旧宿主 View 已禁用，不要并行启动抢占原端口。具体当前 release、备份及验收见 `../docs/VM_DEPLOYMENT.md`。
+
+升级 View 仅同步已核验的源码，保留独立数据库、缓存、历史和日志；不要用整目录覆盖或删除来更新源码。VM 内 GL-4 的真实采集和标准浏览器合成检查已通过，仍不能据此宣称真实 Windows/WSL 或用户视觉验收通过。只读快照入口为 `/api/snapshot`。备份不含凭据和 venv，恢复需要重新准备固定依赖及私有凭据。
+
 GH-7 使用固定净化源码快照，来源和差异见 `docs/MIGRATION.md`。保留原状态语义、
 文本解析、UI 和参数路径语义。真实配置、数据库、缓存、HTML、日志、截图和依赖不入库。
 相对 `--config`、`--out` 按调用 cwd 解析，默认文件与资源按源码位置解析。

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Mvp.Recovery do
   # stage_attempts includes the initial stage call. These limits are engineering defaults.
   @defaults %{
     enabled: false,
+    resume_on_restart: false,
     max_rework: 20,
     diagnose_every: 3,
     stage_attempts: 3,
@@ -47,7 +48,7 @@ defmodule SymphonyElixir.Mvp.Recovery do
   def settings(raw) when is_map(raw) do
     policy = Map.new(@defaults, fn {key, default} -> {key, Map.get(raw, Atom.to_string(key), default)} end)
 
-    if Map.keys(raw) -- @keys == [] and is_boolean(policy.enabled) and
+    if Map.keys(raw) -- @keys == [] and is_boolean(policy.enabled) and is_boolean(policy.resume_on_restart) and
          integer_in?(policy.max_rework, 1..100) and integer_in?(policy.diagnose_every, 1..10) and
          integer_in?(policy.stage_attempts, 1..5) and integer_in?(policy.max_elapsed_ms, 1..86_400_000) and
          integer_in?(policy.max_agent_attempts, 1..500) do
@@ -62,6 +63,15 @@ defmodule SymphonyElixir.Mvp.Recovery do
   @spec enabled?(map()) :: boolean()
   def enabled?(%{recovery: %{enabled: true}}), do: true
   def enabled?(_), do: false
+
+  @doc "Compare frozen policies while retaining the established meaning of an absent, disabled restart field."
+  @spec same_policy?(map(), map()) :: boolean()
+  def same_policy?(left, right), do: comparable_policy(left) == comparable_policy(right)
+
+  defp comparable_policy(policy) do
+    value = policy |> Jason.encode!() |> Jason.decode!()
+    if value["resume_on_restart"] == false, do: Map.delete(value, "resume_on_restart"), else: value
+  end
 
   @spec limit(map()) :: non_neg_integer()
   def limit(settings) do

@@ -3,10 +3,15 @@
 
 Ported from build/symphony-watch.py.
 """
+import http.client
 import json
 import os
 import re
+import ssl
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from urllib.parse import urlsplit
 
 from .collector import parse_log, public_session, role_of
@@ -114,7 +119,8 @@ def summarize_check(body):
 
 
 def evidence_view(item):
-    if os.path.basename(item["name"].replace("\\", "/")) == "review.json":
+    base = os.path.basename(item["name"].replace("\\", "/"))
+    if base == "review.json":
         body = item["text"].strip()
         approved = None
         summary = "审查输出"
@@ -132,6 +138,31 @@ def evidence_view(item):
             "exit": None, "summary": summary, "under": [], "body": body, "tail": False,
             "approved": approved,
         }
+    if base.endswith(".json"):
+        body = item["text"].strip()
+        parsed = None
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            pass
+        if isinstance(parsed, dict):
+            exit_code = parsed.get("exit_status")
+            if exit_code is None:
+                exit_code = parsed.get("exit")
+            error = parsed.get("error")
+            cat = parsed.get("category") or ("passed" if (exit_code == 0 and not error) else "failed")
+            argv = parsed.get("argv")
+            cmd_str = (" ".join(argv) if isinstance(argv, list) else str(argv or "")).strip()
+            summary = f"检查 {cat} · 退出码 {exit_code}" if exit_code is not None else f"检查 {cat}"
+            if error:
+                summary = f"{summary} ({error})"
+            elif cmd_str:
+                summary = f"{summary} ({cmd_str})"
+            return {
+                "name": item["name"], "path": item["path"], "bytes": item["bytes"],
+                "exit": exit_code, "error": error, "category": cat, "summary": summary,
+                "under": [], "body": body, "tail": False,
+            }
     decoded = decode_check_log(item["text"])
     summary = summarize_check(decoded["body"])
     text = " · ".join(summary["lines"])
@@ -167,7 +198,9 @@ def sum_tokens(items):
 
 
 def evidence_failed(item):
-    if item.get("exit") is not None or item.get("tail"):
+    if item.get("error") or (item.get("category") and item.get("category") != "passed"):
+        return True
+    if (item.get("exit") is not None and item.get("exit") != 0) or item.get("tail"):
         return True
     return bool(re.search(r"[1-9]\d* 项失败", item.get("summary") or ""))
 
@@ -311,16 +344,37 @@ def attached_evidence_round(item):
 
 
 def attach_evidence_rounds(items, receipt):
-    if not receipt.get("rounds"):
+    rounds = [r for r in receipt.get("rounds") or [] if isinstance(r, dict) and isinstance(r.get("round"), int) and r["round"] > 0]
+    if not rounds:
         return
+    round_numbers = {r["round"] for r in rounds}
     for item in items:
+        name = (item.get("name") or "").replace("\\", "/")
+        match = re.search(r"(?:^|/)round-(\d+)(?:/|$)", name)
+        if match and int(match.group(1)) in round_numbers:
+            item["round"] = int(match.group(1))
+            item["roundSource"] = "evidence"
+            continue
         directory = os.path.normpath(os.path.dirname(item.get("path") or ""))
-        matches = {r.get("round") for r in receipt.get("rounds") or []
-                   if isinstance(r, dict) and isinstance(r.get("evidence"), str)
-                   and os.path.normpath(r["evidence"]) == directory
-                   and type(r.get("round")) is int and r["round"] > 0}
-        item["round"] = next(iter(matches)) if len(matches) == 1 else None
-        item["roundSource"] = "controller" if item["round"] is not None else "unassigned"
+        matches = {r["round"] for r in rounds
+                   if isinstance(r.get("evidence"), str)
+                   and os.path.normpath(r["evidence"]) == directory}
+        if len(matches) == 1:
+            item["round"] = next(iter(matches))
+            item["roundSource"] = "controller"
+            continue
+        if len(rounds) == 1 and isinstance(rounds[0].get("evidence"), str):
+            ev_dir = os.path.normpath(rounds[0]["evidence"])
+            path = os.path.normpath(item.get("path") or "")
+            try:
+                if os.path.commonpath([ev_dir, path]) == ev_dir:
+                    item["round"] = rounds[0]["round"]
+                    item["roundSource"] = "controller"
+                    continue
+            except ValueError:
+                pass
+        item["round"] = None
+        item["roundSource"] = "unassigned"
 
 
 def causes_for_group(items):
@@ -839,6 +893,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
             flow, gap = workflow_of(publics, evidence, STATUS_LABEL.get(status, status), reason)
             health = receipt.get("_execution_health") or {}
             stopped = health.get("kind") == "closed_host_interruption"
+            restart_stopped = health.get("kind") == "restart_recovery_stop"
+            if restart_stopped:
+                status = "blocked"
+                reason = health["reason"]
             if stopped:
                 gap = "宿主关机中断已核验并闭合；回执保留历史编码状态，等待受审计接续。"
             session_ids = [(s.get("meta") or {}).get("session_id") or "" for s in matched]
@@ -868,10 +926,10 @@ def build_tasks(snapshot, sessions, logs_by_runtime):
                 "title": title,
                 "meta": meta,
                 "status": status,
-                "statusLabel": "宿主中断 · 历史编码状态" if stopped else STATUS_LABEL.get(status, status),
+                "statusLabel": ("自动恢复已停止" if health.get("verified") else "恢复停止记录待核对") if restart_stopped else ("宿主中断 · 历史编码状态" if stopped else STATUS_LABEL.get(status, status)),
                 "badge": badge_class("blocked" if stopped else status),
                 "stage": [1, None] if stopped else list(stage_of(status, cand, reason)),
-                **({"executionHealth": health} if stopped else {}),
+                **({"executionHealth": health} if stopped or restart_stopped else {}),
                 "duration": duration,
                 "coder": models.get("coder", "—"),
                 "reviewer": models.get("reviewer", "—"),
@@ -989,6 +1047,107 @@ def fetch_pr(repo, number, url):
     }
 
 
+def is_trusted_gitlab_instance(netloc):
+    target = (netloc or "").strip().lower()
+    if not target:
+        return False
+    configured = os.environ.get("GITLAB_TRUSTED_HOSTS") or os.environ.get("GITLAB_HOST") or os.environ.get("GITLAB_INSTANCE")
+    if configured:
+        allowed = {h.strip().lower() for h in re.split(r"[,;\s]+", configured) if h.strip()}
+        return target in allowed
+    return target in {"81.71.154.125:8443", "81.71.154.125"}
+
+
+class SafeGitLabRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old_netloc = urlsplit(req.full_url).netloc.lower()
+        new_netloc = urlsplit(newurl).netloc.lower()
+        if old_netloc != new_netloc:
+            return None
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            new_req.headers.pop("Private-token", None)
+            new_req.headers.pop("PRIVATE-TOKEN", None)
+        return new_req
+
+
+def open_gitlab_url(req, ctx=None):
+    handlers = [SafeGitLabRedirectHandler()]
+    if ctx:
+        handlers.insert(0, urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=10)
+
+
+def fetch_gitlab_mr(repo, number, url):
+    fallback = {"url": url, "number": number, "kind": "merge_request", "repo": repo, "state": "unknown", "title": "", "draft": False}
+    if not safe_web_url(url):
+        return fallback
+    parsed = urlsplit(url)
+    target_host = parsed.netloc.lower()
+    token = ""
+    if parsed.scheme.lower() == "https" and is_trusted_gitlab_instance(target_host):
+        token = os.environ.get("GITLAB_PAT", "").strip()
+        if not token:
+            token_candidates = [
+                ".local/gitlab-token",
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".local", "gitlab-token"),
+                "/home/elma/文档/Code/innovation-symphony/.local/gitlab-token",
+            ]
+            for candidate in token_candidates:
+                if os.path.isfile(candidate):
+                    try:
+                        with open(candidate, encoding="utf-8") as f:
+                            token = f.read().strip()
+                        if token:
+                            break
+                    except OSError:
+                        pass
+    ca_file = os.environ.get("GITLAB_CA_FILE", "").strip()
+    if not ca_file:
+        ca_candidates = [
+            ".local/certs/gitlab-81-71-154-125.crt",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".local", "certs", "gitlab-81-71-154-125.crt"),
+            "/home/elma/文档/Code/innovation-symphony/.local/certs/gitlab-81-71-154-125.crt",
+            "/certs/gitlab-81-71-154-125.crt",
+        ]
+        for candidate in ca_candidates:
+            if os.path.isfile(candidate):
+                ca_file = candidate
+                break
+    api_url = f"{parsed.scheme}://{parsed.netloc}/api/v4"
+    project_enc = urllib.parse.quote(repo, safe="")
+    target = f"{api_url}/projects/{project_enc}/merge_requests/{number}"
+    headers = {"PRIVATE-TOKEN": token} if token else {}
+    ctx = ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
+    try:
+        req = urllib.request.Request(target, headers=headers)
+        with open_gitlab_url(req, ctx=ctx) as resp:
+            raw = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead):
+        return fallback
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return fallback
+    # Guard against truncated or unexpected response shapes (e.g. list instead of object)
+    # that would cause AttributeError when calling .get() downstream.
+    if not isinstance(data, dict):
+        return fallback
+    raw_state = data.get("state")
+    state_map = {"merged": "merged", "opened": "open", "closed": "closed", "locked": "locked"}
+    state = state_map.get(raw_state, "unknown")
+    return {
+        "url": data.get("web_url") or url,
+        "number": number,
+        "kind": "merge_request",
+        "repo": repo,
+        "state": state,
+        "title": data.get("title") or "",
+        "draft": bool(data.get("draft") or data.get("work_in_progress")),
+    }
+
+
 def enrich_pulls(tasks):
     cache = {}
     for task in tasks:
@@ -996,12 +1155,12 @@ def enrich_pulls(tasks):
         if not parsed:
             task["pr"] = None
             continue
-        if parsed.get("kind") == "merge_request":
-            # The controller records a delivery URL, not current remote state.
-            # Never send GitLab identifiers to the GitHub CLI.
-            task["pr"] = {**parsed, "state": "unknown", "title": "", "draft": False}
-            continue
-        key = (parsed["repo"], parsed["number"])
+        host = urlsplit(parsed.get("url") or "").netloc.lower()
+        key = (parsed.get("kind") or "pr", host, parsed["repo"], parsed["number"])
         if key not in cache:
-            cache[key] = fetch_pr(parsed["repo"], parsed["number"], parsed["url"])
+            if parsed.get("kind") == "merge_request":
+                cache[key] = fetch_gitlab_mr(parsed["repo"], parsed["number"], parsed["url"])
+            else:
+                cache[key] = fetch_pr(parsed["repo"], parsed["number"], parsed["url"])
         task["pr"] = cache[key]
+

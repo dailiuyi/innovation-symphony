@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
 
     assert defaults == %{
              enabled: false,
+             resume_on_restart: false,
              max_rework: 20,
              diagnose_every: 3,
              stage_attempts: 3,
@@ -34,6 +35,23 @@ defmodule SymphonyElixir.Mvp.RecoveryTest do
       assert {:ok, policy} = Recovery.settings(%{"enabled" => true, key => value})
       assert policy[String.to_existing_atom(key)] == value
     end
+  end
+
+  test "restart recovery requires an explicit boolean and defaults off" do
+    assert {:ok, %{resume_on_restart: true}} = Recovery.settings(%{"resume_on_restart" => true})
+
+    for value <- [nil, "true", 1, []] do
+      assert {:error, :invalid_mvp_recovery} = Recovery.settings(%{"resume_on_restart" => value})
+    end
+  end
+
+  test "old frozen policies without restart field retain false semantics and never acquire true" do
+    {:ok, policy} = Recovery.settings(%{"enabled" => true})
+    old = policy |> Map.delete(:resume_on_restart) |> Jason.encode!() |> Jason.decode!()
+    assert Recovery.same_policy?(old, policy)
+    assert Recovery.same_policy?(policy, old)
+    refute Recovery.same_policy?(old, Map.put(policy, :resume_on_restart, true))
+    refute Recovery.same_policy?(old, Map.put(policy, :max_agent_attempts, policy.max_agent_attempts + 1))
   end
 
   test "configuration rejects unknown fields, wrong types and invalid limits even when disabled" do

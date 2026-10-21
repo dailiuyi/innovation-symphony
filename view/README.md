@@ -1,5 +1,13 @@
 # innovation-view · Symphony 独立只读看板
 
+## 当前 VM 安装（2026-10-21）
+
+活动 View 位于 guest `/var/lib/innovation-symphony/view`，配置 `/var/lib/innovation-symphony/view.toml`，独立 venv 为 `/var/lib/innovation-symphony/view-venv`；由系统级 `symphony-view.service` 管理。宿主 production SSH 隧道提供 `http://127.0.0.1:8613/`，快照入口 `/api/snapshot`。当前三个入口仅本机可达，下文局域网访问是其他获准部署的说明，不表示本机已对内网开放。不要启动旧宿主 View，也不要把整个 view_root 覆盖为开发目录；源码更新保留数据库、缓存、历史和日志。
+
+实际采集包含迁移历史及 GL-4 的 4 次会话、正式检查和批准 Review。guest 标准 `scripts/run_view_checks.py` 已通过 Python 57、JavaScript 15、Linux 集成 11 项及浏览器合成/迁移检查；环境为 Python 3.12.3、Node 24.21.0、Playwright 1.62.1 与配套 Chromium 151。下文旧环境的浏览器失败保留为历史，不能覆盖这次 guest 结果；真实 Windows/WSL 与用户页面体验仍分别验收。
+
+View 随成功日备份纳入 config/runtime/View 受管归档，SQLite 使用 backup 接口合并 WAL。2026-10-21 的宿主归档清理未删除 View 数据或 VM 内恢复目录；现存成功日备份早于 GL-4，不能当成交付后快照。固定版本、数据与备份位置见 [VM_DEPLOYMENT](../docs/VM_DEPLOYMENT.md)。
+
 `innovation-view` 把 Symphony 运行时中的任务回执、检查证据和 Codex 会话整理成一个 Linear 风格的只读工作台。它用于查看进度和上下文，不启动或控制 Symphony 任务，任务数据仍只读。GH-16 在设置页提供受控仓库双角色默认模型管理，配置写入由 Elixir 负责。
 
 现以固定源码快照放在 innovation-symphony 的 `view/` 下，仍独立运行。`elixir/`
@@ -29,7 +37,7 @@ Linux Python 使用同一解释器启动固定只读扫描脚本并直接复制�
 显式 `local` 仅支持 Linux，显式 `wsl` 仅支持 Windows；无效值或不支持的组合报错，
 不会静默改用其他来源。缺少该项的旧配置无需修改。Python 最低 3.11；本轮 Linux
 合成集成使用 Python 3.12.14、Node 24.19.0、`codex-transcript-viewer==0.5.0`。
-真实 Windows＋WSL 和浏览器 UI 仍须在可用环境另行验收。
+这组历史环境的真实 Windows＋WSL 和浏览器 UI 未完成验收；当前 guest 的合成浏览器检查见文首。
 如需 PR 状态，另需可用的 `gh` CLI；没有它时看板仍可运行，但 PR 状态可能未知。
 Node 用于 JS 和浏览器检查，正常 Python 看板启动不需要 Node。
 
@@ -116,7 +124,7 @@ loopback HTTP/context/HTML 合成集成，以及坏 JSON、权限、消失、超
 避免包括 ignored 文件在内的候选库存被检查产物污染。固定浏览器夹具的截图与
 smoke 报告写入该结果目录的 `fixture/browser/`，不另写源码树。
 
-完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium，需 Node 24.19.0：
+完整标准检查需要先准备 Playwright 1.62.1 与其配套 Chromium；以下为既有 CI 的 Node 24.19.0 准备方式，当前 guest 已通过的 Node 24.21.0 组合见文首：
 
 ```sh
 npm install --prefix view/build/browser --no-audit --no-fund playwright@1.62.1
@@ -126,8 +134,8 @@ NODE_PATH="$PWD/view/build/browser/node_modules" node view/tests/browser-fixture
 
 上述 Linux 命令对应 CI；Windows 可安装同版本 Playwright 后设置 `NODE_PATH`（如
 PowerShell `$env:NODE_PATH = (Resolve-Path view/build/browser/node_modules).Path`），再运行
-相同 Node 命令。准备阶段已核实 Playwright 1.62.1 和 Chrome 153.0.8010.54，但浏览器
-启动被受限环境拒绝，未通过 UI 断言。本离线沙箱也未预置 Playwright／Chromium，
+相同 Node 命令。早期准备阶段已核实 Playwright 1.62.1 和 Chrome 153.0.8010.54，但浏览器
+启动被受限环境拒绝，未通过 UI 断言。该次离线沙箱也未预置 Playwright／Chromium，
 本轮浏览器检查失败原因和未执行项见验证记录；不把安装命令当作已验证组合。
 
 夹具入口只在随机 loopback 端口服务脱敏固定数据及本轮实际生成的 HTML，调用原
@@ -177,8 +185,15 @@ prototypes/              旧版完整会话 HTML（gitignored）
 配置更改后需重启看板。数据库、rollout 缓存、生成页、截图、日志及依赖均为本地数据。
 不自动删除旧数据库或搬移旧配置；保留、切换及回退须按迁移说明操作，不自动切换服务。
 
-## GitLab 任务展示
+## GitLab 任务展示与交付状态
 
 View 同时识别 `GH-<number>` 与 `GL-<iid>` 的任务指令、工作区和会话关联，按完整标识区分同号的 GitHub/GitLab 任务。新回执读取 `issue_identifier`、`tracker_kind`、`issue_url`，仓库缺省时读取 `issue_native_ref.project_path`（支持子组路径）；缺少这些字段的历史 GitHub 回执保持原标识和深链接。
 
-GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 不通过 `gh` 查询 GitLab；MR 当前远端状态显示为未知，链接本身不证明已合并。待办：如后续要求自动追踪 MR 合并状态，需增加受授权的 GitLab 只读采集与真实验收。当前改动只增加本地展示，不启用任务、升级运行服务或授权真实外部调用。
+GitLab 的交付链接沿用回执 `pull_request` 字段，`/-/merge_requests/<iid>` 在界面显示为 MR，Issue 详情保留回执提供的原实例链接。View 通过 GitLab REST API 查询 MR 真实状态（`merged`、`opened`、`closed`）。为防止凭据外发或明文传输，私有 Token 仅限在协议为 HTTPS 且目标主机属于白名单（环境变量 `GITLAB_TRUSTED_HOSTS` / `GITLAB_HOST` / `GITLAB_INSTANCE` 或本地受信任实例 `81.71.154.125:8443` 等）时发送，未绑定实例或 HTTP 明文请求不带 Token，重定向限制跨主机并自动剥离凭据；MR 状态缓存按主机地址隔离。状态为 `merged` 的任务正确推进至“已交付”（Done）列。
+
+## 检查证据与 Agent 轮次匹配
+
+- **检查证据**：采集时同时收集 `check-*.log` 与 `check-*.json`，解析退出码、检查类别、错误信息（如超时）与命令输出，支持单轮根目录与子目录 `round-N/` 智能关联。检查结果使用独立字段，不设置 `approved`，避免将检查通过误当作 Review 批准；超时及非通过状态准确判定为失败。
+- **无沙盒 MVP 模式会话对齐**：当控制器回执无显式沙盒 attempt 绑定时，前端 `roundsModel` 仅在单一轮次任务中将编码与 Review Agent 会话归入该轮；多轮任务中缺少显式 round 的会话保持未关联，不按会话出现顺序猜测轮次。
+
+

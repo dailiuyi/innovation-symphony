@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
 
   alias SymphonyElixir.Mvp.{
     AutomaticAcceptance,
+    CheckEvidence,
     Commands,
     Delivery,
     ExecutionSandbox,
@@ -403,6 +404,219 @@ defmodule SymphonyElixir.Mvp.ExternalHandoffTest do
       assert writes(context, "POST", "/pulls") == []
       assert {:error, :mvp_external_draft_not_eligible} = ExternalDraft.approve(context.workspace, context.issue, context.repository, data["branch"], data["candidate_sha"], context.receipt, opts)
     end
+  end
+
+  test "new formal evidence fields are enforced by both external publication and approval" do
+    for mode <- [:external, :approved] do
+      context = proof_waiting!(mode)
+      data = Receipt.read(context.receipt)
+      [path] = data["formal_check_evidence"]["records"]
+      original = File.read!(path)
+      report = Jason.decode!(original)
+      opts = draft_options(context)
+
+      for change <- new_check_mutations(context, report) do
+        File.write!(path, Jason.encode!(Map.merge(report, change)))
+        before = File.read!(context.receipt)
+        assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode), inspect(change)
+        assert File.read!(context.receipt) == before
+        assert calls(context, :draft_requests) == []
+        assert Commands.git!(["ls-remote", context.repository.url, "refs/heads/#{data["branch"]}"], context.workspace) == ""
+      end
+
+      File.write!(path, original)
+      log = File.read!(report["log_path"])
+
+      for bytes <- ["tampered", "truncated"] do
+        File.write!(report["log_path"], bytes)
+        assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+        assert calls(context, :draft_requests) == []
+      end
+
+      File.rm!(report["log_path"])
+      assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+      File.write!(report["log_path"], log)
+      File.rm!(path)
+      assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+    end
+  end
+
+  test "invalid manifest paths or coordinated stale attempts cannot fall back to the old root reports" do
+    for mode <- [:external, :approved] do
+      context = proof_waiting!(mode)
+      data = Receipt.read(context.receipt)
+      manifest = data["formal_check_evidence"]
+      [path] = manifest["records"]
+      raw = File.read!(path)
+      report = Jason.decode!(raw)
+      opts = draft_options(context)
+
+      for change <- [
+            %{"attempt" => 99},
+            %{"candidate_sha" => String.duplicate("f", 40)},
+            %{"round" => 99},
+            %{"checks" => []},
+            %{"directory" => context.root},
+            %{"evidence" => context.root},
+            %{"run_id" => String.duplicate("f", 32)},
+            %{"records" => [Path.join(context.root, "check-1.json")]},
+            %{"records" => []}
+          ] do
+        Receipt.update(context.receipt, data["status"], %{"formal_check_evidence" => Map.merge(manifest, change)})
+        assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode), inspect(change)
+        assert calls(context, :draft_requests) == []
+      end
+
+      File.write!(path, Jason.encode!(Map.put(report, "attempt", 99)))
+      Receipt.update(context.receipt, data["status"], %{"formal_check_evidence" => Map.put(manifest, "attempt", 99)})
+      assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+      File.write!(path, raw)
+
+      for invalid <- [nil, %{}, "invalid"] do
+        Receipt.update(context.receipt, data["status"], %{"formal_check_evidence" => invalid})
+        assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+      end
+
+      File.write!(context.receipt, Jason.encode!(Map.delete(data, "formal_check_evidence")))
+      assert {:error, :mvp_external_draft_not_eligible} = deliver_proof(context, opts, mode)
+      assert calls(context, :draft_requests) == []
+    end
+  end
+
+  test "repeated full check sets publish their explicit current paths while preserving older artifacts" do
+    for mode <- [:external, :approved] do
+      context = proof_waiting!(mode)
+      data = Receipt.read(context.receipt)
+      [old] = data["formal_check_evidence"]["records"]
+      old_raw = File.read!(old)
+      old_log = Path.rootname(old) <> ".log"
+      old_bytes = File.read!(old_log)
+      record = repeat_formal_checks(context, 2)
+      assert record["record_path"] != old
+      assert record["record_path"] =~ "/formal-checks-"
+      File.write!(old, Jason.encode!(%{"exit_status" => 10}))
+      opts = draft_options(context)
+      assert {:ok, @url} = deliver_proof(context, opts, mode)
+      delivered = Receipt.read(context.receipt)["external_delivery"]
+      assert [proof] = delivered["intent"]["proof"]["checks"]
+      assert proof["path"] == record["record_path"]
+      assert proof["log_path"] == record["log_path"]
+      assert proof["sha256"] == digest(File.read!(record["record_path"]))
+      assert proof["log_sha256"] == digest(File.read!(record["log_path"]))
+      assert delivered["intent"]["body"] =~ record["record_path"]
+      assert File.read!(old_log) == old_bytes
+      refute File.read!(old) == old_raw
+    end
+  end
+
+  test "historical delivery reconciliation uses the original saved references and hashes" do
+    context = draft_waiting!()
+    opts = draft_options(context)
+    assert {:ok, @url} = publish_waiting(context, opts)
+    delivery = Receipt.read(context.receipt)["external_delivery"]
+    intent_raw = File.read!(delivery["intent_path"])
+    [old] = delivery["intent"]["proof"]["checks"]
+    repeat_formal_checks(context, 2)
+    data = Receipt.read(context.receipt)
+    Receipt.update(context.receipt, data["status"], %{"formal_check_evidence" => %{}})
+    assert {:ok, @url} = Delivery.reconcile(context.receipt, opts)
+    assert File.read!(delivery["intent_path"]) == intent_raw
+    assert Receipt.read(context.receipt)["external_delivery"]["intent"]["proof"] == delivery["intent"]["proof"]
+
+    File.write!(old["log_path"], "changed historical bytes")
+    assert {:error, :mvp_no_unique_matching_pr} = Delivery.reconcile(context.receipt, opts)
+    assert File.read!(delivery["intent_path"]) == intent_raw
+    assert length(writes(context, "POST", "/pulls")) == 1
+    assert writes(context, "PATCH", "/pulls/42") == []
+  end
+
+  test "unmarked historical receipts retain their original check proof contract" do
+    context = draft_waiting!()
+    data = Receipt.read(context.receipt)
+    historical = Map.drop(data, ["formal_check_evidence", "formal_check_binding"])
+    rounds = Enum.map(historical["rounds"], &Map.delete(&1, "formal_check_binding"))
+    File.write!(context.receipt, Jason.encode!(Map.put(historical, "rounds", rounds)))
+    assert {:ok, @url} = publish_waiting(context, draft_options(context))
+  end
+
+  @tag :check_evidence_boundary
+  test "historical delivery requires a nonempty frozen check collection before any forge effects" do
+    context = draft_waiting!()
+    data = Receipt.read(context.receipt)
+    historical = Map.drop(data, ["formal_check_evidence", "formal_check_binding"])
+    [round] = Enum.map(historical["rounds"], &Map.delete(&1, "formal_check_binding"))
+    opts = draft_options(context)
+
+    for invalid <- [nil, [], "not a command list"] do
+      malformed = Map.put(historical, "rounds", [Map.put(round, "checks", invalid)])
+      File.write!(context.receipt, Jason.encode!(malformed))
+      before = File.read!(context.receipt)
+      assert {:error, :mvp_external_draft_not_eligible} = publish_waiting(context, opts)
+      assert File.read!(context.receipt) == before
+      assert calls(context, :draft_requests) == []
+      assert Commands.git!(["ls-remote", context.repository.url, "refs/heads/#{data["branch"]}"], context.workspace) == ""
+    end
+  end
+
+  defp proof_waiting!(:external), do: draft_waiting!()
+
+  defp proof_waiting!(:approved) do
+    context = context!()
+    Process.put({context.key, :reviews}, [approved_review()])
+    assert {:ok, @url} = run(context, settings(), options(context))
+    context
+  end
+
+  defp deliver_proof(context, opts, :external), do: publish_waiting(context, opts)
+
+  defp deliver_proof(context, opts, :approved) do
+    data = Receipt.read(context.receipt)
+    ExternalDraft.approve(context.workspace, context.issue, context.repository, data["branch"], data["candidate_sha"], context.receipt, opts)
+  end
+
+  defp repeat_formal_checks(context, attempt) do
+    data = Receipt.read(context.receipt)
+    directory = Path.dirname(List.last(data["rounds"])["review_path"])
+
+    execution = %{
+      receipt: context.receipt,
+      workspace: context.workspace,
+      evidence: context.receipt <> ".evidence",
+      settings: settings(),
+      check_attempt: attempt
+    }
+
+    argv = ["test", "-f", Path.join(context.workspace, "candidate.txt")]
+    record = CheckEvidence.start(execution, argv, 1, directory)
+    assert {:ok, 0} = Commands.run_logged(argv, context.workspace, 10_000, record["log_path"])
+    CheckEvidence.finish(record, %{"exit_status" => 0, "repairable" => false})
+  end
+
+  defp new_check_mutations(context, report) do
+    [
+      %{"schema" => 2},
+      %{"candidate_sha" => String.duplicate("b", 40)},
+      %{"round" => 99},
+      %{"attempt" => 99},
+      %{"checks" => []},
+      %{"evidence" => context.root},
+      %{"run_id" => String.duplicate("f", 32)},
+      %{"index" => 99},
+      %{"argv" => ["wrong-command"]},
+      %{"record_path" => Path.join(context.root, "other.json")},
+      %{"log_path" => Path.join(context.root, "other.log")},
+      %{"started_at" => nil},
+      %{"started_at" => "2099-01-01T00:00:00Z"},
+      %{"finished_at" => nil},
+      %{"finished_at" => "2000-01-01T00:00:00Z"},
+      %{"completed" => false},
+      %{"exit_status" => 10},
+      %{"repairable" => true},
+      %{"log_size" => report["log_size"] + 1},
+      %{"log_sha256" => String.duplicate("0", 64)},
+      %{"structured_result" => %{"unverified" => true}},
+      %{"error" => "incomplete execution"}
+    ]
   end
 
   test "a draft never overwrites an occupied remote branch and cannot ignore readiness or lookup failures" do

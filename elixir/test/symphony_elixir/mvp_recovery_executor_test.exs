@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
   alias SymphonyElixir.Mvp.{
     Commands,
     DeepSeek,
+    Delivery,
     ExecutionSandbox,
     Executor,
     Intake,
@@ -16,6 +17,40 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
   }
 
   @url "https://github.com/owner/repo/pull/42"
+
+  test "GitLab review rejection repairs a new candidate and delivers one verified Draft MR" do
+    context = gitlab_context!()
+    trace = Path.join(context.root, "checks.log")
+    opts = gitlab_options(context, review: fn count -> count > 1 end)
+    assert {:ok, url} = run(context, settings([trace_check(trace)]), opts)
+    assert url == "https://gitlab.example/owner/repo/-/merge_requests/9"
+    assert length(calls(context, :coder)) == 2
+    assert length(calls(context, :reviewer)) == 2
+    assert length(calls(context, :comment)) == 1
+    assert length(calls(context, :mr_created)) == 1
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_human"
+    assert data["review"]["approved"]
+    assert File.read!(trace) == "1\n2\n"
+    assert Commands.git!(["--git-dir", context.repository.url, "rev-parse", "refs/heads/" <> data["branch"]], context.root) == data["candidate_sha"]
+    assert {:ok, ^url} = Delivery.reconcile(context.receipt, opts)
+    assert length(calls(context, :mr_created)) == 1
+  end
+
+  test "GitLab external verification creates a pending Draft once and only reconciles reads" do
+    context = gitlab_context!()
+    opts = gitlab_options(context, external_review: true)
+    assert {:error, {:mvp_awaiting_external, _}} = run(context, settings([["true"]]), opts)
+    data = Receipt.read(context.receipt)
+    assert data["status"] == "awaiting_external"
+    assert data["external_delivery"]["status"] == "delivered"
+    assert length(calls(context, :coder)) == 1
+    assert length(calls(context, :mr_created)) == 1
+    assert {:ok, _} = Delivery.reconcile(context.receipt, opts)
+    assert {:ok, _} = Delivery.reconcile(context.receipt, opts)
+    assert Receipt.read(context.receipt)["status"] == "awaiting_external"
+    assert length(calls(context, :mr_created)) == 1
+  end
 
   test "automatic recovery exceeds five reworks, reruns every check and publishes only after independent review" do
     context = context!()
@@ -756,6 +791,80 @@ defmodule SymphonyElixir.Mvp.RecoveryExecutorTest do
       }
     ])
   end
+
+  defp gitlab_context! do
+    context = context!()
+
+    issue = %{
+      context.issue
+      | identifier: "GL-42",
+        state: "opened",
+        native_ref: %{"kind" => "gitlab", "repo" => "owner/repo", "project_path" => "owner/repo", "api_url" => "https://gitlab.example/api/v4", "iid" => 42}
+    }
+
+    {:ok, receipt} = Receipt.claim(%{state_dir: Path.join(context.root, "gitlab-state")}, issue)
+    %{context | issue: issue, receipt: receipt}
+  end
+
+  defp gitlab_options(context, behavior) do
+    tracker = %{kind: "gitlab", provider: %{"api_url" => "https://gitlab.example/api/v4", "project_path" => "owner/repo", "api_key" => "synthetic"}}
+    original = options(context, behavior)
+    agent = original[:agent]
+
+    request = fn method, path, _query, body, _ ->
+      case {method, path} do
+        {"GET", "/projects/owner%2Frepo"} ->
+          {:ok, %{status: 200, body: %{"id" => 3, "path_with_namespace" => "owner/repo", "default_branch" => "main"}}}
+
+        {"GET", "/projects/owner%2Frepo/issues/42"} ->
+          {:ok, %{status: 200, body: %{"state" => "opened", "labels" => ["ready"]}}}
+
+        {"POST", "/projects/owner%2Frepo/issues/42/notes"} ->
+          record(context, :comment, body)
+          {:ok, %{status: 201, body: Map.put(body, "id", length(calls(context, :comment)))}}
+
+        {"GET", "/projects/owner%2Frepo/merge_requests"} ->
+          {:ok, %{status: 200, body: calls(context, :mr_created)}}
+
+        {"POST", "/projects/owner%2Frepo/merge_requests"} ->
+          mr = %{
+            "iid" => 9,
+            "source_project_id" => 3,
+            "target_project_id" => 3,
+            "source_branch" => body["source_branch"],
+            "target_branch" => body["target_branch"],
+            "sha" => Commands.git!(["rev-parse", "HEAD"], context.workspace),
+            "state" => "opened",
+            "draft" => true,
+            "web_url" => "https://gitlab.example/owner/repo/-/merge_requests/9",
+            "description" => body["description"]
+          }
+
+          record(context, :mr_created, mr)
+          {:ok, %{status: 201, body: mr}}
+      end
+    end
+
+    original
+    |> Keyword.delete(:publish)
+    |> Keyword.put(:tracker_settings, tracker)
+    |> Keyword.put(:ready_label, "ready")
+    |> Keyword.put(:request_fun, request)
+    |> Keyword.put(:agent, fn workspace, prompt, issue, opts ->
+      result = agent.(workspace, prompt, issue, opts)
+
+      if agent_role(opts) == :reviewer and Keyword.get(behavior, :external_review, false) do
+        {:ok, response} = result
+        review = Jason.decode!(response.output_text)
+        review = Map.update!(review, "blockers", &verification_blockers/1)
+        {:ok, %{response | output_text: Jason.encode!(review)}}
+      else
+        result
+      end
+    end)
+  end
+
+  defp verification_blockers(blockers), do: Enum.map(blockers, &Map.put(&1, "external_kind", "verification"))
 
   defp context! do
     root = Path.join(System.tmp_dir!(), "recovery-executor-#{System.unique_integer([:positive])}")
